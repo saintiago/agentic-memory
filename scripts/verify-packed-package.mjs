@@ -36,6 +36,14 @@ for (const name of ["jsonValueSchema", "noteSchema", "embeddedNoteSchema", "matc
 assert.equal(memory.noteSchema.safeParse(note).success, true, "noteSchema accepts a valid note");
 assert.equal(memory.noteSchema.safeParse({ ...note, id: "note-1" }).success, false);
 
+for (const name of ["AgenticMemory", "MemoryError", "embeddingText"]) {
+  assert.equal(typeof memory[name], "function", name + " is exported from the package root");
+}
+assert.equal(
+  memory.embeddingText({ content: "Source text.", context: "Records the source.", keywords: ["source"], tags: [] }),
+  "Source text.\\nKeywords: source\\nTags: \\nContext: Records the source.",
+);
+
 console.log("packed consumer imported " + Object.keys(memory).length + " runtime exports");
 `;
 

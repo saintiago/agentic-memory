@@ -58,7 +58,8 @@ export class ModelResponseError extends Error {
   }
 }
 
-const issueSummary = (
+/** One message per issue, in path order; shared with input validation in this component. */
+export const issueSummary = (
   issues: ReadonlyArray<{
     readonly path: ReadonlyArray<PropertyKey>;
     readonly message: string;
