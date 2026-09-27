@@ -11,17 +11,126 @@ import { z } from "zod";
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
-/** Metadata is JSON; non-finite numbers, functions and undefined are not JSON. */
-export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([
-    z.null(),
-    z.boolean(),
-    z.number(),
-    z.string(),
-    z.array(jsonValueSchema),
-    z.record(z.string(), jsonValueSchema),
-  ]),
-);
+interface JsonIssue {
+  readonly message: string;
+  readonly path: ReadonlyArray<string | number>;
+}
+
+/** JSON text produces plain records, so class instances, dates, maps and sets are not objects. */
+const isJsonObject = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+/**
+ * Reports every reason `value` is not JSON. Only the containers on the current path count as
+ * ancestors, so a value shared by sibling properties stays valid while a cycle is rejected.
+ */
+const findJsonIssues = (
+  value: unknown,
+  requireObject: boolean,
+): JsonIssue[] => {
+  if (requireObject && !isJsonObject(value)) {
+    return [{ message: "Metadata must be a JSON object.", path: [] }];
+  }
+  const issues: JsonIssue[] = [];
+  const visit = (
+    node: unknown,
+    path: ReadonlyArray<string | number>,
+    ancestors: ReadonlySet<object>,
+  ): void => {
+    if (
+      node === null ||
+      typeof node === "boolean" ||
+      typeof node === "string"
+    ) {
+      return;
+    }
+    if (typeof node === "number") {
+      if (!Number.isFinite(node)) {
+        issues.push({ message: "JSON numbers must be finite.", path });
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      const elements: readonly unknown[] = node;
+      visitContainer(node, elements.entries(), path, ancestors);
+      return;
+    }
+    if (isJsonObject(node)) {
+      visitContainer(node, Object.entries(node), path, ancestors);
+      return;
+    }
+    issues.push({ message: "Expected a JSON value.", path });
+  };
+  const visitContainer = (
+    container: object,
+    children: Iterable<readonly [string | number, unknown]>,
+    path: ReadonlyArray<string | number>,
+    ancestors: ReadonlySet<object>,
+  ): void => {
+    if (ancestors.has(container)) {
+      issues.push({ message: "JSON values must not contain cycles.", path });
+      return;
+    }
+    const nested = new Set(ancestors).add(container);
+    for (const [key, child] of children) {
+      visit(child, [...path, key], nested);
+    }
+  };
+
+  visit(value, [], new Set());
+  return issues;
+};
+
+/**
+ * Copies an already validated JSON tree. Objects are rebuilt from entries so own `__proto__`
+ * properties survive, and defining each key as data cannot mutate any prototype.
+ */
+const cloneJsonValue = (value: unknown): JsonValue => {
+  if (Array.isArray(value)) {
+    return value.map((element: unknown) => cloneJsonValue(element));
+  }
+  if (isJsonObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, element]) => [
+        key,
+        cloneJsonValue(element),
+      ]),
+    );
+  }
+  return value as JsonValue;
+};
+
+/**
+ * Builds a JSON schema from the structural rules. The input is `unknown` because no single Zod
+ * type covers every JSON value, and parsing returns a detached copy of the validated tree.
+ */
+const jsonSchema = <Output extends JsonValue>(
+  requireObject: boolean,
+): z.ZodType<Output> =>
+  z
+    .unknown()
+    .superRefine((value, context) => {
+      for (const issue of findJsonIssues(value, requireObject)) {
+        context.addIssue({
+          code: "custom",
+          message: issue.message,
+          path: [...issue.path],
+        });
+      }
+    })
+    // The refinement rejects every value this copy cannot represent as `Output`.
+    .transform((value) => cloneJsonValue(value) as Output);
+
+/** Any JSON value: non-finite numbers, functions, undefined and cycles are rejected. */
+export const jsonValueSchema: z.ZodType<JsonValue> = jsonSchema(false);
+
+/** Metadata is an optional JSON object whose keys note identity rules do not reserve. */
+const metadataSchema: z.ZodType<Record<string, JsonValue>> = jsonSchema(true);
 
 const hasNonWhitespaceText = (value: string): boolean => /\S/.test(value);
 const nonWhitespaceText = (description: string) =>
@@ -57,35 +166,49 @@ export const noteSchema = z
     timestamp: z.iso.datetime({ offset: true }),
     ...attributesSchema.shape,
     links: z.array(noteIdSchema),
-    metadata: z.record(z.string(), jsonValueSchema).optional(),
+    metadata: metadataSchema.optional(),
   })
   .superRefine((note, context) => {
+    // UUID identity is case-insensitive, while the supplied spellings are preserved as written.
+    const noteId = note.id.toLowerCase();
     const seen = new Set<string>();
     note.links.forEach((link, index) => {
-      if (link === note.id) {
+      const linkId = link.toLowerCase();
+      if (linkId === noteId) {
         context.addIssue({
           code: "custom",
           path: ["links", index],
           message: "A note must not link to itself.",
         });
       }
-      if (seen.has(link)) {
+      if (seen.has(linkId)) {
         context.addIssue({
           code: "custom",
           path: ["links", index],
           message: "Links must be distinct.",
         });
       }
-      seen.add(link);
+      seen.add(linkId);
     });
   });
 
 export type Note = z.infer<typeof noteSchema>;
 
+/**
+ * Declared dimensions belong to the collection; the shared record contract is finite components
+ * and a nonzero norm, so cosine similarity is always defined.
+ */
+const vectorSchema = z
+  .array(z.number())
+  .refine(
+    (vector) => vector.some((component) => component !== 0),
+    "A vector must have nonzero norm.",
+  );
+
 /** A note and the embedding that represents its content together with its semantic attributes. */
 export const embeddedNoteSchema = z.strictObject({
   note: noteSchema,
-  vector: z.array(z.number()),
+  vector: vectorSchema,
 });
 
 export type EmbeddedNote = z.infer<typeof embeddedNoteSchema>;
