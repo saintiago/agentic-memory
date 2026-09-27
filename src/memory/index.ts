@@ -1,4 +1,5 @@
 import type { JsonValue, Note } from "../note-store/index.js";
+import type { MemoryPrompts } from "./prompts.js";
 
 /**
  * Memory public contract: add source content, search for direct matches and bounded linked
@@ -8,17 +9,35 @@ import type { JsonValue, Note } from "../note-store/index.js";
  * See docs/memory.md and docs/architecture.md#public-contracts.
  */
 
+export {
+  assembleConstructionPrompt,
+  assembleEvolutionPrompt,
+  defaultPrompts,
+} from "./prompts.js";
+export type {
+  ConstructionSource,
+  EvolutionSource,
+  MemoryPrompts,
+} from "./prompts.js";
+export {
+  constructionResponseSchema,
+  evolutionResponseSchema,
+  evolutionUpdateSchema,
+  ModelResponseError,
+  readConstructionResponse,
+  readEvolutionResponse,
+} from "./response.js";
+export type {
+  ConstructionResponse,
+  EvolutionResponse,
+  EvolutionUpdate,
+} from "./response.js";
+
 /** Source material accepted for a new note. Provenance is caller-supplied and returned unchanged. */
 export interface AddInput {
   content: string;
   timestamp?: string;
   metadata?: Record<string, JsonValue>;
-}
-
-/** The construction and evolution instruction texts a host may configure independently. */
-export interface MemoryPrompts {
-  construction: string;
-  evolution: string;
 }
 
 export interface MemoryOptions {
