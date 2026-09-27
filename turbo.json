@@ -1,0 +1,17 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    ".dependency-cruiser.cjs"
+  ],
+  "tasks": {
+    "format:check": { "outputs": [] },
+    "lint": { "outputs": [] },
+    "typecheck": { "outputs": [] },
+    "boundaries": { "outputs": [] },
+    "test": { "outputs": [] },
+    "build": { "outputs": ["dist/**"] }
+  }
+}
