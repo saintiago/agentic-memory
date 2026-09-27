@@ -1,0 +1,168 @@
+# Memory design
+
+## Responsibility
+
+Own note construction, bounded linking and evolution, and composition of retrieved evidence.
+This is the public library API. It accepts already selected source material; it does not extract
+events from an application's logs or decide whether an event deserves to be remembered.
+
+## Interface
+
+Dependencies are the provider-owned [NoteStore](note-store.md#interface),
+[Embedder](embeddings.md#interface) and [LanguageModel](language-model.md#interface) contracts.
+`Note`, `Attributes`, `Page` and `Cursor` below are imported from NoteStore's public interface.
+Composition and dependency lifecycle are described in [architecture](architecture.md#composition).
+
+```ts
+interface AddInput {
+  content: string;
+  timestamp?: string;
+  metadata?: Record<string, JsonValue>;
+}
+interface MemoryPrompts {
+  construction: string;
+  evolution: string;
+}
+interface MemoryOptions {
+  neighbors?: number;
+  prompts?: Partial<MemoryPrompts>;
+}
+interface SearchOptions {
+  limit?: number;
+  linkedLimit?: number;
+}
+type SearchResult =
+  { note: Note; via: "match"; score: number } | { note: Note; via: "link" };
+
+class AgenticMemory {
+  constructor(
+    store: NoteStore,
+    embedder: Embedder,
+    model: LanguageModel,
+    options?: MemoryOptions,
+  );
+  add(input: AddInput): Promise<Note>;
+  get(id: string): Promise<Note | undefined>;
+  page(limit?: number, cursor?: Cursor): Promise<Page>;
+  search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
+}
+```
+
+`JsonValue` is NoteStore's JSON value type. Names are public export names; the signatures describe
+behavior and do not prescribe private classes. Export `defaultPrompts` as read-only values and
+`embeddingText` as the canonical representation function for reproducible evaluations.
+
+Construction/evolution requests and response schemas are owned here; their complete text and
+data envelope are in [prompts](prompts.md). Transport returns parsed, untrusted JSON. No dependency
+discovers another dependency or constructs a hidden provider.
+
+## Input and identity
+
+- Content must be a string containing non-whitespace text. Validate without trimming or rewriting
+  what is stored. Empty search queries are rejected by the same rule.
+- Each accepted add allocates a fresh UUID before any external work. Identical source content is
+  allowed; this is not an idempotent ingestion API. No caller-supplied note ID or content comparison.
+- Timestamp is a valid ISO 8601 instant with timezone; preserve a supplied value, otherwise use the
+  time the queued insertion starts. It records the supplied observation time, not a mutable status.
+- Metadata is an optional JSON object. Reject non-JSON values, cycles and non-finite numbers instead
+  of silently dropping them. Copy input, nested metadata and options at the call boundary so a
+  caller's subsequent mutation cannot change pending work. Return detached records.
+- `neighbors` defaults to 5 and must be a positive safe integer. Prompt overrides must be nonempty
+  strings. There is no environment-based prompt selection.
+- Read IDs must be valid UUIDs. Invalid input fails before an external call. IDs in source text are
+  ordinary source material and are not subject to the note-ID rule.
+
+## Insertion decisions
+
+Serialize add operations in invocation order within one instance, including candidate selection.
+Do not compute a candidate set while an earlier insertion is still pending. A rejected operation
+does not poison the queue. Hosts must await writes and handle uncertain outcomes before submitting
+more work; this queue is not a durable job system or a distributed writer lock.
+
+For a constructed note, preserve original content, ID, timestamp and metadata throughout the
+operation. Its initial links are empty. Validate the construction attributes before further work.
+Consider up to the configured number of nearest existing notes, without a score threshold, domain
+filter, ticket grouping or second search. Skip the evolution invocation when no candidates exist.
+
+Interpret a single evolution response as follows:
+
+- `links` selects outgoing links from the new note to candidates. Deduplicate repeated link IDs in
+  their first occurrence order. Reject a non-candidate ID.
+- `newTags` replaces the incoming note's entire tag list, including an empty list. The evolution
+  step does not change its constructed context or keywords.
+- Each `updates` entry replaces one candidate's context, keywords and tags. Reject unknown IDs and
+  repeated update IDs. An updated note need not also be selected as a link.
+- Preserve each existing note's links, source, timestamp, metadata and ID. Do not create reciprocal
+  links, merge notes, delete notes or evolve additional neighbors recursively.
+- Omit a proposed update whose canonical embedding text is unchanged. Re-embed every other updated
+  note. Reuse the incoming initial vector unless its final embedding text differs, in which case
+  embed it again. Link-only changes need no additional embedding.
+
+Finish all interpretation, validation and required vector preparation before issuing one batch
+write containing the changed neighbors and incoming note. Return the final incoming note only after
+the write is acknowledged. No construction-only note is published before evolution completes.
+
+## Representation
+
+The exact canonical text, with LF separators and no extra prefix or final newline, is:
+
+```ts
+`${content}\nKeywords: ${keywords.join(", ")}\nTags: ${tags.join(", ")}\nContext: ${context}`;
+```
+
+Preserve attribute order. IDs, timestamps, links and metadata are excluded as separate fields;
+identifiers or dates already in original content remain represented. Moving an identifier to
+metadata only reduces its embedding influence if it is also removed from embedded text. Keeping
+identifiers out of generated context merely avoids repeating them.
+
+Representation version is `amem-note-v1`. Changing this representation requires a declared new
+version and re-embedding existing records; it is not an invisible prompt change. Query text is
+embedded as supplied, with no generated keywords, rewriting, answer or retrieval-time model call.
+
+## Retrieval and inspection
+
+`get` returns the complete current note or `undefined`. `page` defaults to 100 notes, accepts a
+positive safe integer limit, and forwards the opaque cursor. Neither operation generates text or
+modifies a record. Pagination is for inspection/export; ordinary add and search never traverse it.
+
+Search defaults to 5 direct matches and at most 5 linked additions. Direct limit is a positive safe
+integer; linked limit is a nonnegative safe integer. A linked limit of zero disables expansion.
+
+Keep similarity match order and scores unchanged. Walk those matches in rank order and their
+outgoing links in stored order. Select distinct IDs not already in the direct results until the
+linked budget is exhausted, then fetch them by identity. Append fetched notes in selection order,
+without a score. A missing linked target is skipped without filling its place from further links.
+Do not follow links of linked additions, traverse reverse edges, rerank or apply a score threshold.
+Return at most `limit + linkedLimit` distinct full notes. A failed fetch is an operation error, not
+a missing-note result or a silently truncated success.
+
+Original content, context, keywords, tags, links, timestamp and metadata are available to the host.
+The host chooses what goes into an agent's context. Similarity scores and links do not assert truth,
+applicability, supersession or independent verification. Reads can observe different points in an
+insertion's writes; no multi-note snapshot is promised.
+
+## Failures
+
+Expose a typed `MemoryError` with `operation` (`add`, `get`, `page`, `search`), `stage`, a safe message,
+and `persistence` (`unchanged` or `uncertain`). An add error after ID allocation also includes
+`noteId`; a write-attempt error includes `affectedNoteIds` for the prepared batch. Preserve the
+underlying cause for diagnosis without embedding credentials or complete prompts in public messages.
+
+Stages are `input`, `construct`, `embed`, `candidates`, `evolve`, `persist`, `read`. Model schema
+failures use the corresponding model stage. All failures before a write attempt are `unchanged`.
+Any rejected/interrupted write attempt is conservatively `uncertain`, even if the provider might
+have applied none of it. Reads never write and therefore report `unchanged`.
+
+There is no automatic response repair, silent default, whole-operation retry or rollback. In
+particular, retrying `add` creates a fresh ID and can duplicate an uncertain insertion. The host
+must stop its ingestion, inspect the affected IDs and its retained source input, and decide how to
+reconcile storage before resuming. This baseline provides diagnosis, not automatic crash recovery,
+exactly-once ingestion or reconstruction of an interrupted evolution plan.
+
+## Verification
+
+Apply [testing](testing.md#main-risks-and-ownership) to this contract. Include unchanged neighbors,
+tag-only changes, empty candidates, duplicate/unknown update IDs, a failed final embedding, copied
+pending input, queue continuation, and an uncertain write. Assert read-only retrieval and the exact
+one-hop budget/order behavior, including missing targets. Schema-valid prose is evaluated separately;
+do not turn semantic preferences into hidden rejection rules.

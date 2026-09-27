@@ -1,0 +1,47 @@
+{
+  "repository": {
+    "source": "https://github.com/saintiago/agentic-memory.git",
+    "mainBranch": "main"
+  },
+  "preparation": [],
+  "checks": [],
+  "taskSource": {
+    "kind": "jira",
+    "apiBase": "https://api.atlassian.com/ex/jira/9337c4da-7d33-4c1d-b03c-db207e537f88",
+    "project": "AMEM",
+    "credential": "jira",
+    "selection": {
+      "query": "project = AMEM AND issuetype = Task AND labels = memory-build AND status = \"To Do\"",
+      "orderBy": "Rank ASC"
+    },
+    "fields": {
+      "workspacePointer": "customfield_10175",
+      "pullRequest": "customfield_10176"
+    },
+    "statuses": {
+      "ready": "To Do",
+      "inProgress": "In Progress",
+      "review": "In Review",
+      "done": "Done"
+    },
+    "ideas": {
+      "selection": {
+        "query": "project = AMEM AND issuetype = Task AND status = \"Idea\"",
+        "orderBy": "Rank ASC"
+      },
+      "statuses": {
+        "submitted": "Idea",
+        "active": "Idea Refinement",
+        "approved": "Draft",
+        "waitingForFeedback": "Waiting for Feedback"
+      }
+    }
+  },
+  "delivery": {
+    "repository": "saintiago/agentic-memory",
+    "baseBranch": "main",
+    "reviewCheck": "Nexus Lens review",
+    "postMergeChecks": [],
+    "completion": { "pollIntervalSeconds": 30, "waitLimitSeconds": 3600 }
+  }
+}
