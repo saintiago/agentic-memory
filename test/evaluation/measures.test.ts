@@ -197,6 +197,15 @@ describe("cost", () => {
     expect(cost.upperBound).toBeCloseTo((1_000 * 1 + 100 * 2) / 1_000_000, 12);
   });
 
+  it("bounds unknown cache usage when the cached rate is higher", () => {
+    const cost = computeCost(
+      { inputTokens: 1_000, cachedInputTokens: null, outputTokens: 100 },
+      { ...RATES, cachedInputPerMillion: 2 },
+    );
+    expect(cost.exact).toBeNull();
+    expect(cost.upperBound).toBeCloseTo(0.0022, 12);
+  });
+
   it("measures the cost when unknown cache hits cannot change it", () => {
     const cost = computeCost(
       { inputTokens: 1_000, cachedInputTokens: null, outputTokens: 0 },

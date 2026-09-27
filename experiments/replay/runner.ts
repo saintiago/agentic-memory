@@ -599,7 +599,7 @@ export const runReplay = async (
     }
   }
 
-  // A run that reached its declared token budget on its last call never attempts another call, so
+  // A run that reached its declared budget on its last call never attempts another call, so
   // the exhausted state has to reach the final outcome here as well.
   const exhausted = recorder.budgetState();
   if (status === "completed" && exhausted !== null) {
@@ -781,7 +781,7 @@ export const runReplay = async (
     if (costResult.upperBound !== null) {
       return (
         "Unknown: not every call reported its cache-hit tokens, and the supplied cached rate " +
-        "differs from the uncached rate. upperBound assumes every input token was uncached, the " +
+        "differs from the uncached rate. upperBound prices every input token at the higher input rate, the " +
         "highest cost those rates can produce; it is not measured cost."
       );
     }
@@ -792,11 +792,7 @@ export const runReplay = async (
     if (noModelCall) {
       reasons.push("no model call was made");
     } else if (!usage.known) {
-      reasons.push(
-        summary.calls.failed > 0
-          ? "a failed model call has unmeasured usage"
-          : "not every call reported input and output usage",
-      );
+      reasons.push("not every call reported input and output usage");
     }
     return `Unknown: ${reasons.join("; ")}.`;
   })();
@@ -899,7 +895,7 @@ export const runReplay = async (
     },
     budget,
     context: {
-      corpusNotes: insertions,
+      corpusNotes: finalNotes.length,
       encoderDimensions: dimensions,
       sourceCharacters: {
         total: sourceCharacters.reduce((total, value) => total + value, 0),
@@ -916,9 +912,9 @@ export const runReplay = async (
       conditions,
     },
     storage: {
-      notes: insertions,
+      notes: finalNotes.length,
       dimensions,
-      rawVectorBytes: insertions * dimensions * 4,
+      rawVectorBytes: finalNotes.length * dimensions * 4,
       indexedVectors: storageObservation?.indexedVectors ?? null,
       configuration: storageObservation?.configuration ?? null,
       note:

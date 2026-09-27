@@ -219,6 +219,36 @@ describe("provider exchange recording", () => {
     });
   });
 
+  it.each([true, false])(
+    "redacts retained exchange text without changing transport bodies (keepBodies=%s)",
+    async (keepBodies) => {
+      const apiKey = 'synthetic-"key\\value';
+      const body = JSON.stringify({ error: { message: `Bearer ${apiKey}` } });
+      const exchanges = new RecordedExchanges();
+      let sent: unknown;
+      const recording = createRecordingFetch({
+        exchanges,
+        apiKey,
+        keepBodies,
+        fetch: async (_input, init) => {
+          sent = init?.body;
+          return new Response(body, { status: 401 });
+        },
+      });
+      const response = await recording("https://provider.example/chat", {
+        body,
+      });
+      expect(sent).toBe(body);
+      expect(await response.text()).toBe(body);
+      expect(exchanges.entries[0]?.requestBody).not.toContain("synthetic-");
+      expect(exchanges.entries[0]?.responseBody).not.toContain("synthetic-");
+      if (keepBodies) {
+        expect(exchanges.entries[0]?.requestBody).toContain("[redacted]");
+        expect(exchanges.entries[0]?.responseBody).toContain("[redacted]");
+      }
+    },
+  );
+
   it("keeps unknown usage unknown for a body it cannot read", () => {
     expect(readProviderDetails("not json")).toEqual({
       usage: null,

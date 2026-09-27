@@ -897,6 +897,11 @@ describe("replay runner", () => {
       finalNotes: 2,
       insertionFailures: 1,
     });
+    expect(result.report.storage).toMatchObject({
+      notes: 2,
+      rawVectorBytes: 32,
+    });
+    expect(result.report.context.corpusNotes).toBe(2);
     // The construction that succeeded before the lost acknowledgment stays recorded.
     const construction = await readJsonl<ConstructionRecord>(
       result.directory,
@@ -1029,6 +1034,56 @@ describe("replay runner", () => {
     expect(result.report.cost.known).toBe(true);
   });
 
+  it.each([1, 5])(
+    "records a call budget reached on the final call (%i calls)",
+    async (callBudget) => {
+      const options = await replayOptions({
+        model: scriptedModel({
+          inputTokens: 2,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+        }),
+        budget: { callBudget, tokenBudget: 1000 },
+      });
+      if (callBudget === 1) {
+        options.sources = testSources.slice(0, 1);
+        options.queries = [];
+      }
+      const result = await runReplay(options);
+      expect(result.status).toBe("stopped");
+      expect(result.stoppingReason).toBe("call-budget");
+      expect(result.report.budget).toMatchObject({
+        modelCalls: callBudget,
+        usageComplete: true,
+      });
+      expect(result.report.counts.insertions).toBe(options.sources.length);
+      const changes = await readJsonl<ChangeRecord>(
+        result.directory,
+        "changes.jsonl",
+      );
+      expect(changes.at(-1)).toMatchObject({
+        kind: "budget",
+        sourceId: null,
+        budgetReason: "call-budget",
+      });
+    },
+  );
+
+  it("preserves the token stopping reason when the call limit is reached at the same time", async () => {
+    const result = await runReplay(
+      await replayOptions({
+        model: scriptedModel({
+          inputTokens: 2,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+        }),
+        budget: { callBudget: 1, tokenBudget: 3 },
+      }),
+    );
+    expect(result.stoppingReason).toBe("token-budget");
+    expect(result.report.counts.modelCalls.total).toBe(1);
+  });
+
   it("stops when the last call reaches the declared token budget", async () => {
     const usage = { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1 };
     const result = await runReplay(
@@ -1148,7 +1203,7 @@ describe("replay runner", () => {
     // The bound assumes every input token was uncached: (50 * 1 + 25 * 2) / 1_000_000.
     expect(result.report.cost.upperBound).toBeCloseTo(0.0001, 10);
     expect(result.report.cost.note).toContain(
-      "upperBound assumes every input token was uncached",
+      "upperBound prices every input token at the higher input rate",
     );
   });
 

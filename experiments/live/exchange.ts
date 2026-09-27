@@ -5,6 +5,7 @@
  *
  * See docs/language-model.md#transport-behavior and docs/evaluation.md#run-artifacts.
  */
+import { redactCredential } from "../../examples/host-model-transport.js";
 import type { TokenUsage } from "../replay/artifacts.js";
 import type { ExchangeLog, ModelExchange } from "../replay/recorder.js";
 
@@ -88,6 +89,8 @@ export const readProviderDetails = (body: string): ProviderDetails => {
 export const createRecordingFetch = (options: {
   exchanges: { push(exchange: ModelExchange): void };
   fetch?: typeof globalThis.fetch;
+  /** The configured provider credential, removed from retained bodies and diagnostics. */
+  apiKey?: string;
   /** Keep request and response bodies; usage is read either way. Defaults to true. */
   keepBodies?: boolean;
 }): typeof globalThis.fetch => {
@@ -95,7 +98,9 @@ export const createRecordingFetch = (options: {
   const keepBodies = options.keepBodies ?? true;
   return async (input, init) => {
     const requestBody =
-      keepBodies && typeof init?.body === "string" ? init.body : "";
+      keepBodies && typeof init?.body === "string"
+        ? redactCredential(init.body, options.apiKey)
+        : "";
     const response = await send(input, init);
     let responseBody = "";
     try {
@@ -108,11 +113,19 @@ export const createRecordingFetch = (options: {
       requestBody,
       // Usage, finish reason and request ID are parsed first; the raw body is retained only when
       // the host opted in, so the default run keeps no private provider text in memory.
-      responseBody: keepBodies ? responseBody : "",
+      responseBody: keepBodies
+        ? redactCredential(responseBody, options.apiKey)
+        : "",
       status: response.status,
       usage: details.usage,
-      finishReason: details.finishReason,
-      requestId: details.requestId,
+      finishReason:
+        details.finishReason === null
+          ? null
+          : redactCredential(details.finishReason, options.apiKey),
+      requestId:
+        details.requestId === null
+          ? null
+          : redactCredential(details.requestId, options.apiKey),
     });
     return response;
   };

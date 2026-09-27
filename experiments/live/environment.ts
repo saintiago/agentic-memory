@@ -109,17 +109,14 @@ export const createLiveEnvironment = (
           ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
           ...(timeout === undefined ? {} : { timeoutMs: timeout }),
         });
-        const [info, counted] = await Promise.all([
-          client.getCollection(collection),
-          client.count(collection, { exact: true }),
-        ]);
+        const info = await client.getCollection(collection);
         const config = info.config as unknown as {
           params?: { vectors?: unknown };
           hnsw_config?: unknown;
           metadata?: unknown;
         };
         return {
-          indexedVectors: counted.count,
+          indexedVectors: info.indexed_vectors_count ?? null,
           configuration: {
             vectors: (config.params?.vectors ?? null) as JsonValue,
             hnsw: (config.hnsw_config ?? null) as JsonValue,

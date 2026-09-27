@@ -291,7 +291,7 @@ export interface SampleSummary {
 
 /** What an environment could observe about the collection a run wrote to. */
 export interface StorageObservation {
-  /** Vectors the collection actually holds; null when the environment cannot count them. */
+  /** Vectors in the collection's specialized index; null when the count is unavailable. */
   indexedVectors: number | null;
   /** Provider collection configuration read back from storage; null when unavailable. */
   configuration: JsonValue | null;

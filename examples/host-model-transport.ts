@@ -100,7 +100,10 @@ const MAX_DIAGNOSTIC_LENGTH = 300;
  * error bodies are commonly JSON. Redaction runs before shortening, so truncation cannot leave
  * part of a credential behind.
  */
-const redactCredential = (text: string, apiKey: string | undefined): string => {
+export const redactCredential = (
+  text: string,
+  apiKey: string | undefined,
+): string => {
   if (apiKey === undefined) {
     return text;
   }

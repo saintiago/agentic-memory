@@ -146,7 +146,12 @@ describe("live evaluation collections", () => {
     expect(result.report.checks.every((check) => check.ok)).toBe(true);
     expect(await pointCount(runtime!)).toBe(testSources.length);
     // The live environment reports the collection's real indexed-vector count and configuration.
-    expect(result.report.storage.indexedVectors).toBe(testSources.length);
+    const runtimeInfo = await adminClient().getCollection(runtime!);
+    expect(result.report.storage.indexedVectors).toBe(
+      runtimeInfo.indexed_vectors_count,
+    );
+    // This tiny collection is populated but below Qdrant's indexing threshold.
+    expect(result.report.storage.indexedVectors).toBe(0);
     expect(result.report.storage.configuration).toMatchObject({
       vectors: { size: 4, distance: "Cosine" },
       metadata: { agenticMemory: { representation: "amem-note-v1" } },

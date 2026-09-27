@@ -66,6 +66,9 @@ describe("live replay", () => {
       fetch: createRecordingFetch({
         exchanges,
         keepBodies: settings.recordRawExchanges,
+        ...(settings.modelApiKey === undefined
+          ? {}
+          : { apiKey: settings.modelApiKey }),
       }),
       ...(settings.modelApiKey === undefined
         ? {}

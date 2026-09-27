@@ -131,8 +131,8 @@ export interface CostResult {
 /**
  * The documented cost formula, with per-million rates supplied by the run. A provider that reports
  * total input including cache hits has the cached tokens subtracted before the uncached term. When
- * input or output usage is missing the cost stays unknown; when only the cache split is missing, an
- * assumed-all-uncached bound is reported separately instead of presenting an estimate as measured.
+ * input or output usage is missing the cost stays unknown; when only the cache split is missing, a
+ * maximum-input-rate bound is reported separately instead of presenting an estimate as measured.
  */
 export const computeCost = (
   usage: TokenUsage,
@@ -156,7 +156,10 @@ export const computeCost = (
     return {
       exact: null,
       upperBound:
-        (inputTokens * rates.uncachedInputPerMillion + outputCost) / 1_000_000,
+        (inputTokens *
+          Math.max(rates.uncachedInputPerMillion, rates.cachedInputPerMillion) +
+          outputCost) /
+        1_000_000,
     };
   }
   const uncachedInput = Math.max(0, inputTokens - cachedInputTokens);
@@ -170,7 +173,7 @@ export const computeCost = (
   };
 };
 
-/** Fold the recorder's per-call usage into run totals; any failed call leaves them unknown. */
+/** Fold the recorder's per-call usage into run totals; missing usage leaves them unknown. */
 export const summarizeUsage = (summary: RecorderSummary): UsageSummary => {
   const known = summary.usage.known && summary.calls.total > 0;
   const cachedKnown = known && summary.usage.cachedKnown;

@@ -58,7 +58,7 @@ Required settings are `AMEM_LIVE_QDRANT_URL`, `AMEM_LIVE_MODEL_ENDPOINT`, `AMEM_
 | `AMEM_LIVE_QDRANT_API_KEY`               | none                         | Qdrant credential; never written to artifacts or records                                                               |
 | `AMEM_LIVE_QDRANT_TIMEOUT_MS`            | `120000`                     | Qdrant request timeout                                                                                                 |
 | `AMEM_LIVE_COLLECTION_BASE`              | `amem-live-evaluation`       | Prefix of the collections the run may create                                                                           |
-| `AMEM_LIVE_MODEL_API_KEY`                | none                         | Provider credential, redacted from every diagnostic                                                                    |
+| `AMEM_LIVE_MODEL_API_KEY`                | none                         | Provider credential, redacted from retained exchange bodies and every diagnostic                                       |
 | `AMEM_LIVE_MODEL_TIMEOUT_MS`             | `120000`                     | Provider request timeout                                                                                               |
 | `AMEM_LIVE_MODEL_MAX_OUTPUT_TOKENS`      | `6000`                       | Provider output budget per request                                                                                     |
 | `AMEM_LIVE_MODEL_THINKING`               | `false`                      | Provider thinking setting the host declares; the transport does not send it, so the provider or model ID must honor it |
@@ -103,8 +103,8 @@ first-operation and warm timings, summarizes the selected-neighbor counts and le
 the indexed-vector count and collection configuration the environment can observe (the in-memory
 demonstration identifies those two as unavailable). An exact cost is reported only from complete
 reported usage; when the provider omits the cache split and the rates differ, the cost stays unknown
-and a labeled all-uncached upper bound is reported separately. The baseline runner emits no
-extrapolations; add them deliberately, with their assumptions, when a report needs one. Manual
+and an upper bound using the higher supplied input rate is reported separately. The baseline runner
+emits no extrapolations; add them deliberately, with their assumptions, when a report needs one. Manual
 semantic review findings are supplied to the runner as
 `semanticReview` entries and appear under that key; the automated run records none, and the reviewer
 judges attribution, claim strength, conditions, scope and unsupported certainty by reading the

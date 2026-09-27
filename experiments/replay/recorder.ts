@@ -84,7 +84,7 @@ export interface RecorderSummary {
     withUsage: number;
   };
   usage: {
-    /** Whether every invocation reported input and output tokens and none failed. */
+    /** Whether every invocation reported input and output tokens. */
     known: boolean;
     /** Whether every invocation also reported its cache-hit tokens. */
     cachedKnown: boolean;
@@ -221,7 +221,7 @@ export class ReplayRecorder {
     this.#phase = "evaluation";
   }
 
-  /** The budget stopping reason, once a call exceeded the declared budget. */
+  /** The budget stopping reason, once a call reached the declared budget. */
   budgetState(): StoppingReason | null {
     return this.#budgetState?.reason ?? null;
   }
@@ -269,20 +269,10 @@ export class ReplayRecorder {
 
   /** Refuse the next model call once a budget is spent. */
   assertBudget(): void {
+    this.#observeCallBudget();
     const state = this.#budgetState;
     if (state !== null) {
       throw new BudgetExhaustedError(state.reason, state.detail);
-    }
-    const budget = this.budget;
-    if (budget !== null && this.#calls.total >= budget.callBudget) {
-      this.#budgetState = {
-        reason: "call-budget",
-        detail: `The live run stopped after ${String(budget.callBudget)} model calls.`,
-      };
-      throw new BudgetExhaustedError(
-        this.#budgetState.reason,
-        this.#budgetState.detail,
-      );
     }
   }
 
@@ -293,9 +283,6 @@ export class ReplayRecorder {
     this.#callDurations[record.stage].push(record.durationMs);
     if (record.error !== null) {
       this.#calls.failed += 1;
-      // A failed attempt may still have been billed; leave the run totals unknown.
-      this.#usage.known = false;
-      this.#usage.cachedKnown = false;
     }
     const capture = this.#insertion;
     if (
@@ -312,25 +299,39 @@ export class ReplayRecorder {
       this.#pendingCalls.push(record);
     }
     this.#observeUsage(record);
+    this.#observeCallBudget();
+  }
+
+  /** Record call exhaustion immediately, including when no subsequent invocation follows. */
+  #observeCallBudget(): void {
+    const budget = this.budget;
+    if (
+      this.#budgetState === null &&
+      budget !== null &&
+      this.#calls.total >= budget.callBudget
+    ) {
+      this.#budgetState = {
+        reason: "call-budget",
+        detail: `The live run stopped after ${String(budget.callBudget)} model calls.`,
+      };
+    }
   }
 
   /**
    * Fold one call's reported usage into the run totals and apply the declared token budget. A
-   * successful call that does not report the input and output tokens cannot be measured, so a
+   * call that does not report the input and output tokens cannot be measured, so a
    * declared token budget stops the run instead of silently continuing beyond an unknown total.
    */
   #observeUsage(record: ModelCallRecord): void {
     const budget = this.budget;
     if (record.usage === null) {
-      if (record.error === null) {
-        this.#usage.known = false;
-        this.#usage.cachedKnown = false;
-        if (budget !== null) {
-          this.#exhaustTokenBudget(
-            `The ${record.stage} call did not report token usage, so the declared ` +
-              `${String(budget.tokenBudget)}-token budget cannot be verified.`,
-          );
-        }
+      this.#usage.known = false;
+      this.#usage.cachedKnown = false;
+      if (budget !== null) {
+        this.#exhaustTokenBudget(
+          `The ${record.stage} call did not report token usage, so the declared ` +
+            `${String(budget.tokenBudget)}-token budget cannot be verified.`,
+        );
       }
       return;
     }
@@ -355,7 +356,7 @@ export class ReplayRecorder {
       this.#usage.cachedInputTokens += cached;
     }
     if (input === null || output === null) {
-      if (budget !== null && record.error === null) {
+      if (budget !== null) {
         this.#exhaustTokenBudget(
           `The ${record.stage} call reported no ${input === null ? "input" : "output"} tokens, so ` +
             `the declared ${String(budget.tokenBudget)}-token budget cannot be verified.`,
