@@ -45,7 +45,11 @@ export const evolutionResponseSchema = z.strictObject({
 
 export type EvolutionResponse = z.infer<typeof evolutionResponseSchema>;
 
-/** Raised when a model response does not satisfy the documented prompt contract. */
+/**
+ * Raised when a model response does not satisfy the documented prompt contract. Its message is
+ * diagnostic detail that can quote untrusted response content, so Memory never copies it into a
+ * public operation message; it stays attached as the cause with a fixed public description.
+ */
 export class ModelResponseError extends Error {
   readonly stage: ModelRequest["stage"];
 
@@ -58,7 +62,10 @@ export class ModelResponseError extends Error {
   }
 }
 
-/** One message per issue, in path order; shared with input validation in this component. */
+/**
+ * One message per issue, in path order. The text can quote untrusted property names and paths, so
+ * it belongs only in a diagnostic cause, never in a public operation message.
+ */
 export const issueSummary = (
   issues: ReadonlyArray<{
     readonly path: ReadonlyArray<PropertyKey>;

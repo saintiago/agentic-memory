@@ -30,6 +30,8 @@ import {
 const NOTE_TIMESTAMP = "2026-09-27T15:44:27.001+02:00";
 const CANDIDATE_ID = "6f2bb0d4-1c1e-4a2b-8f43-1c9a3d4c5e02";
 const OTHER_ID = "b1c2d3e4-f506-4a7b-8c9d-0e1f2a3b4c05";
+/** A credential-shaped marker that public failure messages must never repeat. */
+const CREDENTIAL_MARKER = "sk-live-CREDENTIAL-MARKER-0123456789";
 
 /** The deterministic vector a text maps to in the controlled embedder. */
 const vectorFor = (text: string): number[] => [text.length, 1, 0, 0];
@@ -320,6 +322,46 @@ describe("add input validation", () => {
     expect(embedder.texts).toEqual([]);
     expect(store.calls).toEqual([]);
   });
+
+  it.each([
+    [
+      "an unexpected input key",
+      () => ({ content: "Text.", [CREDENTIAL_MARKER]: "leaked" }),
+    ],
+    [
+      "a metadata path",
+      () => ({
+        content: "Text.",
+        metadata: { [CREDENTIAL_MARKER]: Number.NaN },
+      }),
+    ],
+  ])(
+    "keeps %s out of the public message and preserves the parse issues as the cause",
+    async (_description, build) => {
+      const { memory } = createMemory();
+
+      const error = expectMemoryError(
+        await rejection(memory.add(build() as AddInput)),
+      );
+
+      expect(error.message).toBe(
+        "The add operation failed at the input stage: The input is not a valid add request.",
+      );
+      expect(error.message).not.toContain(CREDENTIAL_MARKER);
+      const cause = error.cause as {
+        issues: ReadonlyArray<{
+          readonly path: ReadonlyArray<PropertyKey>;
+          readonly message: string;
+        }>;
+      };
+      expect(cause).toBeInstanceOf(Error);
+      expect(cause.issues.length).toBeGreaterThan(0);
+      const diagnostics = cause.issues
+        .flatMap((issue) => [...issue.path.map(String), issue.message])
+        .join("; ");
+      expect(diagnostics).toContain(CREDENTIAL_MARKER);
+    },
+  );
 
   it("keeps accepted content exactly as supplied", async () => {
     const { store, model, memory } = createMemory();
@@ -709,6 +751,79 @@ describe("failure outcomes", () => {
     expect(embedder.texts).toEqual([]);
     expect(store.calls).toEqual([]);
   });
+
+  it("keeps an untrusted construction response out of the public message", async () => {
+    const { embedder, model, memory } = createMemory();
+    model.queue("construct", () => ({
+      ...(CONSTRUCTED() as Record<string, unknown>),
+      [CREDENTIAL_MARKER]: "leaked",
+    }));
+
+    const error = expectMemoryError(
+      await rejection(memory.add({ content: "The incoming account." })),
+    );
+
+    expect(error.stage).toBe("construct");
+    expect(error.message).toBe(
+      `The add operation failed at the construct stage for note ${error.noteId}: ` +
+        "The construction response does not satisfy the documented contract.",
+    );
+    expect(error.message).not.toContain(CREDENTIAL_MARKER);
+    expect(error.cause).toBeInstanceOf(ModelResponseError);
+    // Detailed diagnostics stay available on the cause.
+    expect((error.cause as Error).message).toContain(CREDENTIAL_MARKER);
+    expect(embedder.texts).toEqual([]);
+  });
+
+  it.each([
+    [
+      "an extra top-level field",
+      (candidateId: string) => ({
+        links: [candidateId],
+        newTags: ["incoming"],
+        updates: [],
+        [CREDENTIAL_MARKER]: "leaked",
+      }),
+    ],
+    [
+      "an extra nested update field",
+      (candidateId: string) => ({
+        links: [],
+        newTags: ["incoming"],
+        updates: [
+          {
+            id: candidateId,
+            context: "A revised context.",
+            keywords: ["observation"],
+            tags: ["history"],
+            [CREDENTIAL_MARKER]: "leaked",
+          },
+        ],
+      }),
+    ],
+  ])(
+    "keeps an untrusted evolution response (%s) out of the public message",
+    async (_description, build) => {
+      const { store, model, memory } = createMemory();
+      const current = store.seed({ note: candidate(), vector: [1, 0, 0, 0] });
+      model.queue("construct", CONSTRUCTED);
+      model.queue("evolve", () => build(current.id));
+
+      const error = expectMemoryError(
+        await rejection(memory.add({ content: "The incoming account." })),
+      );
+
+      expect(error.stage).toBe("evolve");
+      expect(error.message).toBe(
+        `The add operation failed at the evolve stage for note ${error.noteId}: ` +
+          "The evolution response does not satisfy the documented contract.",
+      );
+      expect(error.message).not.toContain(CREDENTIAL_MARKER);
+      expect(error.cause).toBeInstanceOf(ModelResponseError);
+      expect((error.cause as Error).message).toContain(CREDENTIAL_MARKER);
+      expect(store.writes).toEqual([]);
+    },
+  );
 
   it("reports a construction transport failure with its cause", async () => {
     const { model, memory } = createMemory();

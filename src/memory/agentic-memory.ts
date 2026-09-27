@@ -29,8 +29,6 @@ import {
 } from "./prompts.js";
 import { embeddingText } from "./representation.js";
 import {
-  issueSummary,
-  ModelResponseError,
   readConstructionResponse,
   readEvolutionResponse,
   type EvolutionResponse,
@@ -111,11 +109,14 @@ const DEFAULT_NEIGHBORS = 5;
 const readAddInput = (input: unknown): AddInput => {
   const parsed = addInputSchema.safeParse(input);
   if (!parsed.success) {
+    // The public reason stays fixed: schema issues can quote caller-supplied property names or
+    // metadata paths, so the structured issues stay attached as the cause instead.
     throw new MemoryError({
       operation: "add",
       stage: "input",
       persistence: "unchanged",
-      reason: `The input is not a valid add request (${issueSummary(parsed.error.issues)}).`,
+      reason: "The input is not a valid add request.",
+      cause: parsed.error,
     });
   }
   return parsed.data;
@@ -136,10 +137,6 @@ const addFailure = (
     noteId,
     ...(cause === undefined ? {} : { cause }),
   });
-
-/** Our own response-validation failures carry a safe reason worth repeating in the public message. */
-const reasonFor = (fallback: string, cause: unknown): string =>
-  cause instanceof ModelResponseError ? cause.message : fallback;
 
 /**
  * The library's memory operations. Insertions on one instance are serialized in invocation order;
@@ -265,12 +262,11 @@ export class AgenticMemory {
     try {
       return readConstructionResponse(response);
     } catch (cause) {
+      // Only the fixed description is public: response-validation detail can quote untrusted
+      // response content and stays in the attached cause.
       throw addFailure(
         "construct",
-        reasonFor(
-          "The construction response does not satisfy the documented contract.",
-          cause,
-        ),
+        "The construction response does not satisfy the documented contract.",
         noteId,
         cause,
       );
@@ -344,12 +340,11 @@ export class AgenticMemory {
         candidates.map((candidate) => candidate.note.id),
       );
     } catch (cause) {
+      // Only the fixed description is public: response-validation detail can quote untrusted
+      // response content and stays in the attached cause.
       throw addFailure(
         "evolve",
-        reasonFor(
-          "The evolution response does not satisfy the documented contract.",
-          cause,
-        ),
+        "The evolution response does not satisfy the documented contract.",
         noteId,
         cause,
       );
