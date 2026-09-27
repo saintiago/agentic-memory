@@ -39,6 +39,7 @@
     "verify:pack": "npm run build && node scripts/verify-packed-package.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.0",
     "@qdrant/js-client-rest": "1.19.0",
     "zod": "^4.6.5"
   },

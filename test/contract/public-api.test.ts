@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import * as packageExports from "../../src/index.js";
+import * as embeddings from "../../src/embeddings/index.js";
 import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
 import type {
@@ -12,6 +13,9 @@ import type {
   Note,
   NoteStore,
   Page,
+  ReferenceEmbedder,
+  ReferenceEmbedderOptions,
+  ReferenceEncoderSettings,
   SearchOptions,
   SearchResult,
 } from "../../src/index.js";
@@ -67,6 +71,34 @@ describe("package root exports", () => {
     expectTypeOf<SearchResult>().toMatchTypeOf<
       { note: Note; via: "match"; score: number } | { note: Note; via: "link" }
     >();
+  });
+
+  it("re-exports the reference encoder through the same modules as its component index", () => {
+    const exportedNames = [
+      "embeddingSpaceId",
+      "openReferenceEmbedder",
+      "referenceEncoderSettings",
+    ] as const;
+
+    for (const name of exportedNames) {
+      expect(packageExports[name]).toBe(embeddings[name]);
+    }
+  });
+
+  it("keeps the reference encoder's documented contract types usable", () => {
+    expectTypeOf<
+      ReferenceEncoderSettings["model"]
+    >().toEqualTypeOf<"Xenova/bge-m3">();
+    expectTypeOf<ReferenceEncoderSettings["maxLength"]>().toEqualTypeOf<8192>();
+    expectTypeOf<
+      ReferenceEncoderSettings["runtimeVersion"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      ReferenceEmbedder["settings"]
+    >().toMatchTypeOf<ReferenceEncoderSettings>();
+    expectTypeOf<
+      ReferenceEmbedderOptions["allowDownloads"]
+    >().toEqualTypeOf<boolean>();
   });
 
   it("uses note records that satisfy both the exported type and the runtime schema", () => {
