@@ -64,10 +64,10 @@ Delivery selects Task issues labeled `memory-build` in To Do, ordered by Rank. T
 configuration names the workspace and pull-request fields and all delivery/refinement statuses.
 Do not duplicate their IDs in implementation code or read this configuration from the memory library.
 
-This documentation bootstrap has no executable checks yet. The foundation implementation must set
-preparation to `npm ci` and a delivery check to `npm run validate` using Nexus's project command schema.
-Subsequent components keep the aggregate check complete. Relevant real-provider tests are performed
-and reported per [testing](testing.md), not replaced by cached unit success.
+Nexus preparation installs the locked dependencies with `npm ci` and delivery runs the aggregate
+`npm run validate` check. Subsequent components keep the aggregate check complete. Relevant
+real-provider tests are performed and reported per [testing](testing.md), not replaced by cached
+unit success.
 
 GitHub delivery follows the reference projects: main branch, Nexus Lens review check, stale-review
 dismissal, zero separately required approving reviews, no force pushes/deletion, admin enforcement,

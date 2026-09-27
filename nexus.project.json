@@ -3,8 +3,21 @@
     "source": "https://github.com/saintiago/agentic-memory.git",
     "mainBranch": "main"
   },
-  "preparation": [],
-  "checks": [],
+  "preparation": [
+    {
+      "executable": "npm",
+      "args": ["ci"]
+    }
+  ],
+  "checks": [
+    {
+      "name": "validate",
+      "command": {
+        "executable": "npm",
+        "args": ["run", "validate"]
+      }
+    }
+  ],
   "taskSource": {
     "kind": "jira",
     "apiBase": "https://api.atlassian.com/ex/jira/9337c4da-7d33-4c1d-b03c-db207e537f88",
