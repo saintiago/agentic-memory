@@ -6,6 +6,7 @@ import {
   noteIdSchema,
   noteSchema,
   pageSchema,
+  vectorSchema,
 } from "../../src/note-store/index.js";
 
 /** docs/note-store.md#record-validation */
@@ -196,6 +197,18 @@ describe("note identifiers", () => {
       noteIdSchema.safeParse("b3c1d2e3-4f50-4610-8899-0a1b2c3d4e5").success,
     ).toBe(false);
     expect(noteIdSchema.safeParse("").success).toBe(false);
+  });
+});
+
+describe("vectors", () => {
+  it("requires finite components and a nonzero norm", () => {
+    expect(vectorSchema.parse([1, -0.5, 0])).toEqual([1, -0.5, 0]);
+    expect(vectorSchema.safeParse([]).success).toBe(false);
+    expect(vectorSchema.safeParse([0, 0]).success).toBe(false);
+    expect(vectorSchema.safeParse([1, Number.POSITIVE_INFINITY]).success).toBe(
+      false,
+    );
+    expect(vectorSchema.safeParse(["1"]).success).toBe(false);
   });
 });
 

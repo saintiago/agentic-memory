@@ -76,10 +76,11 @@ by first reading every upserted record. Immutability of source fields is the wri
 
 ## Qdrant mapping
 
-Use a dedicated collection with an unnamed dense vector, declared dimensions, and cosine distance.
-Each point ID is the note UUID, its vector is the prepared embedding, and its payload is exactly the
-complete note record. Payload ID must agree with point ID on reads. Current records replace earlier
-records; no second database, cache or shadow JSON files participate in runtime persistence.
+Use a dedicated collection with one unnamed dense float32 vector, declared dimensions, and cosine
+distance. Each point ID is the note UUID, its vector is the prepared embedding, and its payload is
+exactly the complete note record. Payload ID must agree with point ID on reads. Current records
+replace earlier records; no second database, cache or shadow JSON files participate in runtime
+persistence.
 
 Use direct retrieve-by-ID, vector query with a limit, and scroll with its returned cursor. Request
 payloads and omit vectors from reads. Upsert batches with `wait: true`. Normal operations must not
@@ -101,16 +102,21 @@ metadata under key `agenticMemory` with this value:
 ```
 
 The embedding-space ID identifies the exact encoding configuration, not just a model family name.
-On open, compare all these values and the actual vector configuration. Reject missing, mismatched
-or unsupported metadata, even on an existing empty collection. Do not silently adopt a prototype
-collection, change a model, mutate an unknown collection's metadata or trigger a rebuild. Use a new
-collection for a different space; migration is outside this baseline. Collection metadata is
-supported by the selected Qdrant 1.19 baseline. Other metadata keys may exist and are not owned here.
+On open, compare all these values and the actual vector configuration, including its declared
+storage datatype and whether it stores multi-vectors. Reject missing, mismatched or unsupported
+metadata, even on an existing empty collection. Do not silently adopt a prototype collection,
+change a model, mutate an unknown collection's metadata or trigger a rebuild. Use a new collection
+for a different space; migration is outside this baseline. Collection metadata is supported by the
+selected Qdrant 1.19 baseline. Other metadata keys may exist and are not owned here.
 
 Connection configuration includes URL, optional API key, collection, space descriptor and request
-timeout. Credentials stay outside records and errors. The host owns server startup, backups and
-shutdown. Initialization may create a missing collection; it never deletes an existing one. A
-creation race must re-read and validate rather than claim ownership of incompatible state.
+timeout. The HTTP(S) URL's effective port and optional base path apply to initialization and every
+operation; an omitted port means 80 for HTTP or 443 for HTTPS. A trailing base-path slash is optional.
+Reject malformed URLs, port zero, embedded credentials, query strings and fragments before making
+requests; use the API-key setting for credentials. Credentials stay outside records and errors. The
+host owns server startup, backups and shutdown. Initialization may create a missing collection; it
+never deletes an existing one. A creation race must re-read and validate rather than claim ownership
+of incompatible state.
 
 ## Verification
 

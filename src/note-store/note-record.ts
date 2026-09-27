@@ -196,9 +196,10 @@ export type Note = z.infer<typeof noteSchema>;
 
 /**
  * Declared dimensions belong to the collection; the shared record contract is finite components
- * and a nonzero norm, so cosine similarity is always defined.
+ * and a nonzero norm, so cosine similarity is always defined. Search vectors satisfy the same
+ * contract, so the rule has one home.
  */
-const vectorSchema = z
+export const vectorSchema = z
   .array(z.number())
   .refine(
     (vector) => vector.some((component) => component !== 0),

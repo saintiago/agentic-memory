@@ -1,0 +1,10 @@
+# Pinned isolated Qdrant for the integration scope. The dedicated host port keeps a prototype or
+# user instance on the default port untouched, and the in-memory storage means a run leaves no
+# retained data behind. See docs/development.md#local-qdrant-fixture.
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    ports:
+      - "127.0.0.1:16333:6333"
+    tmpfs:
+      - /qdrant/storage
