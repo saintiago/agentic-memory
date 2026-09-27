@@ -55,6 +55,8 @@ loads the pinned local encoder, downloading its artifacts into a cache on the fi
 `npm run demo:evaluation` replays the committed synthetic fixtures with an in-memory store and
 deterministic stand-ins, writing run artifacts and a measurement report without a credential or
 paid call; `npm run replay:live` is the explicit opt-in live run with a declared call/token budget.
+`npm run graph:inspect` renders the offline inspection graph from a saved run directory: one
+self-contained HTML report and the JSON evidence it shows, with no server or database.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

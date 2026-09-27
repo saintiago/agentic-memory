@@ -42,6 +42,7 @@ provide these npm scripts:
 | `test:embeddings`  | Explicit pinned-artifact encoder integration check                                         |
 | `demo:evaluation`  | Deterministic in-memory replay of the synthetic fixtures with its measurement report       |
 | `replay:live`      | Opt-in live replay with a declared call/token budget and recorded stopping reason          |
+| `graph:inspect`    | Offline HTML graph and JSON evidence rendered from one saved run directory                 |
 | `build`            | Produce JavaScript ESM and type declarations                                               |
 | `validate`         | Formatting, lint, types, boundaries, deterministic tests and build                         |
 
@@ -106,6 +107,12 @@ reporting a pass when a required setting is missing. Run directories, live colle
 source corpora stay outside the published package; a run deletes only the disposable collections it
 created unless the host asks to keep them. [experiments/README.md](../experiments/README.md) lists
 every setting and artifact.
+
+`npm run graph:inspect` renders one saved run directory into `<run directory>/graph/graph.html` and
+`<run directory>/graph/graph.json`; `AMEM_GRAPH_RUN_DIR` names the run directory and
+`AMEM_GRAPH_OUT_DIR` overrides the output location. The offline report reads the saved artifacts
+only, needs no service and fails instead of reporting a pass when the run directory or a required
+artifact is missing.
 
 ## Nexus delivery configuration
 
