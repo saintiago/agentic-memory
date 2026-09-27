@@ -8,12 +8,13 @@ runtime library never imports them.
 
 ## Layout
 
-| Path        | Purpose                                                                                  |
-| ----------- | ---------------------------------------------------------------------------------------- |
-| `fixtures/` | Small synthetic JSONL fixtures authored for this repository, with their expected sources |
-| `replay/`   | Fixture contract, instrumentation, run artifacts, comparison modes, measures and runner  |
-| `demo/`     | The deterministic demonstration: in-memory collections and fixture-driven stand-ins      |
-| `live/`     | The opt-in live run: real Qdrant collections, the pinned encoder and a host transport    |
+| Path        | Purpose                                                                                   |
+| ----------- | ----------------------------------------------------------------------------------------- |
+| `fixtures/` | Small synthetic JSONL fixtures authored for this repository, with their expected sources  |
+| `replay/`   | Fixture contract, instrumentation, run artifacts, comparison modes, measures and runner   |
+| `demo/`     | The deterministic demonstration: in-memory collections and fixture-driven stand-ins       |
+| `live/`     | The opt-in live run: real Qdrant collections, the pinned encoder and a host transport     |
+| `graph/`    | The offline inspection tool: one self-contained HTML report and its JSON evidence per run |
 
 ## Deterministic demonstration
 
@@ -23,10 +24,10 @@ npm run demo:evaluation
 
 The demonstration replays `fixtures/synthetic-sources.jsonl` with the deterministic token-hashing
 embedder and the fixture-driven model stand-in in `demo/`, writes a fresh run directory under
-`AMEM_DEMO_RUNS_DIR` (default `.data/evaluations`) and prints the measurement report. It needs no
-credential, external service or paid call, and repeated runs make the same insertion, link and
-retrieval decisions. `AMEM_DEMO_RUN_ID` names the run directory so a second invocation writes a new
-run instead of overwriting the first.
+`AMEM_DEMO_RUNS_DIR` (default `.data/evaluations`), renders the offline inspection graph from those
+saved artifacts and prints the measurement report. It needs no credential, external service or paid
+call, and repeated runs make the same insertion, link and retrieval decisions. `AMEM_DEMO_RUN_ID`
+names the run directory so a second invocation writes a new run instead of overwriting the first.
 
 The stand-ins exist to exercise the harness. They are not an encoder, a model or evidence about
 memory quality, and their timings do not describe Qdrant or a provider.
@@ -78,6 +79,27 @@ collection. The runtime collection is opened through the library's Qdrant NoteSt
 `agenticMemoryEvaluation` metadata key and the runtime store refuses to open it. Unless
 `AMEM_LIVE_KEEP_COLLECTIONS=true`, the run deletes exactly the collections it created when it
 finishes.
+
+## Graph inspection
+
+```bash
+AMEM_GRAPH_RUN_DIR=.data/evaluations/demo-2026-09-27T17-33-17-096Z npm run graph:inspect
+```
+
+`npm run graph:inspect` renders one saved run directory, the demonstration's or a live run's, into
+`<run directory>/graph/graph.html` and `<run directory>/graph/graph.json`. `AMEM_GRAPH_OUT_DIR`
+writes them somewhere else. The tool reads `manifest.json`, `sources.jsonl`, `construction.jsonl`
+and `notes.jsonl` only and never rewrites a run artifact; a missing run directory or artifact fails
+with a clear error instead of reporting a pass.
+
+The HTML file is self-contained: no server, no network access and no external asset. Nodes are the
+stored notes and edges are the directed links the notes store, so no similarity edge is invented and
+an evolution update is not drawn as a link. Selecting a note shows its original content, current
+context, keywords and tags, its source and scope labels, provenance and, when the run recorded it,
+the construction snapshot next to the final attributes. Artifact text is escaped and rendered as
+text, never executed. Layout positions carry no meaning; a link whose target public pagination did
+not return stays visible as an unexported node. `graph.json` carries the same evidence so the report
+can be reproduced without the page or an active database.
 
 ## Run artifacts
 
