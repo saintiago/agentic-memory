@@ -25,8 +25,11 @@
   "include": [
     "src",
     "examples",
+    "experiments",
     "test",
     "vitest.config.ts",
+    "vitest.demo.config.ts",
+    "vitest.live.config.ts",
     "vitest.integration.config.ts",
     "vitest.embeddings.config.ts"
   ]

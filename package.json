@@ -31,10 +31,12 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "boundaries": "depcruise src examples test --config .dependency-cruiser.cjs",
+    "boundaries": "depcruise src examples experiments test --config .dependency-cruiser.cjs",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:embeddings": "vitest run --config vitest.embeddings.config.ts",
+    "demo:evaluation": "vitest run --config vitest.demo.config.ts --reporter=verbose",
+    "replay:live": "vitest run --config vitest.live.config.ts --reporter=verbose",
     "validate": "turbo run format:check lint typecheck boundaries test build",
     "verify:pack": "npm run build && node scripts/verify-packed-package.mjs"
   },

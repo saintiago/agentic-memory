@@ -52,5 +52,9 @@ silently pass: the integration scope runs the NoteStore contract against a real 
 pinned to 1.19 and reports how to prepare it when none is available, and the embeddings scope
 loads the pinned local encoder, downloading its artifacts into a cache on the first run.
 
+`npm run demo:evaluation` replays the committed synthetic fixtures with an in-memory store and
+deterministic stand-ins, writing run artifacts and a measurement report without a credential or
+paid call; `npm run replay:live` is the explicit opt-in live run with a declared call/token budget.
+
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

@@ -11,6 +11,10 @@ fixtures authored for this project and their expected source IDs. Do not copy pr
 or assume that a public driving handbook permits republishing adapted text under any license.
 Source labels are examples of applicability, not legal advice or a driving-rule validation service.
 
+The tools live in [experiments](../experiments/README.md): a deterministic in-memory demonstration
+and an opt-in live run over real Qdrant and a host model transport. The demonstration and the live
+run both write one run directory per run and print the measurement report.
+
 ## Input contract and extraction
 
 Read ordered JSONL entries of this form:
