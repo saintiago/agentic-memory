@@ -11,6 +11,30 @@ The [A-MEM audit](docs/paper-alignment.md) identifies adaptations, and the
 The reference prototype remains at `/home/aiur/projects/amem-prototype2`; implementation requires
 only this repository's docs. This project is independent of it and of Nexus.
 
+## Usage
+
+The package exports the provider contracts and the `AgenticMemory` operations: add source
+material, search ranked direct matches with bounded linked expansion, and inspect stored notes. A
+host supplies its own NoteStore, Embedder and LanguageModel implementations, owns their settings,
+credentials and lifecycle, and constructs one instance per collection:
+
+```ts
+import { AgenticMemory } from "agentic-memory";
+
+const memory = new AgenticMemory(store, embedder, model);
+const note = await memory.add({
+  content: sourceText,
+  metadata: { origin: "host" },
+});
+const results = await memory.search(query, { limit: 5, linkedLimit: 5 });
+const current = await memory.get(note.id);
+const page = await memory.page(100);
+```
+
+Failures are `MemoryError` values naming the operation, stage and persistence; the
+[memory design](docs/memory.md) defines the operations, and the [host examples](examples/README.md)
+show the assembled composition with the pinned encoder, Qdrant storage and model transport.
+
 ## Development
 
 Use Linux or WSL with Node.js 24. Preparation installs the locked dependencies, and the aggregate

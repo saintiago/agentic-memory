@@ -15,7 +15,11 @@ import { promisify } from "node:util";
 const run = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 
-/** The consumer imports the installed package by name and exercises its public contract. */
+/**
+ * The consumer imports the installed package by name and exercises the public contract of the
+ * assembled library: exports and schemas, then add, search, get and page through host-supplied
+ * implementations of the provider contracts.
+ */
 const consumerCheck = `
 import assert from "node:assert/strict";
 import * as memory from "agentic-memory";
@@ -44,7 +48,119 @@ assert.equal(
   "Source text.\\nKeywords: source\\nTags: \\nContext: Records the source.",
 );
 
-console.log("packed consumer imported " + Object.keys(memory).length + " runtime exports");
+/** A minimal in-consumer NoteStore: current records, ranked matches and a paged traversal. */
+class ConsumerStore {
+  records = new Map();
+
+  async put(records) {
+    for (const record of records) {
+      this.records.set(record.note.id, structuredClone(record));
+    }
+  }
+
+  async get(ids) {
+    return ids.flatMap((id) => {
+      const record = this.records.get(id);
+      return record === undefined ? [] : [structuredClone(record.note)];
+    });
+  }
+
+  async nearest(vector, limit) {
+    // The most recently stored note ranks first, so its link provides the linked addition.
+    return [...this.records.values()]
+      .reverse()
+      .slice(0, limit)
+      .map((record, index) => ({
+        note: structuredClone(record.note),
+        score: 1 - index * 0.1,
+      }));
+  }
+
+  async page(limit, cursor) {
+    const start = typeof cursor === "number" ? cursor : 0;
+    const notes = [...this.records.values()]
+      .slice(start, start + limit)
+      .map((record) => structuredClone(record.note));
+    const next = start + limit;
+    return next < this.records.size ? { notes, cursor: next } : { notes };
+  }
+}
+
+class ConsumerEmbedder {
+  space = { id: "packed-consumer-space", dimensions: 2, distance: "Cosine" };
+
+  async embed() {
+    return [1, 0];
+  }
+}
+
+let firstId;
+class ConsumerModel {
+  calls = 0;
+
+  async generate(request) {
+    this.calls += 1;
+    if (request.stage === "construct") {
+      return {
+        context: "Records source material supplied by the packed consumer.",
+        keywords: ["source"],
+        tags: ["packed"],
+      };
+    }
+    if (request.stage === "evolve") {
+      return { links: [firstId], newTags: ["packed", "linked"], updates: [] };
+    }
+    throw new Error("unexpected stage " + request.stage);
+  }
+}
+
+const store = new ConsumerStore();
+const model = new ConsumerModel();
+const agent = new memory.AgenticMemory(store, new ConsumerEmbedder(), model);
+const first = await agent.add({ content: "The first packed source." });
+firstId = first.id;
+const second = await agent.add({ content: "The second packed source." });
+assert.equal(model.calls, 3, "two constructions and one evolution reached the host model");
+
+// Search keeps the ranked direct match and appends the distinct note reached through its link.
+const linked = await agent.search("a query", { limit: 1, linkedLimit: 5 });
+assert.deepEqual(
+  linked.map((result) => [result.via, result.note.id]),
+  [["match", second.id], ["link", first.id]],
+);
+assert.equal(linked[0].score, 1);
+assert.equal("score" in linked[1], false);
+
+// A zero linked limit disables expansion, and retrieval never calls the model again.
+const direct = await agent.search("a query", { limit: 2, linkedLimit: 0 });
+assert.deepEqual(direct.map((result) => result.via), ["match", "match"]);
+assert.equal(model.calls, 3);
+
+// Inspection returns current notes and reaches the end of a paged traversal.
+assert.deepEqual(await agent.get(first.id), first);
+assert.equal(await agent.get("b3c1d2e3-4f50-4610-8899-0a1b2c3d4e5f"), undefined);
+const firstPage = await agent.page(1);
+assert.equal(firstPage.notes.length, 1);
+assert.equal(typeof firstPage.cursor, "number");
+const lastPage = await agent.page(1, firstPage.cursor);
+assert.equal(lastPage.notes.length, 1);
+assert.equal(lastPage.cursor, undefined);
+
+// Invalid input fails as a typed memory error before any provider call.
+await assert.rejects(
+  () => agent.get("not-a-uuid"),
+  (error) =>
+    error instanceof memory.MemoryError &&
+    error.operation === "get" &&
+    error.stage === "input" &&
+    error.persistence === "unchanged",
+);
+
+console.log(
+  "packed consumer imported " +
+    Object.keys(memory).length +
+    " runtime exports and exercised add, search, get and page",
+);
 `;
 
 /** Entry points the manifest promises the packed package contains. */

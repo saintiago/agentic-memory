@@ -1,5 +1,62 @@
 # Host examples
 
+The examples cover the two host-owned boundaries of the library: assembling it from public exports
+with explicit settings, and implementing the `LanguageModel` transport.
+
+## Composition
+
+`host-composition.ts` is the minimal Linux/WSL host composition of the assembled library. It loads
+the pinned local encoder, opens or creates a Qdrant collection with the encoder's declared space,
+supplies the model transport below and constructs `AgenticMemory`; then it demonstrates add, search
+and inspection. It is not a hosted service, and the library discovers no settings by itself:
+
+```ts
+import {
+  AgenticMemory,
+  openQdrantNoteStore,
+  openReferenceEmbedder,
+} from "agentic-memory";
+import { createHostModelTransport } from "./host-model-transport.js";
+
+// Host-owned providers. Initialization fails before the instance is exposed when a provider is
+// unavailable or the collection is incompatible.
+const embedder = await openReferenceEmbedder({ cacheDir, allowDownloads });
+const store = await openQdrantNoteStore({
+  url: qdrantUrl,
+  collection,
+  space: embedder.space, // the exact declared embedding space, not just its dimensions
+  timeoutMs: 120_000,
+});
+const model = createHostModelTransport({
+  endpoint,
+  model: modelId,
+  apiKey, // host-owned credential
+  timeoutMs: 120_000,
+  maxOutputTokens: 6_000,
+});
+const memory = new AgenticMemory(store, embedder, model);
+
+const note = await memory.add({
+  content: sourceText,
+  metadata: { origin: "host" },
+});
+const results = await memory.search(query, { limit: 5, linkedLimit: 5 });
+const current = await memory.get(note.id);
+const page = await memory.page(10);
+```
+
+Every external setting is supplied by the host environment; a missing required value fails before
+any provider work. `AMEM_QDRANT_URL` and `AMEM_QDRANT_COLLECTION` name the Qdrant endpoint and its
+dedicated collection, and `AMEM_MODEL_ENDPOINT` with `AMEM_MODEL_ID` name the model the transport
+invokes. Optional settings are the Qdrant and provider credentials (`AMEM_QDRANT_API_KEY`,
+`AMEM_MODEL_API_KEY`), the encoder cache and its download permission (`AMEM_EMBEDDING_CACHE`,
+default `.data/embeddings`; `AMEM_ALLOW_EMBEDDING_DOWNLOADS`, default enabled), and the request
+bounds (`AMEM_QDRANT_TIMEOUT_MS`, `AMEM_MODEL_TIMEOUT_MS`, `AMEM_MODEL_MAX_OUTPUT_TOKENS`). The
+host owns server startup, credentials, collection choice and shutdown; it waits for pending writes
+before releasing provider resources.
+
+## Model transport
+
 `host-model-transport.ts` is the minimal host implementation of the public
 [LanguageModel contract](../docs/language-model.md#interface). It speaks an OpenAI-compatible
 chat-completions protocol with explicit host settings: endpoint, model ID, output budget, timeout
@@ -45,5 +102,5 @@ A live call needs host credentials and is opt-in; the deterministic checks use c
 fixtures and invoke no model. To record raw exchanges, usage, duration and finish reason for
 evaluation, inject a `fetch` wrapper instead of adding provider state to this transport.
 
-In this repository the example imports the public component surface (`../src/index.js`) and is
+In this repository both examples import the public component surface (`../src/index.js`) and are
 covered by `npm run validate`. Consumers import the same contracts from the published package.

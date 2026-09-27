@@ -92,6 +92,8 @@ class RecordingStore implements NoteStore {
   readonly writes: EmbeddedNote[][] = [];
   putError: Error | undefined;
   nearestError: Error | undefined;
+  /** Retain the references handed to `put`, as a replacement store is allowed to do. */
+  retainWrites = false;
   #putGate: Deferred<void> | undefined;
 
   /** Hold the next put until the returned gate resolves, to observe write acknowledgment. */
@@ -127,7 +129,10 @@ class RecordingStore implements NoteStore {
     }
     this.writes.push(structuredClone(records));
     for (const record of records) {
-      this.records.set(record.note.id.toLowerCase(), structuredClone(record));
+      this.records.set(
+        record.note.id.toLowerCase(),
+        this.retainWrites ? record : structuredClone(record),
+      );
     }
   }
 
@@ -729,6 +734,57 @@ describe("insertion decisions", () => {
     expect(embedder.texts).toHaveLength(1);
     expect(store.writes).toEqual([]);
     expect(store.stored(current.id)).toEqual(current);
+  });
+});
+
+describe("returned records", () => {
+  it("detaches a constructed note from the record handed to the store", async () => {
+    const { store, model, memory } = createMemory();
+    store.retainWrites = true;
+    model.queue("construct", () =>
+      attributes("Records the source.", ["source"], ["observation"]),
+    );
+
+    const note = await memory.add({
+      content: "The source text.",
+      metadata: { origin: "host" },
+    });
+    (note.metadata as { origin: string }).origin = "mutated";
+    note.context = "Rewritten through the returned note.";
+    note.keywords.push("appended");
+
+    expect(store.stored(note.id)).toEqual({
+      id: note.id,
+      content: "The source text.",
+      timestamp: note.timestamp,
+      context: "Records the source.",
+      keywords: ["source"],
+      tags: ["observation"],
+      links: [],
+      metadata: { origin: "host" },
+    });
+  });
+
+  it("detaches an evolved note from the record handed to the store", async () => {
+    const { store, model, memory } = createMemory();
+    store.retainWrites = true;
+    const current = store.seed({ note: candidate(), vector: [1, 0, 0, 0] });
+    model.queue("construct", () =>
+      attributes("Records the incoming account.", ["account"], ["incoming"]),
+    );
+    model.queue("evolve", () => ({
+      links: [current.id],
+      newTags: ["observation", "revision"],
+      updates: [],
+    }));
+
+    const note = await memory.add({ content: "The incoming account." });
+    note.links.push(OTHER_ID);
+    note.tags.length = 0;
+
+    const stored = store.stored(note.id);
+    expect(stored?.links).toEqual([current.id]);
+    expect(stored?.tags).toEqual(["observation", "revision"]);
   });
 });
 
