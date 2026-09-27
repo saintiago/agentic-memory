@@ -271,6 +271,68 @@ describe("host model transport example", () => {
     expect(diagnostics(error)).not.toContain("review-synthetic");
   });
 
+  it.each([" ", "\t", "\r", "\n", "\r\n", " \t\r\n"])(
+    "rejects an API key with trailing %j that header normalization would change",
+    (suffix) => {
+      const secret = "sk-review-normalized-secret";
+      const apiKey = `${secret}${suffix}`;
+      // Use the platform's actual request normalization, not an imitation in the fetch stub.
+      const request = new Request(settings().endpoint, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      expect(request.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      const { calls, fetch } = controlledFetch(async () =>
+        jsonResponse({ error: { message: `Bearer ${secret}` } }, 401),
+      );
+
+      const error = thrown(() =>
+        createHostModelTransport(settings({ apiKey, fetch })),
+      );
+
+      expect(error.message).toMatch(/valid HTTP header value/);
+      expect(diagnostics(error)).not.toContain(secret);
+      expect(error.cause).toBeUndefined();
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    "JSON error",
+    "plain-text error",
+    "fetch exception",
+    "finish reason",
+  ])("redacts the transmitted credential in a %s", async (path) => {
+    const apiKey = "sk-transmitted-secret";
+    const { fetch } = controlledFetch(async (input, init) => {
+      const authorization = new Request(input, init).headers.get(
+        "authorization",
+      );
+      expect(authorization).toBe(`Bearer ${apiKey}`);
+      const echo = `Rejected authorization: ${authorization}`;
+      switch (path) {
+        case "JSON error":
+          return jsonResponse({ error: { message: echo } }, 401);
+        case "plain-text error":
+          return new Response(echo, { status: 502 });
+        case "fetch exception":
+          throw new Error(echo);
+        default:
+          return completion("{}", echo);
+      }
+    });
+    const transport = createHostModelTransport(settings({ apiKey, fetch }));
+
+    const error = await failure(
+      transport.generate({ stage: "evolve", prompt: "p" }),
+    );
+
+    expect(error).toBeInstanceOf(HostModelTransportError);
+    expect((error as HostModelTransportError).stage).toBe("evolve");
+    expect(error.message).toContain("[redacted]");
+    expect(diagnostics(error)).not.toContain(apiKey);
+    expect(error.cause).toBeUndefined();
+  });
+
   it("rejects an endpoint that embeds credentials without echoing them", () => {
     const endpoint =
       "https://synthetic-user:synthetic-review-secret@model.example/chat/completions";

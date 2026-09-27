@@ -15,14 +15,15 @@ import { z } from "zod";
 import type { LanguageModel, ModelRequest } from "../src/index.js";
 
 /**
- * Whether the platform can send this credential in the `authorization` header the transport sets.
- * The runtime owns the header rule, and this check keeps the credential out of the header-value
- * failure fetch would otherwise raise for an unusable key.
+ * Whether the platform can send this credential unchanged in the `authorization` header.
+ * Reject normalization as well as invalid values: diagnostics must redact the same credential
+ * that was transmitted, and fetch's header-value failures can themselves expose unusable keys.
  */
 const isBearerHeaderValue = (apiKey: string): boolean => {
   try {
-    new Headers().set("authorization", `Bearer ${apiKey}`);
-    return true;
+    const authorization = `Bearer ${apiKey}`;
+    const headers = new Headers({ authorization });
+    return headers.get("authorization") === authorization;
   } catch {
     return false;
   }
@@ -42,14 +43,14 @@ const optionsSchema = z.strictObject({
   model: z.string().min(1),
   /**
    * Provider credential; omitted for an unauthenticated local gateway. A value the platform cannot
-   * send as an `authorization` header is rejected without being echoed.
+   * send unchanged as an `authorization` header is rejected without being echoed.
    */
   apiKey: z
     .string()
     .min(1, "An API key must be nonempty.")
     .refine(
       isBearerHeaderValue,
-      "An API key must be a valid HTTP header value.",
+      "An API key must be a valid HTTP header value that requires no normalization.",
     )
     .optional(),
   /** Finite request timeout in milliseconds. */
