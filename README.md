@@ -23,8 +23,10 @@ npm run validate
 
 `npm run build` emits the ESM package and its type declarations into `dist/`; `npm run verify:pack`
 packs that build and imports it from a temporary consumer directory. The real-infrastructure scopes
-`npm run test:integration` (Qdrant) and `npm run test:embeddings` (pinned encoder artifacts) are
-empty until those components exist, so they report that no cases were found instead of passing.
+`npm run test:integration` (Qdrant) and `npm run test:embeddings` (pinned encoder artifacts) never
+silently pass: the integration scope runs the NoteStore contract against a real isolated Qdrant
+pinned to 1.19 and reports how to prepare it when none is available, and the embeddings scope
+reports that no cases were found until that component exists.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

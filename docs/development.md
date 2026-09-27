@@ -46,12 +46,34 @@ provide these npm scripts:
 Integrations must not silently skip and report success when requested. Separate expensive model
 loading and external-state checks from deterministic cacheable validation. The first foundation
 change establishes the real toolchain; subsequent tasks add their tests to the appropriate scopes.
-Provide a pinned local Qdrant fixture and cleanup instructions with the persistence implementation.
 
 Validate a packed build from a temporary consumer directory before considering the library usable.
 The package must not include private fixtures, `.data`, secrets, model caches or prototype paths as
 runtime dependencies. Document public usage and fresh Linux/WSL preparation. Publishing to npm,
 deploying a server and integrating Nexus as a memory consumer are not part of this backlog.
+
+### Local Qdrant fixture
+
+`npm run test:integration` runs against real Qdrant 1.19. The pinned fixture publishes a dedicated
+port, so a prototype or user instance on the default port is never touched and no volume is
+retained:
+
+```bash
+docker compose -f test/integration/fixtures/qdrant/compose.yaml up -d
+AMEM_QDRANT_URL=http://127.0.0.1:16333 npm run test:integration
+docker compose -f test/integration/fixtures/qdrant/compose.yaml down
+```
+
+Without Docker, point `AMEM_QDRANT_BIN` at a pinned Qdrant 1.19 binary. The fixture starts it on a
+free port with a temporary storage directory and removes both on shutdown:
+
+```bash
+AMEM_QDRANT_BIN=/path/to/qdrant npm run test:integration
+```
+
+Each case uses uniquely named collections and removes them, including after a failure. A server
+that is not Qdrant 1.19, or a missing server, fails the run with these instructions instead of
+reporting a pass.
 
 ## Nexus delivery configuration
 

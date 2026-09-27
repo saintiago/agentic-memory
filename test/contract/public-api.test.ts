@@ -29,6 +29,7 @@ describe("package root exports", () => {
       "noteIdSchema",
       "noteSchema",
       "pageSchema",
+      "vectorSchema",
     ] as const;
 
     expect(Object.keys(packageExports)).toEqual(
