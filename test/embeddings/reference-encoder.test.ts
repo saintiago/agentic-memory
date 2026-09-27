@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AutoTokenizer, env } from "@huggingface/transformers";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -14,8 +22,9 @@ import {
 
 /**
  * Explicit pinned-artifact check against the real embedding runtime: loading, dimensions,
- * normalization, stable identity and long-input truncation. It downloads the pinned revision when
- * the cache is cold and never falls back to a mutable revision.
+ * normalization, stable identity, long-input truncation and revision-only artifact resolution.
+ * The setup warms the cache from the pinned revision; no check falls back to a mutable revision or
+ * to unversioned local artifacts.
  *
  * docs/embeddings.md#verification, docs/testing.md#contracts-and-cooperation
  */
@@ -130,6 +139,8 @@ describe("reference encoder against the pinned artifacts", () => {
   });
 
   it("truncates long input at the declared boundary, retaining the leading tokens", async () => {
+    // Load the tokenizer through the runtime's own revision-scoped resolution as well, which checks
+    // that the pinned cache directory holds the artifacts where the runtime looks for that revision.
     const tokenizer = await AutoTokenizer.from_pretrained(MODEL, {
       revision: PINNED_REVISION,
       cache_dir: cacheDir,
@@ -168,8 +179,68 @@ describe("reference encoder against the pinned artifacts", () => {
       expect(message).toContain(PINNED_REVISION);
       expect(message).toContain(emptyCache);
       expect(message).toContain("downloads disabled");
-      expect((failure as Error).cause).toBeInstanceOf(Error);
+      expect(message).toContain("onnx/model_quantized.onnx");
     } finally {
+      await rm(emptyCache, { recursive: true, force: true });
+    }
+  });
+
+  it("never accepts unversioned local artifacts as the pinned encoder", async () => {
+    // Populate the runtime's default local model directory, which is not revision scoped, with a
+    // complete but conflicting artifact set: a modified tokenizer plus the pinned config and
+    // weights. A host cache without the pinned revision must never fall back to these files.
+    const unversioned = await mkdtemp(`${tmpdir()}/amem-unversioned-`);
+    const emptyCache = await mkdtemp(`${tmpdir()}/amem-embeddings-`);
+    const localModelPath = env.localModelPath;
+    const pinned = join(cacheDir, MODEL, PINNED_REVISION);
+
+    try {
+      await mkdir(join(unversioned, MODEL, "onnx"), { recursive: true });
+      await symlink(
+        join(pinned, "onnx/model_quantized.onnx"),
+        join(unversioned, MODEL, "onnx/model_quantized.onnx"),
+      );
+      await symlink(
+        join(pinned, "config.json"),
+        join(unversioned, MODEL, "config.json"),
+      );
+      const conflicting = JSON.parse(
+        await readFile(join(pinned, "tokenizer.json"), "utf8"),
+      ) as Record<string, unknown>;
+      conflicting["normalizer"] = {
+        type: "Replace",
+        pattern: { Regex: "." },
+        content: "x",
+      };
+      await writeFile(
+        join(unversioned, MODEL, "tokenizer.json"),
+        JSON.stringify(conflicting),
+      );
+      await writeFile(
+        join(unversioned, MODEL, "tokenizer_config.json"),
+        JSON.stringify({
+          tokenizer_class: "XLMRobertaTokenizer",
+          model_max_length: MAX_LENGTH,
+        }),
+      );
+
+      env.localModelPath = unversioned;
+
+      const failure: unknown = await openReferenceEmbedder({
+        cacheDir: emptyCache,
+        allowDownloads: false,
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toContain(`${MODEL}@${PINNED_REVISION}`);
+      expect(message).toContain(emptyCache);
+      expect(message).toContain("downloads disabled");
+      expect(message).toContain("is missing");
+      expect(message).not.toContain(unversioned);
+    } finally {
+      env.localModelPath = localModelPath;
+      await rm(unversioned, { recursive: true, force: true });
       await rm(emptyCache, { recursive: true, force: true });
     }
   });

@@ -13,7 +13,12 @@ import {
   type PreTrainedModel,
   type PreTrainedTokenizer,
 } from "@huggingface/transformers";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 
 import type { Embedder, EmbeddingSpace } from "./embedder.js";
@@ -28,6 +33,18 @@ const RUNTIME = "@huggingface/transformers";
 const DIMENSIONS = 1024;
 /** The truncation boundary in tokenizer tokens, including special tokens. */
 const MAX_LENGTH = 8192;
+
+/**
+ * The pinned revision's artifacts, named as the runtime resolves them for the declared q8 dtype
+ * and its `onnx` subfolder. The encoder resolves them itself, so no unversioned directory and no
+ * mutable default revision can supply an artifact of another encoding configuration.
+ */
+const PINNED_ARTIFACTS = [
+  "config.json",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  "onnx/model_quantized.onnx",
+] as const;
 
 /**
  * The encoder settings that define an embedding space. Every field belongs to the identity: a
@@ -119,6 +136,98 @@ export interface ReferenceEmbedder extends Embedder {
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/**
+ * The directory holding the pinned revision's artifacts inside the host-supplied cache. The
+ * absolute path is never a model ID, so the runtime reads exactly these files instead of resolving
+ * the repository name against a mutable revision or an unversioned local model directory.
+ */
+const artifactDirectory = (cacheDir: string): string =>
+  join(resolve(cacheDir), MODEL, REVISION);
+
+/** The pinned artifacts the declared configuration needs that the revision directory lacks. */
+const missingArtifacts = async (directory: string): Promise<string[]> => {
+  const missing: string[] = [];
+  for (const artifact of PINNED_ARTIFACTS) {
+    const present = await stat(join(directory, artifact)).then(
+      (entry) => entry.isFile(),
+      () => false,
+    );
+    if (!present) {
+      missing.push(artifact);
+    }
+  }
+  return missing;
+};
+
+/** The pinned revision's URL for one artifact on the runtime's configured remote host. */
+const artifactUrl = (artifact: string): string => {
+  const pinned = env.remotePathTemplate
+    .replaceAll("{model}", MODEL)
+    .replaceAll("{revision}", REVISION);
+  const base = `${env.remoteHost}${pinned}`;
+  return new URL(artifact, base.endsWith("/") ? base : `${base}/`).href;
+};
+
+/**
+ * Download one pinned artifact into the revision directory through a uniquely named partial file,
+ * so an interrupted or rejected download leaves no file a later run would read as complete.
+ */
+const downloadArtifact = async (
+  directory: string,
+  artifact: string,
+): Promise<void> => {
+  const url = artifactUrl(artifact);
+  const destination = join(directory, artifact);
+  const partial = `${destination}.partial.${process.pid}.${randomUUID()}`;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    const response: Response = await env.fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${String(response.status)} from ${url}`);
+    }
+    if (response.body === null) {
+      throw new Error(`The response for ${url} carried no content`);
+    }
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+    await rename(partial, destination);
+  } catch (error) {
+    await rm(partial, { force: true });
+    throw new Error(
+      `Unable to download the pinned artifact "${artifact}" for ${MODEL}@${REVISION} from ` +
+        `"${url}" into "${directory}": ${messageOf(error)}`,
+      { cause: error },
+    );
+  }
+};
+
+/**
+ * Resolve the pinned revision's artifact directory inside the host cache. Missing artifacts are
+ * downloaded only when the host allows downloads; otherwise creation fails and names what the
+ * pinned revision is missing. No unversioned local directory and no mutable default revision is
+ * ever consulted.
+ */
+const ensurePinnedArtifacts = async ({
+  cacheDir,
+  allowDownloads,
+}: ReferenceEmbedderOptions): Promise<string> => {
+  const directory = artifactDirectory(cacheDir);
+  const missing = await missingArtifacts(directory);
+  if (missing.length === 0) {
+    return directory;
+  }
+  if (!allowDownloads) {
+    throw new Error(
+      `Unable to load the pinned tokenizer and model for ${MODEL}@${REVISION} from cache ` +
+        `directory "${cacheDir}" with downloads disabled: "${directory}" is missing ` +
+        `${missing.join(", ")}.`,
+    );
+  }
+  await Promise.all(
+    missing.map((artifact) => downloadArtifact(directory, artifact)),
+  );
+  return directory;
+};
 
 /**
  * Load one pinned artifact set, reporting the pin, the cache directory and the download permission
@@ -249,14 +358,10 @@ export const openReferenceEmbedder = async (
   options: ReferenceEmbedderOptions,
 ): Promise<ReferenceEmbedder> => {
   const parsed = optionsSchema.parse(options);
-  const shared = {
-    revision: REVISION,
-    cache_dir: parsed.cacheDir,
-    local_files_only: !parsed.allowDownloads,
-  };
+  const directory = await ensurePinnedArtifacts(parsed);
   const tokenizer = await loadArtifacts(
     "tokenizer",
-    () => AutoTokenizer.from_pretrained(MODEL, shared),
+    () => AutoTokenizer.from_pretrained(directory, { local_files_only: true }),
     parsed,
   );
   // The runtime clamps truncation to the tokenizer's own maximum, so a smaller artifact maximum
@@ -270,10 +375,10 @@ export const openReferenceEmbedder = async (
   const model = await loadArtifacts(
     "model",
     () =>
-      AutoModel.from_pretrained(MODEL, {
-        ...shared,
-        dtype: "q8",
-        device: "cpu",
+      AutoModel.from_pretrained(directory, {
+        local_files_only: true,
+        dtype: referenceEncoderSettings.dtype,
+        device: referenceEncoderSettings.device,
       }),
     parsed,
   );

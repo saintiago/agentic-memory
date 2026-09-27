@@ -34,6 +34,10 @@ per note. Q8 describes inference weights; it does not make stored vectors 8-bit.
 Pin the model repository to an immutable revision and the runtime in the lockfile. A host supplies
 the cache directory and whether downloads are allowed. Offline creation fails if required artifacts
 are absent. Never resolve a mutable default revision silently for an existing collection.
+The encoder reads the pinned revision only, from `<cache directory>/Xenova/bge-m3/<revision>/`, the
+runtime's revision-scoped layout. Missing pinned artifacts are downloaded into that directory only
+when the host allows downloads; an unversioned local model directory and the mutable default
+revision are never consulted.
 
 The space ID is `sha256:` followed by the lowercase SHA-256 hex digest of UTF-8 `JSON.stringify`
 of the following object, in the displayed key order, with no whitespace or extra keys:

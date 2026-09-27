@@ -1,5 +1,16 @@
 import { Tensor, env } from "@huggingface/transformers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   embeddingSpaceId,
   openReferenceEmbedder,
@@ -11,8 +22,9 @@ import {
 
 /**
  * Component cases for the reference encoder through its public contract. The pinned runtime is
- * replaced at its boundary with controlled tokenizer and inference output, so these cases need no
- * artifacts, network or real filesystem.
+ * replaced at its boundary with controlled tokenizer and inference output, and the pinned artifacts
+ * live in an isolated temporary cache directory, so these cases need no model artifacts, no network
+ * access and no shared machine state.
  *
  * docs/embeddings.md, docs/testing.md#contracts-and-cooperation
  */
@@ -88,8 +100,39 @@ const PINNED_REVISION = "4de13258303883538bd53b696b452bf8099f0858";
 /** The identity of the pinned configuration, hashed independently of the implementation. */
 const PINNED_SPACE_ID =
   "sha256:42d052a0f15c190a63f97c22e0aa9dc41c7fc107c243a70ffc7cf5e5b6136b8e";
+/** The pinned repository and the artifacts the declared configuration reads from its revision. */
+const MODEL = "Xenova/bge-m3";
+const PINNED_ARTIFACTS = [
+  "config.json",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  "onnx/model_quantized.onnx",
+] as const;
 
-const cacheDir = "/var/cache/agentic-memory/embeddings";
+let cacheDir: string;
+let revisionDir: string;
+
+/** Create an isolated cache directory and write the given pinned artifact placeholders into it. */
+const prepareCache = async (
+  artifacts: readonly string[] = PINNED_ARTIFACTS,
+): Promise<string> => {
+  const directory = await mkdtemp(`${tmpdir()}/amem-embeddings-`);
+  const revision = join(directory, MODEL, PINNED_REVISION);
+  await mkdir(join(revision, "onnx"), { recursive: true });
+  for (const artifact of artifacts) {
+    await writeFile(join(revision, artifact), `placeholder for ${artifact}`);
+  }
+  return directory;
+};
+
+beforeAll(async () => {
+  cacheDir = await prepareCache();
+  revisionDir = join(cacheDir, MODEL, PINNED_REVISION);
+});
+
+afterAll(async () => {
+  await rm(cacheDir, { recursive: true, force: true });
+});
 
 const open = (
   options: Partial<ReferenceEmbedderOptions> = {},
@@ -202,29 +245,18 @@ describe("reference encoder identity", () => {
 });
 
 describe("reference encoder lifecycle", () => {
-  it("loads the pinned artifacts once per instance, honoring cache and download settings", async () => {
+  it("reads the pinned revision's cached artifacts once per instance", async () => {
     const embedder = await open();
 
+    // The pinned revision directory inside the host cache is the only artifact source: the runtime
+    // is never asked to resolve the repository name, a mutable revision or an unversioned directory.
     expect(runtime.tokenizerLoads).toEqual([
-      {
-        model: "Xenova/bge-m3",
-        options: {
-          revision: PINNED_REVISION,
-          cache_dir: cacheDir,
-          local_files_only: true,
-        },
-      },
+      { model: revisionDir, options: { local_files_only: true } },
     ]);
     expect(runtime.modelLoads).toEqual([
       {
-        model: "Xenova/bge-m3",
-        options: {
-          revision: PINNED_REVISION,
-          cache_dir: cacheDir,
-          local_files_only: true,
-          dtype: "q8",
-          device: "cpu",
-        },
+        model: revisionDir,
+        options: { local_files_only: true, dtype: "q8", device: "cpu" },
       },
     ]);
 
@@ -236,10 +268,114 @@ describe("reference encoder lifecycle", () => {
 
     const online = await open({ allowDownloads: true });
 
-    expect(runtime.tokenizerLoads[1]?.options["local_files_only"]).toBe(false);
-    expect(runtime.modelLoads[1]?.options["local_files_only"]).toBe(false);
+    expect(runtime.tokenizerLoads[1]?.model).toBe(revisionDir);
+    expect(runtime.modelLoads[1]?.model).toBe(revisionDir);
     // Cache paths and download permission are lifecycle settings, not identity inputs.
     expect(online.space).toEqual(embedder.space);
+  });
+
+  it("downloads exactly the missing pinned artifacts when downloads are allowed", async () => {
+    const coldCache = await prepareCache(["config.json"]);
+    const fetchBefore = env.fetch;
+    const requested: string[] = [];
+    env.fetch = async (input: string | URL) => {
+      requested.push(String(input));
+      return new Response(`placeholder for ${String(input)}`, { status: 200 });
+    };
+
+    try {
+      const embedder = await openReferenceEmbedder({
+        cacheDir: coldCache,
+        allowDownloads: true,
+      });
+
+      const pinnedUrl = (artifact: string): string =>
+        `https://huggingface.co/${MODEL}/resolve/${PINNED_REVISION}/${artifact}`;
+      expect(requested.sort()).toEqual(
+        [
+          pinnedUrl("tokenizer.json"),
+          pinnedUrl("tokenizer_config.json"),
+          pinnedUrl("onnx/model_quantized.onnx"),
+        ].sort(),
+      );
+      expect(embedder.space.id).toBe(PINNED_SPACE_ID);
+      expect(runtime.tokenizerLoads[0]?.model).toBe(
+        join(coldCache, MODEL, PINNED_REVISION),
+      );
+      expect(runtime.modelLoads[0]?.model).toBe(
+        join(coldCache, MODEL, PINNED_REVISION),
+      );
+    } finally {
+      env.fetch = fetchBefore;
+      await rm(coldCache, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects creation offline when the pinned artifacts are absent", async () => {
+    const coldCache = await prepareCache([]);
+    const fetchBefore = env.fetch;
+    const requested: string[] = [];
+    env.fetch = async (input: string | URL) => {
+      requested.push(String(input));
+      throw new Error(`network blocked: ${String(input)}`);
+    };
+
+    try {
+      const failure: unknown = await openReferenceEmbedder({
+        cacheDir: coldCache,
+        allowDownloads: false,
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toContain(`Xenova/bge-m3@${PINNED_REVISION}`);
+      expect(message).toContain(coldCache);
+      expect(message).toContain("downloads disabled");
+      expect(message).toContain("onnx/model_quantized.onnx");
+      expect(requested).toEqual([]);
+      expect(runtime.tokenizerLoads).toEqual([]);
+      expect(runtime.modelLoads).toEqual([]);
+    } finally {
+      env.fetch = fetchBefore;
+      await rm(coldCache, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a failed pinned artifact download without leaving a partial artifact", async () => {
+    const coldCache = await prepareCache([]);
+    const fetchBefore = env.fetch;
+    env.fetch = async () => new Response("not found", { status: 404 });
+
+    try {
+      const failure: unknown = await openReferenceEmbedder({
+        cacheDir: coldCache,
+        allowDownloads: true,
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain(
+        `Unable to download the pinned artifact`,
+      );
+      expect((failure as Error).message).toContain(
+        `Xenova/bge-m3@${PINNED_REVISION}`,
+      );
+      expect((failure as Error).message).toContain("HTTP 404");
+      expect((failure as Error).cause).toBeInstanceOf(Error);
+      expect(runtime.tokenizerLoads).toEqual([]);
+
+      const leftovers = (await readdir(coldCache, { recursive: true })).map(
+        String,
+      );
+      expect(
+        leftovers.filter(
+          (entry) =>
+            /\.(json|onnx)$/.test(entry) || entry.includes(".partial."),
+        ),
+      ).toEqual([]);
+    } finally {
+      env.fetch = fetchBefore;
+      await rm(coldCache, { recursive: true, force: true });
+    }
   });
 
   it("rejects unusable host settings before loading anything", async () => {
@@ -262,8 +398,17 @@ describe("reference encoder lifecycle", () => {
   it("rejects creation when a pinned artifact cannot be loaded", async () => {
     runtime.failTokenizerLoad = "offline tokenizer failure";
 
-    await expect(open()).rejects.toThrow(
-      new RegExp(`tokenizer.*Xenova/bge-m3@${PINNED_REVISION}.*${cacheDir}`),
+    const tokenizerFailure: unknown = await open().catch(
+      (error: unknown) => error,
+    );
+
+    expect(tokenizerFailure).toBeInstanceOf(Error);
+    expect((tokenizerFailure as Error).message).toContain(
+      `tokenizer for Xenova/bge-m3@${PINNED_REVISION}`,
+    );
+    expect((tokenizerFailure as Error).message).toContain(cacheDir);
+    expect((tokenizerFailure as Error).message).toContain(
+      "offline tokenizer failure",
     );
     expect(runtime.modelLoads).toEqual([]);
 

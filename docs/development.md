@@ -79,11 +79,11 @@ reporting a pass.
 
 `npm run test:embeddings` loads the pinned `Xenova/bge-m3` revision through Transformers.js with the
 declared q8 CPU settings and verifies the space identity, vector dimensions, normalization and
-long-input truncation. Artifacts are cached under `AMEM_EMBEDDING_CACHE` (default
-`.data/embeddings`), which is not published; the first run downloads about 590 MB from the pinned
-revision, and later runs reuse the cache offline. A run without the artifacts and without network
-access fails instead of reporting a pass. The check is separate from the cached `npm run validate`
-scope because it loads a real model.
+long-input truncation, and that a complete cache initializes and embeds with network access blocked.
+Artifacts are cached under `AMEM_EMBEDDING_CACHE` (default `.data/embeddings`), which is not
+published; the first run downloads about 590 MB from the pinned revision, and later runs reuse the
+cache offline. A run without the artifacts and without network access fails instead of reporting a
+pass. The check is separate from the cached `npm run validate` scope because it loads a real model.
 
 ## Nexus delivery configuration
 
