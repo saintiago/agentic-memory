@@ -46,6 +46,7 @@ describe("Qdrant collection compatibility", () => {
     expect(info.config.params.vectors).toMatchObject({
       size: 4,
       distance: "Cosine",
+      datatype: "float32",
     });
     expect(info.config.metadata).toEqual(metadataFor(testSpace()));
     await expect(store.page(1)).resolves.toEqual({ notes: [] });
@@ -79,6 +80,38 @@ describe("Qdrant collection compatibility", () => {
       notes: [{ content: "An existing record." }],
     });
   });
+
+  it("opens a collection that declares float32 vector storage explicitly", async () => {
+    const name = collection("declared-float32");
+    await adminClient().createCollection(name, {
+      vectors: { size: 4, distance: "Cosine", datatype: "float32" },
+      metadata: metadataFor(testSpace()),
+    });
+
+    const store = await openStore(name);
+
+    await expect(store.page(1)).resolves.toEqual({ notes: [] });
+  });
+
+  for (const datatype of ["uint8", "float16"] as const) {
+    it(`rejects ${datatype} vector storage instead of persisting prepared embeddings`, async () => {
+      const name = collection(`datatype-${datatype}`);
+      await adminClient().createCollection(name, {
+        vectors: { size: 4, distance: "Cosine", datatype },
+        metadata: metadataFor(testSpace()),
+      });
+      const before = await adminClient().getCollection(name);
+
+      const opening = openStore(name);
+
+      await expect(opening).rejects.toThrow(QdrantCollectionCompatibilityError);
+      await expect(opening).rejects.toThrow(new RegExp(datatype));
+      // Rejecting must leave the incompatible collection exactly as it was.
+      const after = await adminClient().getCollection(name);
+      expect(after.config.metadata).toEqual(before.config.metadata);
+      expect(after.config.params.vectors).toEqual(before.config.params.vectors);
+    });
+  }
 
   it("rejects a collection whose agenticMemory metadata is missing", async () => {
     const name = collection("unmanaged");
@@ -162,5 +195,22 @@ describe("Qdrant collection compatibility", () => {
     });
 
     await expect(openStore(name)).rejects.toThrow(/unnamed dense vector/);
+  });
+
+  it("rejects a collection that declares multi-vector storage", async () => {
+    const name = collection("multivector");
+    await adminClient().createCollection(name, {
+      vectors: {
+        size: 4,
+        distance: "Cosine",
+        multivector_config: { comparator: "max_sim" },
+      },
+      metadata: metadataFor(testSpace()),
+    });
+
+    await expect(openStore(name)).rejects.toThrow(/multi-vector/);
+    await expect(openStore(name)).rejects.toThrow(
+      QdrantCollectionCompatibilityError,
+    );
   });
 });

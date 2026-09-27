@@ -25,6 +25,8 @@ import type { NoteStore } from "./note-store.js";
 const METADATA_KEY = "agenticMemory";
 const SCHEMA_VERSION = 1;
 const REPRESENTATION = "amem-note-v1";
+/** The dense-vector storage datatype this store persists; Qdrant uses it when none is declared. */
+const VECTOR_DATATYPE = "float32";
 
 /**
  * The embedding-space descriptor a collection declares. The host supplies it as data; the shape
@@ -54,6 +56,21 @@ const collectionMetadataSchema = z.strictObject({
   embeddingSpace: spaceSchema,
 });
 
+/**
+ * Whether the platform can send the credential in the `api-key` header the Qdrant client sets. The
+ * runtime owns the header rule, and this check keeps the credential out of the failure the client
+ * would otherwise raise for an unusable key.
+ */
+const isHeaderValue = (apiKey: string): boolean => {
+  try {
+    const headers = new Headers();
+    headers.set("api-key", apiKey);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const optionsSchema = z.strictObject({
   url: z
     .string()
@@ -61,7 +78,11 @@ const optionsSchema = z.strictObject({
       (url) => url.startsWith("http://") || url.startsWith("https://"),
       "A Qdrant URL must start with http:// or https://.",
     ),
-  apiKey: z.string().min(1, "An API key must be nonempty.").optional(),
+  apiKey: z
+    .string()
+    .min(1, "An API key must be nonempty.")
+    .refine(isHeaderValue, "An API key must be a valid HTTP header value.")
+    .optional(),
   collection: z.string().min(1, "A collection name must be nonempty."),
   space: spaceSchema,
   timeoutMs: positiveSafeInteger("A timeout").optional(),
@@ -113,9 +134,11 @@ const assertCompatible = (
   info: Awaited<ReturnType<QdrantClient["getCollection"]>>,
   expected: NoteStoreSpace,
 ): void => {
-  const vectors = info.config.params.vectors;
-  const size = isObject(vectors) ? vectors["size"] : undefined;
-  const distance = isObject(vectors) ? vectors["distance"] : undefined;
+  const vectors = isObject(info.config.params.vectors)
+    ? info.config.params.vectors
+    : undefined;
+  const size = vectors?.["size"];
+  const distance = vectors?.["distance"];
   if (typeof size !== "number" || typeof distance !== "string") {
     throw new QdrantCollectionCompatibilityError(
       collection,
@@ -127,6 +150,21 @@ const assertCompatible = (
       collection,
       `its vector configuration is ${size} dimensions with ${distance} distance, expected ` +
         `${expected.dimensions} dimensions with ${expected.distance} distance`,
+    );
+  }
+  // The stored datatype is part of the vector configuration: a lossy one rewrites the prepared
+  // embedding on write, so anything but the supported format is incompatible.
+  const datatype = vectors?.["datatype"];
+  if (datatype !== undefined && datatype !== VECTOR_DATATYPE) {
+    throw new QdrantCollectionCompatibilityError(
+      collection,
+      `it stores vectors as ${String(datatype)} instead of the supported ${VECTOR_DATATYPE}`,
+    );
+  }
+  if (vectors?.["multivector_config"] !== undefined) {
+    throw new QdrantCollectionCompatibilityError(
+      collection,
+      "it declares multi-vector storage instead of one dense vector per point",
     );
   }
 
@@ -181,7 +219,11 @@ const ensureCollection = async (
   if (!existing.exists) {
     try {
       await client.createCollection(collection, {
-        vectors: { size: space.dimensions, distance: space.distance },
+        vectors: {
+          size: space.dimensions,
+          distance: space.distance,
+          datatype: VECTOR_DATATYPE,
+        },
         metadata: {
           [METADATA_KEY]: {
             schemaVersion: SCHEMA_VERSION,

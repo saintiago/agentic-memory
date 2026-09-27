@@ -22,6 +22,19 @@ const unreachable = "http://127.0.0.1:1";
 const open = (options: Record<string, unknown>) =>
   openQdrantNoteStore(options as unknown as QdrantNoteStoreOptions);
 
+/** Every message an error could disclose, including its nested causes. */
+const messagesOf = (error: unknown): string => {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    messages.push(current.message);
+    current = current.cause;
+  }
+  return messages.join("\n");
+};
+
 describe("Qdrant note store settings", () => {
   it("rejects a URL without an HTTP(S) scheme", async () => {
     await expect(
@@ -86,5 +99,21 @@ describe("Qdrant note store settings", () => {
     await expect(
       open({ url: unreachable, collection: "notes", space, apiKey: "" }),
     ).rejects.toThrow(/API key/);
+  });
+
+  it("rejects an API key that cannot be sent as a header value without echoing it", async () => {
+    // The Qdrant client sends the credential in an `api-key` header, so a key the platform cannot
+    // send must fail here instead of surfacing the client's value-bearing header error.
+    const apiKey = "review-synthetic\nsecret";
+    const failure: unknown = await open({
+      url: unreachable,
+      collection: "notes",
+      space,
+      apiKey,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/valid HTTP header value/);
+    expect(messagesOf(failure)).not.toContain(apiKey);
   });
 });
