@@ -21,7 +21,13 @@ let admin: QdrantClient | undefined;
 
 /** Administrative access for inspecting, seeding and removing isolated collections. */
 export const adminClient = (): QdrantClient => {
-  admin ??= new QdrantClient({ url: qdrantUrl(), timeout: 120_000 });
+  const endpoint = new URL(qdrantUrl());
+  admin ??= new QdrantClient({
+    url: endpoint.origin,
+    port: Number(endpoint.port || (endpoint.protocol === "https:" ? 443 : 80)),
+    prefix: endpoint.pathname.replace(/\/$/, ""),
+    timeout: 120_000,
+  });
   return admin;
 };
 

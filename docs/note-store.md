@@ -110,9 +110,13 @@ for a different space; migration is outside this baseline. Collection metadata i
 selected Qdrant 1.19 baseline. Other metadata keys may exist and are not owned here.
 
 Connection configuration includes URL, optional API key, collection, space descriptor and request
-timeout. Credentials stay outside records and errors. The host owns server startup, backups and
-shutdown. Initialization may create a missing collection; it never deletes an existing one. A
-creation race must re-read and validate rather than claim ownership of incompatible state.
+timeout. The HTTP(S) URL's effective port and optional base path apply to initialization and every
+operation; an omitted port means 80 for HTTP or 443 for HTTPS. A trailing base-path slash is optional.
+Reject malformed URLs, port zero, embedded credentials, query strings and fragments before making
+requests; use the API-key setting for credentials. Credentials stay outside records and errors. The
+host owns server startup, backups and shutdown. Initialization may create a missing collection; it
+never deletes an existing one. A creation race must re-read and validate rather than claim ownership
+of incompatible state.
 
 ## Verification
 

@@ -9,6 +9,7 @@ import {
   type IncomingMessage,
   type Server,
 } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 export interface ProxyRequest {
   readonly method: string;
@@ -46,10 +47,11 @@ const parseBody = (body: Buffer): unknown => {
   }
 };
 
-/** Start a recording proxy in front of `target`; `interrupt` decides which replies to drop. */
+/** Serve `target` under `basePath`; `interrupt` decides which recorded requests lose their reply. */
 export const startControlledProxy = async (
   target: string,
   interrupt: InterruptPredicate,
+  basePath = "",
 ): Promise<ControlledProxy> => {
   const destination = new URL(target);
   const requests: ProxyRequest[] = [];
@@ -64,18 +66,24 @@ export const startControlledProxy = async (
         body: parseBody(body),
       };
       requests.push(forwarded);
+      if (!forwarded.path.startsWith(`${basePath}/`)) {
+        response.writeHead(404).end();
+        return;
+      }
       const headers: Record<string, string | string[] | undefined> = {
         ...request.headers,
         host: destination.host,
         "content-length": String(body.length),
       };
       delete headers["transfer-encoding"];
-      const upstream = httpRequest(
+      const upstreamRequest =
+        destination.protocol === "https:" ? httpsRequest : httpRequest;
+      const upstream = upstreamRequest(
+        new URL(
+          `${destination.origin}${destination.pathname.replace(/\/$/, "")}${forwarded.path.slice(basePath.length)}`,
+        ),
         {
-          host: destination.hostname,
-          port: destination.port,
           method: forwarded.method,
-          path: forwarded.path,
           headers,
         },
         (upstreamResponse) => {
@@ -103,7 +111,7 @@ export const startControlledProxy = async (
   const port =
     typeof address === "object" && address !== null ? address.port : 0;
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${port}${basePath}`,
     requests,
     close: async () => {
       server.closeAllConnections();

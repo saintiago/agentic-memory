@@ -77,7 +77,19 @@ const optionsSchema = z.strictObject({
     .refine(
       (url) => url.startsWith("http://") || url.startsWith("https://"),
       "A Qdrant URL must start with http:// or https://.",
-    ),
+    )
+    .refine((url) => {
+      if (!URL.canParse(url)) {
+        return false;
+      }
+      const endpoint = new URL(url);
+      return (
+        endpoint.username === "" &&
+        endpoint.password === "" &&
+        !/[?#]/.test(url) &&
+        endpoint.port !== "0"
+      );
+    }, "A Qdrant URL must be valid, use a nonzero port, and contain no credentials, query or fragment."),
   apiKey: z
     .string()
     .min(1, "An API key must be nonempty.")
@@ -412,8 +424,13 @@ export const openQdrantNoteStore = async (
 ): Promise<NoteStore> => {
   const { url, apiKey, collection, space, timeoutMs } =
     optionsSchema.parse(options);
+  const endpoint = new URL(url);
   const client = new QdrantClient({
-    url,
+    // The client defaults missing ports to 6333 and ignores URL paths. URL normalizes explicit
+    // standard ports to an empty string, so supply the effective port and base path separately.
+    url: endpoint.origin,
+    port: Number(endpoint.port || (endpoint.protocol === "https:" ? 443 : 80)),
+    prefix: endpoint.pathname.replace(/\/$/, ""),
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
   });

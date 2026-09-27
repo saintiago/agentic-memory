@@ -47,6 +47,34 @@ afterAll(async () => {
 });
 
 describe("Qdrant note store transport behavior", () => {
+  it("creates, reopens and operates through a base path, including a proxy upstream", async () => {
+    const endpoint = await startControlledProxy(
+      qdrantUrl(),
+      () => false,
+      "/tenant/memory",
+    );
+    proxies.push(endpoint);
+    const relay = await startControlledProxy(endpoint.url, () => false);
+    proxies.push(relay);
+    const name = collection("base_path");
+    const store = await openStoreAt(`${endpoint.url}/`, name);
+    const record = embedded();
+    await store.put([record]);
+
+    // The relay also has to preserve its upstream's prefix; reopening uses the same collection.
+    const reopened = await openStoreAt(relay.url, name);
+    expect(await reopened.get([record.note.id])).toEqual([record.note]);
+    expect((await reopened.nearest(record.vector, 1))[0]?.note).toEqual(
+      record.note,
+    );
+    expect((await reopened.page(1)).notes).toEqual([record.note]);
+    expect(
+      endpoint.requests.every((request) =>
+        request.pathname.startsWith("/tenant/memory/"),
+      ),
+    ).toBe(true);
+  });
+
   it("does not request anything for empty reads and writes", async () => {
     const proxy = await proxyFor();
     const name = collection("empty");
