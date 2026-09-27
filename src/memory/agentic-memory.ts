@@ -17,6 +17,8 @@ import {
   cursorSchema,
   jsonValueSchema,
   noteIdSchema,
+  noteSchema,
+  pageSchema,
   vectorSchema,
   type Attributes,
   type Cursor,
@@ -244,6 +246,14 @@ const selectLinkedTargets = (
 };
 
 /**
+ * Detach one record at the public boundary. Parsing the shared note schema returns a copy of the
+ * validated tree, including nested metadata and arrays. The NoteStore contract does not promise
+ * detached reads, and a replacement store may retain the records handed to a write, so a host must
+ * never reach stored state through the note an operation returns.
+ */
+const detachNote = (note: Note): Note => noteSchema.parse(note);
+
+/**
  * The library's memory operations. Insertions on one instance are serialized in invocation order;
  * the host still owns collecting source material, awaiting writes and reconciling uncertain
  * outcomes. This queue is not a durable job system or a distributed writer lock.
@@ -308,7 +318,7 @@ export class AgenticMemory {
     const identity = parsed.data.toLowerCase();
     const notes = await this.#read(
       "get",
-      () => this.#store.get([parsed.data]),
+      async () => (await this.#store.get([parsed.data])).map(detachNote),
       "The note store failed to read the requested note.",
     );
     return notes.find((note) => note.id.toLowerCase() === identity);
@@ -339,7 +349,10 @@ export class AgenticMemory {
     }
     return await this.#read(
       "page",
-      () => this.#store.page(parsedLimit.data, parsedCursor?.data),
+      async () =>
+        pageSchema.parse(
+          await this.#store.page(parsedLimit.data, parsedCursor?.data),
+        ),
       "The note store failed to read the requested page.",
     );
   }
@@ -369,7 +382,10 @@ export class AgenticMemory {
 
     let matches: Match[];
     try {
-      matches = await this.#store.nearest(vector, limit);
+      matches = (await this.#store.nearest(vector, limit)).map((match) => ({
+        note: detachNote(match.note),
+        score: match.score,
+      }));
     } catch (cause) {
       throw retrievalFailure(
         "search",
@@ -392,7 +408,7 @@ export class AgenticMemory {
     }
     const fetched = await this.#read(
       "search",
-      () => this.#store.get(selected),
+      async () => (await this.#store.get(selected)).map(detachNote),
       "The note store failed to read the linked notes.",
     );
     const byIdentity = new Map(
@@ -436,7 +452,7 @@ export class AgenticMemory {
         [{ note: constructed, vector: initialVector }],
         noteId,
       );
-      return constructed;
+      return detachNote(constructed);
     }
 
     const decision = await this.#evolve(constructed, candidates, noteId);
@@ -458,7 +474,7 @@ export class AgenticMemory {
       [...changed, { note: incoming, vector: incomingVector }],
       noteId,
     );
-    return incoming;
+    return detachNote(incoming);
   }
 
   async #construct(

@@ -57,29 +57,43 @@ const SOURCES = [
 const QUERY = "removing a stale queue entry";
 
 const main = async (): Promise<void> => {
+  // Read and validate every host setting before initializing any provider, so an incomplete
+  // configuration fails before an encoder download or a collection creation starts.
   const collection = setting("AMEM_QDRANT_COLLECTION");
+  const qdrantUrl = setting("AMEM_QDRANT_URL");
   const qdrantApiKey = optionalSetting("AMEM_QDRANT_API_KEY");
+  const qdrantTimeoutMs = integerSetting("AMEM_QDRANT_TIMEOUT_MS", 120_000);
+  const cacheDir =
+    optionalSetting("AMEM_EMBEDDING_CACHE") ?? ".data/embeddings";
+  const allowDownloads =
+    optionalSetting("AMEM_ALLOW_EMBEDDING_DOWNLOADS") !== "false";
+  const modelEndpoint = setting("AMEM_MODEL_ENDPOINT");
+  const modelId = setting("AMEM_MODEL_ID");
   const modelApiKey = optionalSetting("AMEM_MODEL_API_KEY");
+  const modelTimeoutMs = integerSetting("AMEM_MODEL_TIMEOUT_MS", 120_000);
+  const modelMaxOutputTokens = integerSetting(
+    "AMEM_MODEL_MAX_OUTPUT_TOKENS",
+    6_000,
+  );
 
   // Host-owned provider setup. The cache directory and download permission are host settings, and
   // the collection declares the exact embedding space the encoder reports.
   const embedder = await openReferenceEmbedder({
-    cacheDir: optionalSetting("AMEM_EMBEDDING_CACHE") ?? ".data/embeddings",
-    allowDownloads:
-      optionalSetting("AMEM_ALLOW_EMBEDDING_DOWNLOADS") !== "false",
+    cacheDir,
+    allowDownloads,
   });
   const store = await openQdrantNoteStore({
-    url: setting("AMEM_QDRANT_URL"),
+    url: qdrantUrl,
     collection,
     space: embedder.space,
-    timeoutMs: integerSetting("AMEM_QDRANT_TIMEOUT_MS", 120_000),
+    timeoutMs: qdrantTimeoutMs,
     ...(qdrantApiKey === undefined ? {} : { apiKey: qdrantApiKey }),
   });
   const model = createHostModelTransport({
-    endpoint: setting("AMEM_MODEL_ENDPOINT"),
-    model: setting("AMEM_MODEL_ID"),
-    timeoutMs: integerSetting("AMEM_MODEL_TIMEOUT_MS", 120_000),
-    maxOutputTokens: integerSetting("AMEM_MODEL_MAX_OUTPUT_TOKENS", 6_000),
+    endpoint: modelEndpoint,
+    model: modelId,
+    timeoutMs: modelTimeoutMs,
+    maxOutputTokens: modelMaxOutputTokens,
     ...(modelApiKey === undefined ? {} : { apiKey: modelApiKey }),
   });
 

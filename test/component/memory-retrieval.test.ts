@@ -513,6 +513,98 @@ describe("page", () => {
   });
 });
 
+describe("detached records", () => {
+  /** A stored note whose nested metadata and arrays a shared reference would expose. */
+  const storedNote = (id: string, links: string[] = []): Note => ({
+    ...note(id, links),
+    metadata: { origin: { sources: ["stored"] } },
+  });
+
+  /** Mutate every container of a read result, so a shared reference changes the store. */
+  const mutateEveryField = (value: Note): void => {
+    value.content = "rewritten through the read result";
+    value.context = "Rewritten through the read result.";
+    value.keywords.push("appended");
+    value.tags.length = 0;
+    value.links.push(LINK_TWO);
+    const metadata = value.metadata as { origin: { sources: string[] } };
+    metadata.origin.sources.push("mutated");
+  };
+
+  const required = (value: Note | undefined): Note => {
+    if (value === undefined) {
+      throw new Error("the stored note must be readable");
+    }
+    return value;
+  };
+
+  it("returns a detached note from get", async () => {
+    const { store, memory } = createMemory();
+    const stored = storedNote(MATCH_ONE, [LINK_ONE]);
+    store.seed(stored);
+
+    const returned = required(await memory.get(MATCH_ONE));
+    expect(returned).toEqual(stored);
+    expect(returned).not.toBe(stored);
+
+    mutateEveryField(returned);
+
+    expect(await memory.get(MATCH_ONE)).toEqual(stored);
+    expect(store.records.get(MATCH_ONE.toLowerCase())).toEqual(stored);
+  });
+
+  it("returns a detached page of notes", async () => {
+    const { store, memory } = createMemory();
+    const stored = storedNote(MATCH_ONE);
+    const page: Page = { notes: [stored], cursor: "next-page" };
+    store.pageResult = page;
+
+    const returned = await memory.page(10, "cursor");
+    expect(returned).toEqual(page);
+    expect(returned).not.toBe(page);
+    expect(returned.notes).not.toBe(page.notes);
+    expect(returned.notes[0]).not.toBe(stored);
+
+    mutateEveryField(required(returned.notes[0]));
+
+    expect(await memory.page(10, "cursor")).toEqual(page);
+    expect(store.pageResult).toEqual(page);
+  });
+
+  it("returns detached direct matches", async () => {
+    const { store, memory } = createMemory();
+    const stored = storedNote(MATCH_ONE, [LINK_ONE]);
+    store.nearestResults = [{ note: stored, score: 0.75 }];
+
+    const results = await memory.search("a query", { linkedLimit: 0 });
+    expect(results).toEqual([{ note: stored, via: "match", score: 0.75 }]);
+    expect(results[0]?.note).not.toBe(stored);
+
+    mutateEveryField(required(results[0]?.note));
+
+    expect(await memory.search("a query", { linkedLimit: 0 })).toEqual([
+      { note: stored, via: "match", score: 0.75 },
+    ]);
+    expect(store.nearestResults[0]?.note).toEqual(stored);
+  });
+
+  it("returns detached linked additions", async () => {
+    const { store, memory } = createMemory();
+    const stored = storedNote(LINK_ONE);
+    store.seed(stored);
+    store.nearestResults = [{ note: note(MATCH_ONE, [LINK_ONE]), score: 1 }];
+
+    const results = await memory.search("a query");
+    const addition = results.find((result) => result.via === "link");
+    expect(addition?.note).not.toBe(stored);
+
+    mutateEveryField(required(addition?.note));
+
+    expect(await memory.get(LINK_ONE)).toEqual(stored);
+    expect(store.records.get(LINK_ONE.toLowerCase())).toEqual(stored);
+  });
+});
+
 describe("read-only guarantees", () => {
   it("never invokes the language model or writes during retrieval", async () => {
     const { store, model, memory } = createMemory();
