@@ -34,8 +34,12 @@ const attributes = readConstructionResponse(response);
 The transport sends the assembled prompt unchanged, removes at most one outer Markdown JSON fence
 and returns parsed JSON, including a structurally invalid value for the memory response schema to
 reject. Timeout, cancellation, provider errors, length-truncated output and invalid JSON fail with a
-`HostModelTransportError` that names the stage and never exposes authorization headers. There are
-no implicit retries; a host that retries transport failures owns that policy and its bounds.
+`HostModelTransportError` that names the stage and keeps the configured credential out of every
+diagnostic: text a provider or fetch failure echoes is redacted before it is shortened, and no raw
+provider or fetch cause is attached. An API key the platform cannot send as an `authorization`
+header, or an endpoint that embeds credentials, is rejected when the transport is created without
+echoing the value. There are no implicit retries; a host that retries transport failures owns that
+policy and its bounds.
 
 A live call needs host credentials and is opt-in; the deterministic checks use controlled protocol
 fixtures and invoke no model. To record raw exchanges, usage, duration and finish reason for

@@ -14,13 +14,44 @@ import { z } from "zod";
 
 import type { LanguageModel, ModelRequest } from "../src/index.js";
 
+/**
+ * Whether the platform can send this credential in the `authorization` header the transport sets.
+ * The runtime owns the header rule, and this check keeps the credential out of the header-value
+ * failure fetch would otherwise raise for an unusable key.
+ */
+const isBearerHeaderValue = (apiKey: string): boolean => {
+  try {
+    new Headers().set("authorization", `Bearer ${apiKey}`);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const optionsSchema = z.strictObject({
-  /** Full chat-completions URL, for example https://api.deepseek.com/chat/completions. */
-  endpoint: z.url(),
+  /**
+   * Full chat-completions URL, for example https://api.deepseek.com/chat/completions. Credentials
+   * belong in `apiKey`; an embedded userinfo credential is rejected without being echoed because
+   * fetch cannot send such a URL.
+   */
+  endpoint: z.url().refine((endpoint) => {
+    const url = new URL(endpoint);
+    return url.username === "" && url.password === "";
+  }, "An endpoint must not embed credentials; supply them as the API key."),
   /** Provider model ID; the host records the exact value it invoked. */
   model: z.string().min(1),
-  /** Provider credential; omitted for an unauthenticated local gateway. */
-  apiKey: z.string().min(1).optional(),
+  /**
+   * Provider credential; omitted for an unauthenticated local gateway. A value the platform cannot
+   * send as an `authorization` header is rejected without being echoed.
+   */
+  apiKey: z
+    .string()
+    .min(1, "An API key must be nonempty.")
+    .refine(
+      isBearerHeaderValue,
+      "An API key must be a valid HTTP header value.",
+    )
+    .optional(),
   /** Finite request timeout in milliseconds. */
   timeoutMs: z.number().int().positive(),
   /** Provider output-token budget for a single request. */
@@ -44,22 +75,39 @@ const optionsSchema = z.strictObject({
 /** Host settings for the example transport. */
 export type HostModelTransportOptions = z.infer<typeof optionsSchema>;
 
-/** A transport failure carrying the memory stage and safe diagnostics, never credentials. */
+/**
+ * A transport failure carrying the memory stage and a safe diagnostic. Provider and fetch failures
+ * are untrusted text that may echo request headers, so every diagnostic is redacted and no raw
+ * provider or fetch cause is attached.
+ */
 export class HostModelTransportError extends Error {
   readonly stage: ModelRequest["stage"];
 
-  constructor(stage: ModelRequest["stage"], reason: string, cause?: unknown) {
-    super(
-      `The ${stage} model request failed: ${reason}.`,
-      cause === undefined ? undefined : { cause },
-    );
+  constructor(stage: ModelRequest["stage"], reason: string) {
+    super(`The ${stage} model request failed: ${reason}.`);
     this.name = "HostModelTransportError";
     this.stage = stage;
   }
 }
 
-/** Provider diagnostics stay short and never include request headers. */
+/** Provider diagnostics stay short and never include the configured credential. */
 const MAX_DIAGNOSTIC_LENGTH = 300;
+
+/**
+ * Remove every credential form an untrusted provider or fetch diagnostic can echo: the value
+ * itself, the authorization header the transport sent, and a JSON-escaped copy, because provider
+ * error bodies are commonly JSON. Redaction runs before shortening, so truncation cannot leave
+ * part of a credential behind.
+ */
+const redactCredential = (text: string, apiKey: string | undefined): string => {
+  if (apiKey === undefined) {
+    return text;
+  }
+  return text
+    .replaceAll(`Bearer ${apiKey}`, "[redacted]")
+    .replaceAll(JSON.stringify(apiKey).slice(1, -1), "[redacted]")
+    .replaceAll(apiKey, "[redacted]");
+};
 
 const summarize = (text: string): string => {
   const collapsed = text.replace(/\s+/g, " ").trim();
@@ -68,9 +116,16 @@ const summarize = (text: string): string => {
     : collapsed;
 };
 
+/** Shorten untrusted provider or fetch text after removing the configured credential from it. */
+const diagnostic = (text: string, apiKey: string | undefined): string =>
+  summarize(redactCredential(text, apiKey));
+
 const errorBodySchema = z.object({ error: z.object({ message: z.string() }) });
 
-const providerFailureDetail = (bodyText: string): string => {
+const providerFailureDetail = (
+  bodyText: string,
+  apiKey: string | undefined,
+): string => {
   const trimmed = bodyText.trim();
   if (trimmed === "") {
     return "";
@@ -78,12 +133,12 @@ const providerFailureDetail = (bodyText: string): string => {
   try {
     const parsed = errorBodySchema.safeParse(JSON.parse(trimmed));
     if (parsed.success) {
-      return `: ${summarize(parsed.data.error.message)}`;
+      return `: ${diagnostic(parsed.data.error.message, apiKey)}`;
     }
   } catch {
     // A non-JSON body is summarized as it was received.
   }
-  return `: ${summarize(trimmed)}`;
+  return `: ${diagnostic(trimmed, apiKey)}`;
 };
 
 const completionSchema = z.object({
@@ -111,16 +166,19 @@ const parseModelOutput = (
 ): unknown => {
   try {
     return JSON.parse(unfence(output));
-  } catch (cause) {
+  } catch {
     throw new HostModelTransportError(
       stage,
       "the model returned output that is not valid JSON",
-      cause,
     );
   }
 };
 
-const describeFetchFailure = (cause: unknown, timeoutMs: number): string => {
+const describeFetchFailure = (
+  cause: unknown,
+  timeoutMs: number,
+  apiKey: string | undefined,
+): string => {
   if (cause instanceof Error) {
     if (cause.name === "TimeoutError") {
       return `the provider did not answer within ${timeoutMs} ms`;
@@ -128,7 +186,10 @@ const describeFetchFailure = (cause: unknown, timeoutMs: number): string => {
     if (cause.name === "AbortError") {
       return "the request was cancelled";
     }
-    return `the request could not reach the provider (${summarize(cause.message)})`;
+    return `the request could not reach the provider (${diagnostic(
+      cause.message,
+      apiKey,
+    )})`;
   }
   return "the request could not reach the provider";
 };
@@ -173,37 +234,37 @@ export const createHostModelTransport = (
       } catch (cause) {
         throw new HostModelTransportError(
           request.stage,
-          describeFetchFailure(cause, timeoutMs),
-          cause,
+          describeFetchFailure(cause, timeoutMs, apiKey),
         );
       }
 
       let bodyText: string;
       try {
         bodyText = await response.text();
-      } catch (cause) {
+      } catch {
         throw new HostModelTransportError(
           request.stage,
           "the provider response body could not be read",
-          cause,
         );
       }
 
       if (!response.ok) {
         throw new HostModelTransportError(
           request.stage,
-          `the provider answered HTTP ${response.status}${providerFailureDetail(bodyText)}`,
+          `the provider answered HTTP ${response.status}${providerFailureDetail(
+            bodyText,
+            apiKey,
+          )}`,
         );
       }
 
       let payload: unknown;
       try {
         payload = JSON.parse(bodyText);
-      } catch (cause) {
+      } catch {
         throw new HostModelTransportError(
           request.stage,
           "the provider response body is not JSON",
-          cause,
         );
       }
 
@@ -226,7 +287,9 @@ export const createHostModelTransport = (
         throw new HostModelTransportError(
           request.stage,
           `the provider stopped before finishing (finish reason ${JSON.stringify(
-            choice.finish_reason,
+            choice.finish_reason === null
+              ? null
+              : diagnostic(choice.finish_reason, apiKey),
           )})`,
         );
       }

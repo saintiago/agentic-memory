@@ -1,3 +1,5 @@
+import { inspect } from "node:util";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -69,6 +71,23 @@ const failure = async (promise: Promise<unknown>): Promise<Error> => {
   throw new Error("Expected the transport to reject.");
 };
 
+/** Capture a synchronous failure so its diagnostics can be inspected. */
+const thrown = (act: () => unknown): Error => {
+  try {
+    act();
+  } catch (cause) {
+    if (cause instanceof Error) {
+      return cause;
+    }
+    throw cause;
+  }
+  throw new Error("Expected the call to throw.");
+};
+
+/** Everything a host could log for a failure: message, stack, cause chain and own properties. */
+const diagnostics = (error: unknown): string =>
+  inspect(error, { depth: 5, getters: true });
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("host model transport example", () => {
@@ -139,6 +158,129 @@ describe("host model transport example", () => {
     expect(error.message).toContain("Invalid API key");
     expect(String(error)).not.toContain("host-secret-key");
     expect(calls).toHaveLength(1);
+  });
+
+  it("redacts a credential echoed by a JSON provider error", async () => {
+    const apiKey = "sk-review-synthetic-secret";
+    const { fetch } = controlledFetch(async () =>
+      jsonResponse(
+        {
+          error: {
+            message: `Invalid key ${apiKey} for authorization: Bearer ${apiKey}`,
+          },
+        },
+        401,
+      ),
+    );
+    const transport = createHostModelTransport(settings({ fetch, apiKey }));
+
+    const error = await failure(
+      transport.generate({ stage: "construct", prompt: "p" }),
+    );
+
+    expect(error.message).toContain("HTTP 401");
+    expect(error.message).toContain("[redacted]");
+    expect(diagnostics(error)).not.toContain(apiKey);
+  });
+
+  it("redacts a credential echoed by a plain-text gateway error", async () => {
+    const apiKey = "sk-review-synthetic-secret";
+    const { fetch } = controlledFetch(
+      async () =>
+        new Response(`upstream rejected authorization: Bearer ${apiKey}`, {
+          status: 502,
+        }),
+    );
+    const transport = createHostModelTransport(settings({ fetch, apiKey }));
+
+    const error = await failure(
+      transport.generate({ stage: "evolve", prompt: "p" }),
+    );
+
+    expect(error.message).toContain("HTTP 502");
+    expect(diagnostics(error)).not.toContain(apiKey);
+  });
+
+  it("redacts a credential before shortening a long diagnostic", async () => {
+    const apiKey = "sk-review-synthetic-secret";
+    const { fetch } = controlledFetch(
+      async () =>
+        new Response(`${"x".repeat(280)} Bearer ${apiKey} after`, {
+          status: 502,
+        }),
+    );
+    const transport = createHostModelTransport(settings({ fetch, apiKey }));
+
+    const error = await failure(
+      transport.generate({ stage: "construct", prompt: "p" }),
+    );
+
+    // The credential straddles the 300-character cutoff, so shortening first would leave a
+    // credential prefix in the diagnostic.
+    expect(error.message).toContain("HTTP 502");
+    expect(error.message).not.toContain(apiKey.slice(0, 12));
+    expect(diagnostics(error)).not.toContain(apiKey);
+  });
+
+  it("redacts a credential that a JSON body escapes instead of quoting", async () => {
+    const apiKey = 'ho"st-review-secret';
+    const { fetch } = controlledFetch(
+      async () =>
+        new Response(JSON.stringify({ detail: `Bearer ${apiKey}` }), {
+          status: 500,
+        }),
+    );
+    const transport = createHostModelTransport(settings({ fetch, apiKey }));
+
+    const error = await failure(
+      transport.generate({ stage: "construct", prompt: "p" }),
+    );
+
+    expect(error.message).toContain("HTTP 500");
+    expect(diagnostics(error)).not.toContain(apiKey);
+    expect(diagnostics(error)).not.toContain("st-review-secret");
+  });
+
+  it("redacts a credential echoed by a fetch failure and attaches no raw cause", async () => {
+    const apiKey = "sk-review-synthetic-secret";
+    const { fetch } = controlledFetch(async () => {
+      const cause = new Error(
+        `socket closed while sending authorization: Bearer ${apiKey}`,
+      );
+      cause.stack = `${cause.stack ?? ""}\n    at send (${apiKey})`;
+      throw cause;
+    });
+    const transport = createHostModelTransport(settings({ fetch, apiKey }));
+
+    const error = await failure(
+      transport.generate({ stage: "construct", prompt: "p" }),
+    );
+
+    expect(error.message).toContain("could not reach the provider");
+    expect(diagnostics(error)).not.toContain(apiKey);
+  });
+
+  it("rejects an API key that cannot be sent as a header value without echoing it", () => {
+    // Node's fetch raises a TypeError naming the authorization header value for such a key, so the
+    // transport rejects it before any request instead of copying that failure.
+    const apiKey = "review-synthetic\nsecret";
+
+    const error = thrown(() => createHostModelTransport(settings({ apiKey })));
+
+    expect(error.message).toMatch(/valid HTTP header value/);
+    expect(diagnostics(error)).not.toContain("review-synthetic");
+  });
+
+  it("rejects an endpoint that embeds credentials without echoing them", () => {
+    const endpoint =
+      "https://synthetic-user:synthetic-review-secret@model.example/chat/completions";
+
+    const error = thrown(() =>
+      createHostModelTransport(settings({ endpoint })),
+    );
+
+    expect(error.message).toMatch(/must not embed credentials/);
+    expect(diagnostics(error)).not.toContain("synthetic-review-secret");
   });
 
   it("rejects a provider body that is not JSON", async () => {
