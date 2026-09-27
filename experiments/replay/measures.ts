@@ -9,6 +9,7 @@ import type {
   CostRates,
   ModeSummary,
   RetrievalRecord,
+  SampleSummary,
   TimingSummary,
   TokenUsage,
   UsageSummary,
@@ -44,6 +45,16 @@ export const summarizeTimings = (
   p95Ms: percentile(samples, 0.95),
   minMs: percentile(samples, 0),
   maxMs: percentile(samples, 1),
+});
+
+/** Summarize a measured count or length with its sample count and total. */
+export const summarizeSamples = (
+  samples: readonly number[],
+): SampleSummary => ({
+  samples: samples.length,
+  total: samples.reduce((total, value) => total + value, 0),
+  median: percentile(samples, 0.5),
+  max: percentile(samples, 1),
 });
 
 /** Aggregate one comparison mode from its per-query records. */
@@ -109,32 +120,61 @@ export const summarizeMode = (
   };
 };
 
+/** The documented cost formula's outcome: an exact cost, or only the bound left by an unknown split. */
+export interface CostResult {
+  /** The exact documented cost, when input, output and cache hits are all reported. */
+  exact: number | null;
+  /** The highest cost consistent with reported usage; null unless cache hits are unknown. */
+  upperBound: number | null;
+}
+
 /**
  * The documented cost formula, with per-million rates supplied by the run. A provider that reports
- * total input including cache hits has the cached tokens subtracted before the uncached term.
- * Missing input or output usage stays unknown.
+ * total input including cache hits has the cached tokens subtracted before the uncached term. When
+ * input or output usage is missing the cost stays unknown; when only the cache split is missing, an
+ * assumed-all-uncached bound is reported separately instead of presenting an estimate as measured.
  */
 export const computeCost = (
   usage: TokenUsage,
   rates: CostRates,
-): number | null => {
-  const { inputTokens, outputTokens } = usage;
+): CostResult => {
+  const { inputTokens, outputTokens, cachedInputTokens } = usage;
   if (inputTokens === null || outputTokens === null) {
-    return null;
+    return { exact: null, upperBound: null };
   }
-  const cachedInput = usage.cachedInputTokens ?? 0;
-  const uncachedInput = Math.max(0, inputTokens - cachedInput);
-  return (
-    (uncachedInput * rates.uncachedInputPerMillion +
-      cachedInput * rates.cachedInputPerMillion +
-      outputTokens * rates.outputPerMillion) /
-    1_000_000
-  );
+  const outputCost = outputTokens * rates.outputPerMillion;
+  if (cachedInputTokens === null) {
+    if (rates.cachedInputPerMillion === rates.uncachedInputPerMillion) {
+      // The cache split does not change the cost, so reported input tokens are enough.
+      return {
+        exact:
+          (inputTokens * rates.uncachedInputPerMillion + outputCost) /
+          1_000_000,
+        upperBound: null,
+      };
+    }
+    return {
+      exact: null,
+      upperBound:
+        (inputTokens * rates.uncachedInputPerMillion + outputCost) / 1_000_000,
+    };
+  }
+  const uncachedInput = Math.max(0, inputTokens - cachedInputTokens);
+  return {
+    exact:
+      (uncachedInput * rates.uncachedInputPerMillion +
+        cachedInputTokens * rates.cachedInputPerMillion +
+        outputCost) /
+      1_000_000,
+    upperBound: null,
+  };
 };
 
 /** Fold the recorder's per-call usage into run totals; any failed call leaves them unknown. */
 export const summarizeUsage = (summary: RecorderSummary): UsageSummary => {
   const known = summary.usage.known && summary.calls.total > 0;
+  const cachedKnown = known && summary.usage.cachedKnown;
+  const inputTokens = known ? summary.usage.inputTokens : null;
   return {
     known,
     calls: {
@@ -142,8 +182,12 @@ export const summarizeUsage = (summary: RecorderSummary): UsageSummary => {
       failed: summary.calls.failed,
       withUsage: summary.calls.withUsage,
     },
-    uncachedInputTokens: known ? summary.usage.uncachedInputTokens : null,
-    cachedInputTokens: known ? summary.usage.cachedInputTokens : null,
+    inputTokens,
+    cachedInputTokens: cachedKnown ? summary.usage.cachedInputTokens : null,
+    uncachedInputTokens:
+      cachedKnown && inputTokens !== null
+        ? Math.max(0, inputTokens - summary.usage.cachedInputTokens)
+        : null,
     outputTokens: known ? summary.usage.outputTokens : null,
   };
 };

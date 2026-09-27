@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import type { EmbeddedNote, Note, NoteStore } from "../../src/index.js";
+import {
+  embeddingText,
+  type EmbeddedNote,
+  type Note,
+  type NoteStore,
+} from "../../src/index.js";
 import {
   RunDirectoryError,
   type ChangeRecord,
@@ -15,9 +20,13 @@ import {
   type RunReport,
   type SourceRecord,
   type FinalNoteRecord,
+  type TokenUsage,
 } from "../../experiments/replay/artifacts.js";
-import { createInMemoryEnvironment } from "../../experiments/replay/environment.js";
-import type { EvaluationEnvironment } from "../../experiments/replay/environment.js";
+import {
+  createInMemoryEnvironment,
+  EvaluationEndpointError,
+  type EvaluationEnvironment,
+} from "../../experiments/replay/environment.js";
 import { readEvolutionEnvelope } from "../../experiments/replay/envelope.js";
 import { FixtureError, fixtureHash } from "../../experiments/replay/fixture.js";
 import type { ModelBudget } from "../../experiments/replay/recorder.js";
@@ -71,6 +80,18 @@ const readJsonl = async <T>(directory: string, file: string): Promise<T[]> => {
 const readJson = async <T>(directory: string, file: string): Promise<T> =>
   JSON.parse(await readFile(path.join(directory, file), "utf8")) as T;
 
+/** The declared canonical character serialization a retrieval record must reproduce. */
+const charactersOf = (
+  note: Note,
+): { content: number; attributes: number; total: number } => {
+  const total = embeddingText(note).length;
+  return {
+    content: note.content.length,
+    attributes: total - note.content.length,
+    total,
+  };
+};
+
 const RATES: CostRates = {
   currency: "USD",
   effectiveDate: "2026-09-01",
@@ -80,39 +101,55 @@ const RATES: CostRates = {
 };
 
 /** The three constructions and two evolutions a full three-source replay issues, in order. */
-const scriptedModel = (): ScriptedModel =>
+const scriptedModel = (usage: TokenUsage | null = null): ScriptedModel =>
   new ScriptedModel()
-    .queue("construct", () => ({
-      context: "Records the alpha procedure approval requirement.",
-      keywords: ["alpha", "approval"],
-      tags: ["procedure"],
-    }))
-    .queue("construct", () => ({
-      context: "Records the granted alpha procedure approval.",
-      keywords: ["alpha", "approval", "record"],
-      tags: ["procedure"],
-    }))
-    .queue("evolve", (request) => {
-      const { incoming, neighbors } = readEvolutionEnvelope(request.prompt);
-      const related = neighbors
-        .filter(
-          (neighbor) =>
-            neighbor.content.includes("alpha") &&
-            incoming.content.includes("alpha"),
-        )
-        .map((neighbor) => neighbor.id);
-      return {
-        links: related,
-        newTags: [...incoming.tags, "linked"],
-        updates: [],
-      };
-    })
-    .queue("construct", () => ({
-      context: "Records the beta routine result.",
-      keywords: ["beta", "routine"],
-      tags: ["routine"],
-    }))
-    .queue("evolve", () => ({ links: [], newTags: [], updates: [] }));
+    .queue(
+      "construct",
+      () => ({
+        context: "Records the alpha procedure approval requirement.",
+        keywords: ["alpha", "approval"],
+        tags: ["procedure"],
+      }),
+      usage,
+    )
+    .queue(
+      "construct",
+      () => ({
+        context: "Records the granted alpha procedure approval.",
+        keywords: ["alpha", "approval", "record"],
+        tags: ["procedure"],
+      }),
+      usage,
+    )
+    .queue(
+      "evolve",
+      (request) => {
+        const { incoming, neighbors } = readEvolutionEnvelope(request.prompt);
+        const related = neighbors
+          .filter(
+            (neighbor) =>
+              neighbor.content.includes("alpha") &&
+              incoming.content.includes("alpha"),
+          )
+          .map((neighbor) => neighbor.id);
+        return {
+          links: related,
+          newTags: [...incoming.tags, "linked"],
+          updates: [],
+        };
+      },
+      usage,
+    )
+    .queue(
+      "construct",
+      () => ({
+        context: "Records the beta routine result.",
+        keywords: ["beta", "routine"],
+        tags: ["routine"],
+      }),
+      usage,
+    )
+    .queue("evolve", () => ({ links: [], newTags: [], updates: [] }), usage);
 
 const replayOptions = async (input: {
   model: ScriptedModel;
@@ -211,6 +248,7 @@ describe("replay runner", () => {
           ?.content,
       );
       expect(record.noteId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(record.outcome).toBe("inserted");
     }
 
     const construction = await readJsonl<ConstructionRecord>(
@@ -297,6 +335,10 @@ describe("replay runner", () => {
     );
     for (const record of retrieval) {
       for (const result of record.results) {
+        // Every ordered result carries the complete note snapshot the mode returned.
+        expect(result.note.id).toBe(result.noteId);
+        expect(result.note.content.length).toBeGreaterThan(0);
+        expect(charactersOf(result.note)).toEqual(result.characters);
         if (result.origin === "match") {
           expect(typeof result.score).toBe("number");
         } else {
@@ -337,16 +379,39 @@ describe("replay runner", () => {
       concurrency: 1,
     });
     expect(report.context.sourceCharacters.max).toBeGreaterThan(0);
+    // The candidate neighbors the insertion phase selected stay measured, not just counted.
+    expect(report.context.neighbors.insertionsWithCandidates).toBe(2);
+    expect(report.context.neighbors.count).toMatchObject({
+      samples: 2,
+      total: 3,
+      max: 2,
+    });
+    expect(report.context.neighbors.characters.total).toBeGreaterThan(0);
     expect(report.storage).toEqual({
       notes: 3,
       dimensions: 4,
       rawVectorBytes: 48,
+      indexedVectors: null,
+      configuration: null,
       note:
         "Raw float32 vectors only; payloads, indexes, WAL, replicas, allocator overhead and " +
-        "backups are excluded.",
+        "backups are excluded. This environment did not report the collection's indexed-vector " +
+        "count or configuration.",
     });
+    expect(report.timings.startup).toMatchObject({
+      encoderLoadMs: null,
+      modelSetupMs: null,
+    });
+    expect(report.timings.startup.runtimeCollectionMs).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(
+      report.timings.startup.baselineMaterializationMs,
+    ).toBeGreaterThanOrEqual(0);
+    expect(report.timings.insertions.firstMs).not.toBeNull();
     expect(report.timings.search["evolved-linked"]?.all.samples).toBe(2);
-    expect(report.timings.search["evolved-linked"]?.coldMs).not.toBeNull();
+    expect(report.timings.search["evolved-linked"]?.firstMs).not.toBeNull();
+    expect(report.budget).toBeNull();
     expect(report.limits).toEqual([]);
     expect(report.extrapolations).toEqual([]);
 
@@ -362,7 +427,111 @@ describe("replay runner", () => {
     expect(manifest.storage.collections["original-content"]).toContain(
       "amem-eval-raw-content-v1",
     );
+    // The transport sends no thinking parameter, so the manifest records the setting as external.
+    expect(manifest.model.thinking).toBe("disabled-external");
     expect(manifest.timing.finishedAt).not.toBeNull();
+  });
+
+  it("applies supplied prompts to both stages and records the ones it used", async () => {
+    const model = scriptedModel();
+    const options = await replayOptions({ model, runId: "custom-prompts" });
+    options.prompts = {
+      construction: "Custom construction instructions.",
+      evolution: "Custom evolution instructions.",
+    };
+    const result = await runReplay(options);
+
+    expect(result.status).toBe("completed");
+    expect(result.manifest.prompts).toEqual({
+      construction: "Custom construction instructions.",
+      evolution: "Custom evolution instructions.",
+    });
+    const [construct, , evolve] = model.requests;
+    expect(construct?.prompt).toContain("Custom construction instructions.");
+    expect(construct?.prompt).not.toContain(
+      "Describe this memory for later retrieval.",
+    );
+    expect(evolve?.prompt).toContain("Custom evolution instructions.");
+    expect(evolve?.prompt).not.toContain(
+      "Consider the incoming memory alongside its nearest existing memories.",
+    );
+  });
+
+  it("records host-measured startup separately from the first operation", async () => {
+    const options = await replayOptions({
+      model: scriptedModel(),
+      runId: "startup",
+    });
+    options.startup = { encoderLoadMs: 1_234.5, modelSetupMs: 12.5 };
+    const result = await runReplay(options);
+
+    expect(result.report.timings.startup).toMatchObject({
+      encoderLoadMs: 1_234.5,
+      modelSetupMs: 12.5,
+    });
+    expect(
+      result.report.timings.startup.runtimeCollectionMs,
+    ).toBeGreaterThanOrEqual(0);
+    // The first insertion is a first-operation timing, not the encoder's cold load.
+    expect(result.report.timings.insertions.firstMs).not.toBeNull();
+    expect(result.report.context.neighbors.insertionsWithCandidates).toBe(2);
+  });
+
+  it("reports the stored state the environment can observe", async () => {
+    const options = await replayOptions({
+      model: scriptedModel(),
+      runId: "observed-storage",
+    });
+    const base = options.environment;
+    options.environment = {
+      ...base,
+      async observe() {
+        return {
+          indexedVectors: 3,
+          configuration: { kind: "test-store" },
+        };
+      },
+    };
+    const result = await runReplay(options);
+
+    expect(result.report.storage).toMatchObject({
+      indexedVectors: 3,
+      configuration: { kind: "test-store" },
+    });
+    expect(result.report.storage.note).not.toContain("did not report");
+  });
+
+  it("rejects a credential-bearing storage endpoint before the run directory exists", async () => {
+    const runsDirectory = await temporaryDirectory();
+    const model = scriptedModel();
+    const options = await replayOptions({
+      model,
+      runId: "credential-url",
+      runsDirectory,
+    });
+    const base = options.environment;
+    options.environment = {
+      ...base,
+      describe: () => ({
+        ...base.describe(),
+        storage: {
+          kind: "qdrant",
+          endpoint:
+            "https://synthetic-user:synthetic-secret@qdrant.example:16333",
+          schemaVersion: 1,
+        },
+      }),
+    };
+
+    const failure: unknown = await runReplay(options).catch(
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBeInstanceOf(EvaluationEndpointError);
+    expect((failure as Error).message).not.toContain("synthetic-secret");
+    expect(model.requests).toHaveLength(0);
+    await expect(
+      stat(path.join(runsDirectory, "credential-url")),
+    ).rejects.toThrow();
   });
 
   it("produces the same notes and measures on a second run of the same fixture", async () => {
@@ -501,17 +670,39 @@ describe("replay runner", () => {
     expect(await readJsonl(result.directory, "retrieval.jsonl")).toHaveLength(
       0,
     );
-    expect(
-      await readJsonl<SourceRecord>(result.directory, "sources.jsonl"),
-    ).toHaveLength(1);
+    // Every supplied entry is recorded, with the identity the failed attempt allocated.
+    const sources = await readJsonl<SourceRecord>(
+      result.directory,
+      "sources.jsonl",
+    );
+    expect(sources.map((record) => [record.sourceId, record.outcome])).toEqual([
+      ["alpha-requirement", "inserted"],
+      ["alpha-record", "failed"],
+      ["beta-observation", "unattempted"],
+    ]);
+    expect(sources[1]?.noteId).toBe(result.failure?.noteId);
     expect(
       await readJsonl<FinalNoteRecord>(result.directory, "notes.jsonl"),
+    ).toHaveLength(1);
+    // A construction that succeeded before the response validation failed is still evidence.
+    expect(
+      await readJsonl<ConstructionRecord>(
+        result.directory,
+        "construction.jsonl",
+      ),
     ).toHaveLength(1);
     expect(result.report.counts).toMatchObject({
       insertions: 1,
       insertionFailures: 1,
       // The transport returned a value; Memory rejected it, so the call itself did not fail.
       failedModelCalls: 0,
+    });
+    // The uninterrupted-run bound does not describe a failed run.
+    expect(result.report.generation).toMatchObject({
+      successfulConstruct: 1,
+      totalSuccessful: 1,
+      upperBound: null,
+      withinBound: null,
     });
     const calls = await readJsonl<ModelCallRecord>(
       result.directory,
@@ -538,6 +729,18 @@ describe("replay runner", () => {
     );
     expect(result.status).toBe("failed");
     expect(result.report.counts.failedModelCalls).toBe(1);
+    // The failed attempt is not counted as a successful generation call.
+    expect(result.report.generation).toMatchObject({
+      successfulConstruct: 1,
+      successfulEvolve: 0,
+      totalSuccessful: 1,
+      upperBound: null,
+      withinBound: null,
+    });
+    expect(result.report.counts.modelCalls).toMatchObject({
+      construct: 2,
+      total: 2,
+    });
     expect(result.report.usage).toMatchObject({
       known: false,
       uncachedInputTokens: null,
@@ -548,6 +751,57 @@ describe("replay runner", () => {
       "calls.jsonl",
     );
     expect(calls[1]?.error?.message).toBe("the provider did not answer");
+  });
+
+  it("keeps the construction of an insertion that fails during evolution", async () => {
+    const model = new ScriptedModel()
+      .queue("construct", () => ({
+        context: "Records the alpha procedure approval requirement.",
+        keywords: ["alpha", "approval"],
+        tags: ["procedure"],
+      }))
+      .queue("construct", () => ({
+        context: "Records the granted alpha procedure approval.",
+        keywords: ["alpha", "approval", "record"],
+        tags: ["procedure"],
+      }))
+      // Missing newTags and updates: the response contract rejects the evolution response.
+      .queue("evolve", () => ({ links: [] }));
+    const result = await runReplay(
+      await replayOptions({ model, runId: "evolution-failure" }),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.failure).toMatchObject({
+      sourceId: "alpha-record",
+      stage: "evolve",
+      persistence: "unchanged",
+    });
+    const construction = await readJsonl<ConstructionRecord>(
+      result.directory,
+      "construction.jsonl",
+    );
+    expect(construction.map((record) => record.sourceId)).toEqual([
+      "alpha-requirement",
+      "alpha-record",
+    ]);
+    const sources = await readJsonl<SourceRecord>(
+      result.directory,
+      "sources.jsonl",
+    );
+    expect(sources[1]).toMatchObject({
+      sourceId: "alpha-record",
+      outcome: "failed",
+      noteId: construction[1]?.noteId,
+    });
+    expect(
+      await readJsonl<FinalNoteRecord>(result.directory, "notes.jsonl"),
+    ).toHaveLength(1);
+    expect(result.report.generation).toMatchObject({
+      successfulConstruct: 2,
+      successfulEvolve: 0,
+      totalSuccessful: 2,
+    });
   });
 
   it("keeps the prepared batch of a rejected write reviewable", async () => {
@@ -583,6 +837,77 @@ describe("replay runner", () => {
     expect(result.report.counts.insertions).toBe(1);
   });
 
+  it("exports the notes and construction of a write the store applied but did not acknowledge", async () => {
+    const options = await replayOptions({
+      model: scriptedModel(),
+      runId: "uncertain-applied",
+    });
+    const base = options.environment;
+    options.environment = {
+      ...base,
+      async openCollection(request) {
+        const opened = await base.openCollection(request);
+        let writes = 0;
+        const store: NoteStore = {
+          async put(records: EmbeddedNote[]): Promise<void> {
+            writes += 1;
+            await opened.store.put(records);
+            if (writes > 1) {
+              // The batch is persisted, but the acknowledgment never reaches Memory.
+              throw new Error("the acknowledgment was lost");
+            }
+          },
+          get: (ids) => opened.store.get(ids),
+          nearest: (vector, limit) => opened.store.nearest(vector, limit),
+          page: (limit, cursor) => opened.store.page(limit, cursor),
+        };
+        return { store, collection: opened.collection };
+      },
+    };
+    const result = await runReplay(options);
+
+    expect(result.status).toBe("failed");
+    expect(result.failure).toMatchObject({
+      sourceId: "alpha-record",
+      stage: "persist",
+      persistence: "uncertain",
+    });
+    // Every supplied source is recorded with the identity the rejected attempt allocated.
+    const sources = await readJsonl<SourceRecord>(
+      result.directory,
+      "sources.jsonl",
+    );
+    expect(sources.map((record) => [record.sourceId, record.outcome])).toEqual([
+      ["alpha-requirement", "inserted"],
+      ["alpha-record", "failed"],
+      ["beta-observation", "unattempted"],
+    ]);
+    expect(sources[1]?.noteId).toBe(result.failure?.noteId);
+    // The applied batch is exported through pagination even though it was never acknowledged.
+    const notes = await readJsonl<FinalNoteRecord>(
+      result.directory,
+      "notes.jsonl",
+    );
+    expect(notes.map((record) => record.sourceId)).toEqual([
+      "alpha-requirement",
+      "alpha-record",
+    ]);
+    expect(result.report.counts).toMatchObject({
+      insertions: 1,
+      finalNotes: 2,
+      insertionFailures: 1,
+    });
+    // The construction that succeeded before the lost acknowledgment stays recorded.
+    const construction = await readJsonl<ConstructionRecord>(
+      result.directory,
+      "construction.jsonl",
+    );
+    expect(construction.map((record) => record.sourceId)).toEqual([
+      "alpha-requirement",
+      "alpha-record",
+    ]);
+  });
+
   it("honours an explicit insertion order and rejects a non-permutation", async () => {
     const runsDirectory = await temporaryDirectory();
     const options = await replayOptions({
@@ -597,7 +922,13 @@ describe("replay runner", () => {
       result.directory,
       "sources.jsonl",
     );
-    expect(sources.map((record) => record.sourceId)).toEqual(order);
+    expect(sources.every((record) => record.outcome === "inserted")).toBe(true);
+    // The recorded calls show the insertion actually followed the explicit order.
+    const calls = await readJsonl<ModelCallRecord>(
+      result.directory,
+      "calls.jsonl",
+    );
+    expect([...new Set(calls.map((call) => call.sourceId))]).toEqual(order);
 
     const model = scriptedModel();
     await expect(
@@ -616,7 +947,13 @@ describe("replay runner", () => {
   it("stops on the declared call budget and records the reason", async () => {
     const result = await runReplay(
       await replayOptions({
-        model: scriptedModel(),
+        // The provider reports usage, so the declared token budget stays enforceable and the call
+        // budget is what stops the run.
+        model: scriptedModel({
+          inputTokens: 10,
+          cachedInputTokens: 0,
+          outputTokens: 5,
+        }),
         runId: "budget",
         budget: { callBudget: 2, tokenBudget: 1_000_000 },
       }),
@@ -624,6 +961,17 @@ describe("replay runner", () => {
     expect(result.status).toBe("stopped");
     expect(result.stoppingReason).toBe("call-budget");
     expect(result.report.stoppingReason).toBe("call-budget");
+    expect(result.report.budget).toEqual({
+      callBudget: 2,
+      tokenBudget: 1_000_000,
+      modelCalls: 2,
+      tokensUsed: 30,
+      usageComplete: true,
+    });
+    expect(result.manifest.budget).toEqual({
+      callBudget: 2,
+      tokenBudget: 1_000_000,
+    });
     const changes = await readJsonl<ChangeRecord>(
       result.directory,
       "changes.jsonl",
@@ -681,6 +1029,129 @@ describe("replay runner", () => {
     expect(result.report.cost.known).toBe(true);
   });
 
+  it("stops when the last call reaches the declared token budget", async () => {
+    const usage = { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1 };
+    const result = await runReplay(
+      await replayOptions({
+        // Five calls of three tokens reach the declared fifteen exactly on the final call.
+        model: scriptedModel(usage),
+        runId: "token-budget-end",
+        budget: { callBudget: 100, tokenBudget: 15 },
+      }),
+    );
+
+    expect(result.status).toBe("stopped");
+    expect(result.stoppingReason).toBe("token-budget");
+    expect(result.report.stoppingReason).toBe("token-budget");
+    expect(result.report.budget).toEqual({
+      callBudget: 100,
+      tokenBudget: 15,
+      modelCalls: 5,
+      tokensUsed: 15,
+      usageComplete: true,
+    });
+    const changes = await readJsonl<ChangeRecord>(
+      result.directory,
+      "changes.jsonl",
+    );
+    expect(changes.map((change) => change.kind)).toEqual([
+      "insertion",
+      "insertion",
+      "insertion",
+      "budget",
+    ]);
+    const budget = changes[3];
+    if (budget?.kind !== "budget") {
+      throw new Error("expected the recorded budget stop");
+    }
+    // The stop happened after the last insertion, not inside a new attempt.
+    expect(budget.sourceId).toBeNull();
+    expect(budget.budgetReason).toBe("token-budget");
+  });
+
+  it("stops instead of continuing when a declared token budget has no usage to check", async () => {
+    const result = await runReplay(
+      await replayOptions({
+        model: scriptedModel(),
+        runId: "token-budget-unknown",
+        budget: { callBudget: 100, tokenBudget: 1_000 },
+      }),
+    );
+
+    expect(result.status).toBe("stopped");
+    expect(result.stoppingReason).toBe("token-budget");
+    expect(result.report.budget).toEqual({
+      callBudget: 100,
+      tokenBudget: 1_000,
+      modelCalls: 1,
+      tokensUsed: null,
+      usageComplete: false,
+    });
+    const enforceability = result.report.checks.find(
+      (check) => check.name === "declared token budget enforceable",
+    );
+    expect(enforceability?.ok).toBe(false);
+    const budget = await readJsonl<ChangeRecord>(
+      result.directory,
+      "changes.jsonl",
+    );
+    expect(budget.map((change) => change.kind)).toEqual([
+      "insertion",
+      "budget",
+    ]);
+  });
+
+  it("refuses the next call once reported usage reaches the declared token budget", async () => {
+    const usage = { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 };
+    const model = scriptedModel(usage);
+    const result = await runReplay(
+      await replayOptions({
+        model,
+        runId: "token-budget-refused",
+        budget: { callBudget: 100, tokenBudget: 15 },
+      }),
+    );
+
+    expect(result.status).toBe("stopped");
+    expect(result.stoppingReason).toBe("token-budget");
+    // The first call reported fifteen tokens, so the second call was never invoked.
+    expect(result.report.counts.modelCalls.total).toBe(1);
+    expect(model.requests).toHaveLength(1);
+    expect(result.report.budget).toEqual({
+      callBudget: 100,
+      tokenBudget: 15,
+      modelCalls: 1,
+      tokensUsed: 15,
+      usageComplete: true,
+    });
+  });
+
+  it("keeps an unreported cache split out of the measured cost", async () => {
+    const usage = { inputTokens: 10, cachedInputTokens: null, outputTokens: 5 };
+    const result = await runReplay(
+      await replayOptions({
+        model: scriptedModel(usage),
+        runId: "cache-unknown",
+        costRates: RATES,
+      }),
+    );
+
+    expect(result.report.usage).toMatchObject({
+      known: true,
+      inputTokens: 50,
+      cachedInputTokens: null,
+      uncachedInputTokens: null,
+      outputTokens: 25,
+    });
+    expect(result.report.cost.known).toBe(false);
+    expect(result.report.cost.total).toBeNull();
+    // The bound assumes every input token was uncached: (50 * 1 + 25 * 2) / 1_000_000.
+    expect(result.report.cost.upperBound).toBeCloseTo(0.0001, 10);
+    expect(result.report.cost.note).toContain(
+      "upperBound assumes every input token was uncached",
+    );
+  });
+
   it("records excluded sources and queries as input exclusions", async () => {
     const options = await replayOptions({
       model: scriptedModel(),
@@ -708,9 +1179,16 @@ describe("replay runner", () => {
         finding: "The second result preserved the record's historical tense.",
       },
     ]);
-    expect(
-      await readJsonl<SourceRecord>(result.directory, "sources.jsonl"),
-    ).toHaveLength(2);
+    // The excluded entry stays in the record, marked as excluded rather than dropped.
+    const sources = await readJsonl<SourceRecord>(
+      result.directory,
+      "sources.jsonl",
+    );
+    expect(sources.map((record) => [record.sourceId, record.outcome])).toEqual([
+      ["alpha-requirement", "inserted"],
+      ["alpha-record", "inserted"],
+      ["beta-observation", "excluded"],
+    ]);
     expect(
       await readJsonl<RetrievalRecord>(result.directory, "retrieval.jsonl"),
     ).toHaveLength(4 * 1);
@@ -735,10 +1213,10 @@ describe("deterministic demonstration", () => {
     expect(second.status).toBe("completed");
     expect(first.report.checks.every((check) => check.ok)).toBe(true);
     expect(first.report.counts).toMatchObject({
-      sources: 7,
-      queries: 6,
-      insertions: 7,
-      modelCalls: { construct: 7, evolve: 6, total: 13 },
+      sources: 10,
+      queries: 8,
+      insertions: 10,
+      modelCalls: { construct: 10, evolve: 9, total: 19 },
     });
     // The audit note is expected through one link rather than a direct match.
     expect(

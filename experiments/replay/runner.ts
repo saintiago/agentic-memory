@@ -14,6 +14,7 @@ import {
   embeddingText,
   MemoryError,
   readConstructionResponse,
+  type Attributes,
   type Cursor,
   type EmbeddedNote,
   type JsonValue,
@@ -23,6 +24,7 @@ import {
 import {
   RunArtifacts,
   runArtifactFiles,
+  type BudgetSummary,
   type ChangeRecord,
   type ConstructionRecord,
   type CostRates,
@@ -34,6 +36,8 @@ import {
   type RunReport,
   type SemanticReviewEntry,
   type SourceRecord,
+  type StoppingReason,
+  type StorageObservation,
   type TokenUsage,
 } from "./artifacts.js";
 import {
@@ -43,7 +47,10 @@ import {
   type ComparisonMode,
   type RetrievalRun,
 } from "./comparison.js";
-import type { EvaluationEnvironment } from "./environment.js";
+import {
+  assertCredentialFreeEndpoint,
+  type EvaluationEnvironment,
+} from "./environment.js";
 import {
   FixtureError,
   toAddInput,
@@ -55,6 +62,7 @@ import {
   computeCost,
   percentile,
   summarizeMode,
+  summarizeSamples,
   summarizeTimings,
   summarizeUsage,
 } from "./measures.js";
@@ -98,6 +106,16 @@ export interface ReplayRunOptions {
   recordRawExchanges?: boolean;
   /** A declared call/token budget; a live run stops instead of overspending. */
   budget?: ModelBudget | null;
+  /**
+   * Durations the host measured while preparing the environment, before the replay started. The
+   * host resolves the encoder and the model transport, so only it can report their cold cost.
+   */
+  startup?: {
+    /** Resolving the embedder, including cold encoder loading; null when unmeasured. */
+    encoderLoadMs?: number | null;
+    /** Resolving the model transport; null when unmeasured. */
+    modelSetupMs?: number | null;
+  };
   /** Per-million-token rates with currency and effective date, or `null` when unknown. */
   costRates?: CostRates | null;
   /** Manual semantic review findings recorded with the run. */
@@ -138,7 +156,7 @@ export interface ReplayResult {
   /** The recorded failure when `status` is `failed`. */
   failure: ReplayFailure | null;
   /** Why a stopped run stopped, when `status` is `stopped`. */
-  stoppingReason: string | null;
+  stoppingReason: StoppingReason | null;
 }
 
 const defaultConditions = (): Record<string, JsonValue> => ({
@@ -291,7 +309,9 @@ const sourceIdByNoteIdentity = (
 ): Map<string, string> => {
   const map = new Map<string, string>();
   for (const record of records) {
-    map.set(record.noteId.toLowerCase(), record.sourceId);
+    if (record.noteId !== null) {
+      map.set(record.noteId.toLowerCase(), record.sourceId);
+    }
   }
   return map;
 };
@@ -302,9 +322,27 @@ const countLinks = (
 ): number => {
   let links = 0;
   for (const record of records) {
+    if (record.noteId === null) {
+      continue;
+    }
     links += notes.get(record.noteId.toLowerCase())?.links.length ?? 0;
   }
   return links;
+};
+
+/**
+ * Read the construction attributes a capture holds. A response the response contract rejects is not
+ * a successful construction, so only a parseable capture produces a construction artifact.
+ */
+const capturedConstruction = (response: unknown): Attributes | null => {
+  if (response === null) {
+    return null;
+  }
+  try {
+    return structuredClone(readConstructionResponse(response));
+  } catch {
+    return null;
+  }
 };
 
 /**
@@ -339,6 +377,32 @@ export const runReplay = async (
   const linkedLimit = options.linkedLimit ?? 5;
   validateLimits({ neighbors, directLimit, linkedLimit });
   const description = options.environment.describe();
+  // A recorded endpoint identity must never carry credentials. This runs before the run directory
+  // exists, so a rejected configuration cannot leave plaintext credentials in a retained manifest.
+  assertCredentialFreeEndpoint(
+    description.storage.endpoint,
+    "The storage endpoint",
+  );
+  assertCredentialFreeEndpoint(
+    description.model.endpoint,
+    "The model endpoint",
+  );
+  const declaredBudget: ModelBudget | null = options.budget ?? null;
+  /**
+   * Every supplied entry, recorded whether or not its insertion succeeds. A failed or stopped run
+   * still shows what was supplied, what identity an attempt allocated and where it stopped.
+   */
+  const sourceRecords: SourceRecord[] = options.sources.map((source) => ({
+    sourceId: source.sourceId,
+    content: source.content,
+    timestamp: source.timestamp ?? null,
+    metadata: source.metadata ?? null,
+    noteId: null,
+    outcome: excludeSources.has(source.sourceId) ? "excluded" : "unattempted",
+  }));
+  const recordBySourceId = new Map(
+    sourceRecords.map((record) => [record.sourceId, record]),
+  );
   const manifest: RunManifest = {
     runId: options.runId,
     status: "running",
@@ -366,6 +430,7 @@ export const runReplay = async (
       collections: {},
     },
     memory: { neighbors, directLimit, linkedLimit },
+    budget: declaredBudget,
     timing: {
       startedAt: new Date().toISOString(),
       finishedAt: null,
@@ -375,27 +440,36 @@ export const runReplay = async (
   const artifacts = await RunArtifacts.create(options.runsDirectory, manifest);
   const recorder = new ReplayRecorder(artifacts, {
     recordRawExchanges: options.recordRawExchanges ?? false,
-    budget: options.budget ?? null,
+    budget: declaredBudget,
   });
   const embedder = instrumentEmbedder(options.environment.embedder, recorder);
   const model = instrumentModel(options.environment.model, recorder, {
     exchanges: options.environment.exchanges,
   });
+  const runtimeStarted = performance.now();
   const runtime = await options.environment.openCollection({
     representation: runtimeRepresentation,
     label: "runtime",
   });
+  const runtimeCollectionMs = performance.now() - runtimeStarted;
   manifest.storage.collections["runtime"] = runtime.collection;
   const runtimeStore = instrumentStore(runtime.store, recorder);
   const memory = new AgenticMemory(runtimeStore, embedder, model, {
     neighbors,
+    prompts,
   });
 
-  const sourceRecords: SourceRecord[] = [];
   const constructed: ConstructedNote[] = [];
+  const neighborSelections: Array<{ count: number; characters: number }> = [];
+  /**
+   * Generation invocations the insertion actually accepted: a construction response counts once the
+   * response contract accepted it, and an evolution response counts once the insertion moved past
+   * its validation. A transport failure or a rejected response is not a successful generation call.
+   */
+  const acceptedGeneration = { construct: 0, evolve: 0 };
   const failures: ReplayFailure[] = [];
   let status: ReplayResult["status"] = "completed";
-  let stoppingReason: string | null = null;
+  let stoppingReason: StoppingReason | null = null;
 
   for (const source of inserted) {
     recorder.beginInsertion(source.sourceId);
@@ -406,9 +480,16 @@ export const runReplay = async (
         performance.now() - started,
         note.id,
       );
+      if (capture.neighbors !== null && capture.neighbors.count > 0) {
+        neighborSelections.push(capture.neighbors);
+      }
       const attributes = structuredClone(
         readConstructionResponse(capture.constructResponse),
       );
+      acceptedGeneration.construct += 1;
+      if (capture.neighbors !== null && capture.neighbors.count > 0) {
+        acceptedGeneration.evolve += 1;
+      }
       const constructedNote: Note = {
         id: note.id,
         content: source.content,
@@ -442,13 +523,11 @@ export const runReplay = async (
         noteId: note.id,
         attributes,
       } satisfies ConstructionRecord);
-      sourceRecords.push({
-        sourceId: source.sourceId,
-        content: source.content,
-        timestamp: source.timestamp ?? null,
-        metadata: source.metadata ?? null,
-        noteId: note.id,
-      });
+      const record = recordBySourceId.get(source.sourceId);
+      if (record !== undefined) {
+        record.noteId = note.id;
+        record.outcome = "inserted";
+      }
       constructed.push({
         sourceId: source.sourceId,
         note: constructedNote,
@@ -458,7 +537,32 @@ export const runReplay = async (
       const durationMs = performance.now() - started;
       const detail = { ...failureDetail(cause), sourceId: source.sourceId };
       const capture = await recorder.endInsertion(durationMs, detail.noteId);
+      if (capture.neighbors !== null && capture.neighbors.count > 0) {
+        neighborSelections.push(capture.neighbors);
+      }
       const budget = budgetFrom(cause);
+      const record = recordBySourceId.get(source.sourceId);
+      if (record !== undefined) {
+        record.noteId = detail.noteId;
+        record.outcome = budget === null ? "failed" : "stopped";
+      }
+      // A construction that succeeded before a later stage failed is still evidence: retain its
+      // attributes and the identity the attempt allocated, as docs/evaluation.md requires.
+      const attributes = capturedConstruction(capture.constructResponse);
+      if (attributes !== null) {
+        acceptedGeneration.construct += 1;
+      }
+      if ((capture.neighbors?.count ?? 0) > 0 && detail.stage !== "evolve") {
+        // The insertion reached and passed evolution before failing at a later stage.
+        acceptedGeneration.evolve += 1;
+      }
+      if (attributes !== null && detail.noteId !== null) {
+        await artifacts.appendConstruction({
+          sourceId: source.sourceId,
+          noteId: detail.noteId,
+          attributes,
+        } satisfies ConstructionRecord);
+      }
       if (budget !== null) {
         status = "stopped";
         stoppingReason = budget.budgetReason;
@@ -495,30 +599,46 @@ export const runReplay = async (
     }
   }
 
+  // A run that reached its declared token budget on its last call never attempts another call, so
+  // the exhausted state has to reach the final outcome here as well.
+  const exhausted = recorder.budgetState();
+  if (status === "completed" && exhausted !== null) {
+    status = "stopped";
+    stoppingReason = exhausted;
+    await artifacts.appendChange({
+      kind: "budget",
+      sourceId: null,
+      noteId: null,
+      budgetReason: exhausted,
+      detail:
+        recorder.budgetDetail() ??
+        `The run exhausted its declared ${exhausted.replace("-", " ")}.`,
+    });
+  }
+
   await artifacts.writeSources(sourceRecords);
 
   const exportedNotes = await exportNotes(memory);
   const noteByIdentity = new Map(
     exportedNotes.map((note) => [note.id.toLowerCase(), note]),
   );
-  const finalNotes: FinalNoteRecord[] = sourceRecords.map((record) => {
-    const note = noteByIdentity.get(record.noteId.toLowerCase());
-    if (note === undefined) {
-      throw new Error(
-        `The acknowledged note ${record.noteId} is missing from the paged export.`,
-      );
-    }
-    return { sourceId: record.sourceId, note };
-  });
+  const sourceIdByNoteId = sourceIdByNoteIdentity(sourceRecords);
+  // Every note the store actually holds is exported, whether or not its insertion was acknowledged:
+  // an uncertain write can persist a note the run never saw acknowledged.
+  const finalNotes: FinalNoteRecord[] = exportedNotes.map((note) => ({
+    sourceId: sourceIdByNoteId.get(note.id.toLowerCase()) ?? null,
+    note,
+  }));
   await artifacts.writeNotes(finalNotes);
 
   const summaryBefore = recorder.summary();
-  const sourceIdByNoteId = sourceIdByNoteIdentity(sourceRecords);
   const retrievalRecords: RetrievalRecord[] = [];
   const checks: RunCheck[] = [];
   const retrievalEvaluated = status !== "failed";
+  let baselineMaterializationMs: number | null = null;
 
   if (retrievalEvaluated) {
+    const materializationStarted = performance.now();
     recorder.beginMaterialization();
     const runs: RetrievalRun[] = [];
     for (const mode of comparisonModes) {
@@ -538,6 +658,7 @@ export const runReplay = async (
         memory: new AgenticMemory(store, embedder, model, { neighbors }),
       });
     }
+    baselineMaterializationMs = performance.now() - materializationStarted;
     for (const mode of comparisonModes) {
       if (mode.collectionLabel === null) {
         runs.push({ mode, collection: runtime.collection, memory });
@@ -556,16 +677,37 @@ export const runReplay = async (
   }
   await artifacts.writeRetrieval(retrievalRecords);
 
+  const storageObservation: StorageObservation | null =
+    options.environment.observe === undefined
+      ? null
+      : await options.environment.observe(runtime.collection);
+
   const summary = recorder.summary();
-  const insertions = sourceRecords.length;
+  const insertions = sourceRecords.filter(
+    (record) => record.outcome === "inserted",
+  ).length;
+  const attemptedInsertions = sourceRecords.filter(
+    (record) =>
+      record.outcome === "inserted" ||
+      record.outcome === "failed" ||
+      record.outcome === "stopped",
+  ).length;
+  // The documented 2N-1 bound describes an uninterrupted run of N successful insertions. A failed
+  // or budget-stopped run counts its incomplete attempts separately instead of failing a bound that
+  // does not describe it.
+  const boundApplies = status === "completed";
   const generationBound = Math.max(0, 2 * insertions - 1);
-  const generationCalls = summary.calls.construct + summary.calls.evolve;
+  const generationCalls =
+    acceptedGeneration.construct + acceptedGeneration.evolve;
   checks.push({
     name: "generation call bound",
-    ok: generationCalls <= generationBound,
-    detail:
-      `${String(generationCalls)} successful generation calls against the documented bound ` +
-      `${String(generationBound)} for ${String(insertions)} insertions.`,
+    ok: !boundApplies || generationCalls <= generationBound,
+    detail: boundApplies
+      ? `${String(generationCalls)} successful generation calls against the documented bound ` +
+        `${String(generationBound)} for ${String(insertions)} insertions.`
+      : `Not applicable: the run ended ${status} after ${String(insertions)} insertions; ` +
+        `${String(generationCalls)} accepted and ${String(summary.calls.failed)} failed ` +
+        "generation attempts stay reported separately.",
   });
   checks.push({
     name: "retrieval makes no model call",
@@ -577,19 +719,24 @@ export const runReplay = async (
   });
   checks.push({
     name: "acknowledged notes are readable",
-    ok: finalNotes.length === insertions,
+    ok: sourceRecords.every(
+      (record) =>
+        record.outcome !== "inserted" ||
+        (record.noteId !== null &&
+          noteByIdentity.has(record.noteId.toLowerCase())),
+    ),
     detail:
-      `${String(finalNotes.length)} of ${String(insertions)} acknowledged notes exported through ` +
-      "public pagination.",
+      `${String(finalNotes.length)} notes exported through public pagination for ` +
+      `${String(insertions)} acknowledged insertions.`,
   });
   const insertionEmbeddings = summary.embeddingDurations.insertion.length;
   checks.push({
     name: "embedding call bound",
-    ok: insertionEmbeddings <= insertions * (neighbors + 2),
+    ok: insertionEmbeddings <= attemptedInsertions * (neighbors + 2),
     detail:
       `${String(insertionEmbeddings)} insertion embeddings against the documented bound ` +
-      `${String(insertions * (neighbors + 2))} for ${String(insertions)} insertions with ` +
-      `${String(neighbors)} candidates.`,
+      `${String(attemptedInsertions * (neighbors + 2))} for ${String(attemptedInsertions)} ` +
+      `attempted insertions with ${String(neighbors)} candidates.`,
   });
   if (retrievalEvaluated) {
     checks.push({
@@ -612,18 +759,74 @@ export const runReplay = async (
 
   const usage = summarizeUsage(summary);
   const rates = options.costRates ?? null;
-  const costTotal =
+  const costResult =
     usage.known && rates !== null
       ? computeCost(
           {
-            inputTokens:
-              (usage.uncachedInputTokens ?? 0) + (usage.cachedInputTokens ?? 0),
+            inputTokens: usage.inputTokens,
             cachedInputTokens: usage.cachedInputTokens,
             outputTokens: usage.outputTokens,
           } satisfies TokenUsage,
           rates,
         )
-      : null;
+      : { exact: null, upperBound: null };
+  const noModelCall = summary.calls.total === 0;
+  const costNote = ((): string => {
+    if (costResult.exact !== null) {
+      return (
+        "Generation tokens only, from reported usage and the supplied per-million-token " +
+        "rates; embedding compute, database hosting and backups are not measured."
+      );
+    }
+    if (costResult.upperBound !== null) {
+      return (
+        "Unknown: not every call reported its cache-hit tokens, and the supplied cached rate " +
+        "differs from the uncached rate. upperBound assumes every input token was uncached, the " +
+        "highest cost those rates can produce; it is not measured cost."
+      );
+    }
+    const reasons: string[] = [];
+    if (rates === null) {
+      reasons.push("no rates were supplied");
+    }
+    if (noModelCall) {
+      reasons.push("no model call was made");
+    } else if (!usage.known) {
+      reasons.push(
+        summary.calls.failed > 0
+          ? "a failed model call has unmeasured usage"
+          : "not every call reported input and output usage",
+      );
+    }
+    return `Unknown: ${reasons.join("; ")}.`;
+  })();
+  const budget: BudgetSummary | null =
+    declaredBudget === null
+      ? null
+      : {
+          callBudget: declaredBudget.callBudget,
+          tokenBudget: declaredBudget.tokenBudget,
+          modelCalls: summary.calls.total,
+          // A partial total is not a measurement, so an incomplete run reports it as unknown.
+          tokensUsed: noModelCall
+            ? 0
+            : usage.known
+              ? summary.usage.tokensUsed
+              : null,
+          usageComplete: noModelCall || usage.known,
+        };
+  if (budget !== null) {
+    checks.push({
+      name: "declared token budget enforceable",
+      ok: budget.usageComplete,
+      detail: budget.usageComplete
+        ? `${String(summary.usage.tokensUsed)} tokens reported across ` +
+          `${String(summary.calls.total)} calls against the declared ` +
+          `${String(budget.tokenBudget)}-token budget.`
+        : "Every model call must report its input and output tokens for the declared token " +
+          "budget to be verifiable; the run stopped instead of continuing beyond an unknown total.",
+    });
+  }
   const retrieval: Record<string, ModeSummary> = {};
   const search: RunReport["timings"]["search"] = {};
   for (const mode of comparisonModes) {
@@ -632,16 +835,20 @@ export const runReplay = async (
     );
     retrieval[mode.id] = summarizeMode(mode.representation, records);
     const durations = records.map((record) => record.latencyMs);
-    const [coldSearch = null, ...warmSearches] = durations;
+    const [firstSearch = null, ...warmSearches] = durations;
     search[mode.id] = {
-      coldMs: coldSearch,
+      firstMs: firstSearch,
       warm: summarizeTimings(warmSearches),
       all: summarizeTimings(durations),
     };
   }
   const insertionDurations = summary.insertionDurations;
-  const [coldMs = null, ...warmDurations] = insertionDurations;
+  const [firstInsertionMs = null, ...warmDurations] = insertionDurations;
   const sourceCharacters = inserted.map((source) => source.content.length);
+  const neighborCounts = neighborSelections.map((entry) => entry.count);
+  const neighborCharacters = neighborSelections.map(
+    (entry) => entry.characters,
+  );
   const dimensions = options.environment.embedder.space.dimensions;
   const conditions = manifest.timing.conditions;
   const concurrency =
@@ -668,33 +875,29 @@ export const runReplay = async (
       failedModelCalls: summary.calls.failed,
     },
     generation: {
-      successfulConstruct: summary.calls.construct,
-      successfulEvolve: summary.calls.evolve,
+      successfulConstruct: acceptedGeneration.construct,
+      successfulEvolve: acceptedGeneration.evolve,
       totalSuccessful: generationCalls,
-      upperBound: generationBound,
-      withinBound: generationCalls <= generationBound,
+      upperBound: boundApplies ? generationBound : null,
+      withinBound: boundApplies ? generationCalls <= generationBound : null,
+      note: boundApplies
+        ? `The documented bound for ${String(insertions)} uninterrupted insertions; a call counts ` +
+          "once the insertion accepted its response, and failed attempts and host retries are " +
+          "additional."
+        : `Not applicable: the run ended ${status}. The bound describes an uninterrupted run of ` +
+          `${String(insertions)} successful insertions; ${String(summary.calls.failed)} transport ` +
+          "failures and the incomplete attempts stay reported separately.",
     },
     retrieval,
     usage,
     cost: {
-      known: costTotal !== null,
+      known: costResult.exact !== null,
+      total: costResult.exact,
+      upperBound: costResult.upperBound,
       rates,
-      total: costTotal,
-      note:
-        costTotal !== null
-          ? "Generation tokens only, from reported usage and the supplied per-million-token " +
-            "rates; embedding compute, database hosting and backups are not measured."
-          : `Unknown: ${[
-              rates === null ? "no rates were supplied" : null,
-              usage.known
-                ? null
-                : summary.calls.failed > 0
-                  ? "a failed model call has unmeasured usage"
-                  : "not every successful call reported input and output usage",
-            ]
-              .filter((reason): reason is string => reason !== null)
-              .join("; ")}.`,
+      note: costNote,
     },
+    budget,
     context: {
       corpusNotes: insertions,
       encoderDimensions: dimensions,
@@ -702,6 +905,11 @@ export const runReplay = async (
         total: sourceCharacters.reduce((total, value) => total + value, 0),
         median: percentile(sourceCharacters, 0.5),
         max: percentile(sourceCharacters, 1),
+      },
+      neighbors: {
+        insertionsWithCandidates: neighborSelections.length,
+        count: summarizeSamples(neighborCounts),
+        characters: summarizeSamples(neighborCharacters),
       },
       limits: { neighbors, direct: directLimit, linked: linkedLimit },
       concurrency,
@@ -711,13 +919,25 @@ export const runReplay = async (
       notes: insertions,
       dimensions,
       rawVectorBytes: insertions * dimensions * 4,
+      indexedVectors: storageObservation?.indexedVectors ?? null,
+      configuration: storageObservation?.configuration ?? null,
       note:
         "Raw float32 vectors only; payloads, indexes, WAL, replicas, allocator overhead and " +
-        "backups are excluded.",
+        "backups are excluded." +
+        (storageObservation === null
+          ? " This environment did not report the collection's indexed-vector count or " +
+            "configuration."
+          : ""),
     },
     timings: {
+      startup: {
+        encoderLoadMs: options.startup?.encoderLoadMs ?? null,
+        modelSetupMs: options.startup?.modelSetupMs ?? null,
+        runtimeCollectionMs,
+        baselineMaterializationMs,
+      },
       insertions: {
-        coldMs,
+        firstMs: firstInsertionMs,
         warm: summarizeTimings(warmDurations),
         all: summarizeTimings(insertionDurations),
       },

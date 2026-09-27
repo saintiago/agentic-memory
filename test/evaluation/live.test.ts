@@ -8,6 +8,7 @@ import {
 import {
   LiveSettingsError,
   readLiveSettings,
+  recordedThinking,
 } from "../../experiments/live/settings.js";
 
 /**
@@ -125,6 +126,42 @@ describe("live settings", () => {
       ),
     ).toThrowError(/AMEM_LIVE_COST_RATES is invalid/);
   });
+
+  it("rejects a credential-bearing Qdrant URL without echoing it", () => {
+    const url = "https://synthetic-user:synthetic-secret@qdrant.example";
+    let error: LiveSettingsError | undefined;
+    try {
+      readLiveSettings(
+        { ...requiredEnvironment, AMEM_LIVE_QDRANT_URL: url },
+        "/repo",
+      );
+    } catch (cause) {
+      error = cause as LiveSettingsError;
+    }
+    expect(error).toBeInstanceOf(LiveSettingsError);
+    expect(error?.message).toContain("AMEM_LIVE_QDRANT_URL");
+    expect(error?.message).toContain("no credentials");
+    expect(error?.message).not.toContain("synthetic-secret");
+  });
+
+  it.each([
+    "http://",
+    "ftp://qdrant.example",
+    "https://qdrant.example/memory?token=synthetic-secret",
+    "http://qdrant.example:0",
+  ])("rejects the unusable Qdrant URL %s", (url) => {
+    expect(() =>
+      readLiveSettings(
+        { ...requiredEnvironment, AMEM_LIVE_QDRANT_URL: url },
+        "/repo",
+      ),
+    ).toThrowError(/AMEM_LIVE_QDRANT_URL must be an http\(s\) URL/);
+  });
+
+  it("records the thinking mode as an external provider setting", () => {
+    expect(recordedThinking(false)).toBe("disabled-external");
+    expect(recordedThinking(true)).toBe("enabled-external");
+  });
 });
 
 describe("provider exchange recording", () => {
@@ -176,6 +213,8 @@ describe("provider exchange recording", () => {
     });
     expect(exchanges.entries[0]).toMatchObject({
       requestBody: "",
+      responseBody: "",
+      // Usage is still parsed and recorded; only the private bodies are dropped.
       usage: { inputTokens: 120, cachedInputTokens: 20, outputTokens: 30 },
     });
   });

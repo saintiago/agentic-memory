@@ -40,16 +40,31 @@ export const reportSummaryLines = (report: RunReport): string[] => {
     )}`,
     `Generation calls: ${String(report.counts.modelCalls.total)} ` +
       `(${String(report.counts.modelCalls.construct)} construct, ` +
-      `${String(report.counts.modelCalls.evolve)} evolve) against the documented bound ` +
-      `${String(report.generation.upperBound)}`,
-    `Cost: ${report.cost.known ? String(report.cost.total) : "unknown"}`,
+      `${String(report.counts.modelCalls.evolve)} evolve), successful ` +
+      `${String(report.generation.totalSuccessful)}` +
+      (report.generation.upperBound === null
+        ? " (bound not applicable to this interrupted run)"
+        : ` against the documented bound ${String(report.generation.upperBound)}`),
+    `Cost: ${
+      report.cost.known
+        ? String(report.cost.total)
+        : report.cost.upperBound === null
+          ? "unknown"
+          : `unknown (upper bound ${String(report.cost.upperBound)})`
+    }`,
     "Retrieval:",
   ];
   for (const [mode, summary] of Object.entries(report.retrieval)) {
     lines.push(retrievalLine(mode, summary));
   }
   lines.push(
-    `Insertions: cold ${report.timings.insertions.coldMs?.toFixed(1) ?? "?"} ms; ` +
+    `Startup: encoder ${
+      report.timings.startup.encoderLoadMs === null
+        ? "unmeasured"
+        : `${report.timings.startup.encoderLoadMs.toFixed(1)} ms`
+    }; ` +
+      `runtime collection ${report.timings.startup.runtimeCollectionMs.toFixed(1)} ms`,
+    `Insertions: first ${report.timings.insertions.firstMs?.toFixed(1) ?? "?"} ms; ` +
       `warm ${timing(report.timings.insertions.warm)}`,
     `Stages: generation ${timing(report.timings.insertionStages.generation)}; ` +
       `embedding ${timing(report.timings.insertionStages.embedding)}; ` +
@@ -58,8 +73,17 @@ export const reportSummaryLines = (report: RunReport): string[] => {
   );
   for (const [mode, summary] of Object.entries(report.timings.search)) {
     lines.push(
-      `Search ${mode}: cold ${summary.coldMs?.toFixed(1) ?? "?"} ms; ` +
+      `Search ${mode}: first ${summary.firstMs?.toFixed(1) ?? "?"} ms; ` +
         `warm ${timing(summary.warm)}`,
+    );
+  }
+  if (report.budget !== null) {
+    lines.push(
+      `Budget: ${String(report.budget.modelCalls)} calls, ` +
+        `${report.budget.tokensUsed === null ? "unknown" : String(report.budget.tokensUsed)} tokens ` +
+        `against a declared ${String(report.budget.callBudget)}-call / ` +
+        `${String(report.budget.tokenBudget)}-token budget` +
+        (report.budget.usageComplete ? "" : " (usage incomplete)"),
     );
   }
   for (const check of report.checks) {

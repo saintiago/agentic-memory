@@ -81,7 +81,7 @@ export const runDeterministicDemo = async (options: {
       modelDescription: {
         endpoint: null,
         id: "fixture-driven-stand-in",
-        thinking: false,
+        thinking: "disabled-external",
         maxOutputTokens: null,
         timeoutMs: null,
         retries: 0,
@@ -94,6 +94,9 @@ export const runDeterministicDemo = async (options: {
       "The demonstration uses an in-memory store, a token-hashing embedder and a fixture-driven " +
         "model stand-in; it exercises the harness, not encoder, model or retrieval quality.",
       "Its timings measure in-process components, not storage or provider performance.",
+      "No encoder or provider transport is loaded and the in-memory store exposes no collection " +
+        "index, so the startup durations, indexed-vector count and storage configuration are " +
+        "reported as unmeasured rather than invented.",
     ],
   });
 };

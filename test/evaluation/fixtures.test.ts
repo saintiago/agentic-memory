@@ -152,12 +152,25 @@ describe("committed demonstration fixtures", () => {
     const sources = readSourceEntries(sourceText);
     const queries = readQueryCases(queryText);
     expect(() => validateFixture(sources, queries)).not.toThrow();
-    expect(sources).toHaveLength(7);
-    expect(queries).toHaveLength(6);
-    // Two unrelated domains, three multi-source expectations in total.
+    expect(sources).toHaveLength(10);
+    expect(queries).toHaveLength(8);
+    // Two unrelated domains, four multi-source expectations in total.
     expect(
       queries.filter((query) => query.requiredSourceIds.length > 1),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     expect(queries.some((query) => query.scope === undefined)).toBe(true);
+    // The same policy subject carries conflicting regional scopes, and a finding is followed by the
+    // attributed response to it, so the specified evaluation scenarios have source material.
+    const scopes = new Set(
+      sources.map((source) => source.metadata?.["scope"]).filter(Boolean),
+    );
+    expect(scopes).toContain("Europe");
+    expect(scopes).toContain("North America");
+    const kinds = sources.map((source) => source.metadata?.["kind"]);
+    expect(kinds).toContain("finding");
+    expect(kinds).toContain("response");
+    expect(queries.map((query) => query.id)).toContain(
+      "approval-finding-response",
+    );
   });
 });

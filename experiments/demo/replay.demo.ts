@@ -33,6 +33,6 @@ describe("deterministic replay demonstration", () => {
 
     expect(result.status).toBe("completed");
     expect(result.report.checks.every((check) => check.ok)).toBe(true);
-    expect(result.report.retrieval["original-content"]?.queries).toBe(6);
+    expect(result.report.retrieval["original-content"]?.queries).toBe(8);
   }, 60_000);
 });

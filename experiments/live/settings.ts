@@ -8,7 +8,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type { CostRates } from "../replay/artifacts.js";
+import type { CostRates, ManifestModel } from "../replay/artifacts.js";
 
 const line = (name: string): string => `- ${name}`;
 
@@ -46,6 +46,16 @@ export class LiveSettingsError extends Error {
     this.name = "LiveSettingsError";
   }
 }
+
+/**
+ * The thinking mode a live run records. The supplied transport sends no thinking parameter, so the
+ * value states how the provider or model configuration has to be set; the run itself never applies
+ * it, and the manifest says so rather than implying the transport disabled reasoning.
+ */
+export const recordedThinking = (
+  declared: boolean,
+): ManifestModel["thinking"] =>
+  declared ? "enabled-external" : "disabled-external";
 
 const costRatesSchema: z.ZodType<CostRates> = z.strictObject({
   currency: z.string().min(1, "A currency must be nonempty."),
@@ -89,6 +99,32 @@ const booleanSetting = (
     throw new LiveSettingsError(`${name} must be "true" or "false".`);
   }
   return value === "true";
+};
+
+/**
+ * The Qdrant URL rule the store enforces: an http(s) URL with a nonzero port and no credentials,
+ * query or fragment. Validating the setting here fails before an encoder download, a collection or
+ * a paid call, and the message never echoes the rejected value.
+ */
+const qdrantUrlSetting = (
+  env: Record<string, string | undefined>,
+  name: string,
+): string => {
+  const url = requiredSetting(env, name);
+  const parsed = URL.canParse(url) ? new URL(url) : null;
+  const usable =
+    parsed !== null &&
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    !/[?#]/.test(url) &&
+    parsed.port !== "0";
+  if (!usable) {
+    throw new LiveSettingsError(
+      `${name} must be an http(s) URL with a nonzero port and no credentials, query or fragment.`,
+    );
+  }
+  return url;
 };
 
 const integerSetting = (
@@ -170,7 +206,7 @@ export const readLiveSettings = (
     );
   }
   return {
-    qdrantUrl: requiredSetting(env, "AMEM_LIVE_QDRANT_URL"),
+    qdrantUrl: qdrantUrlSetting(env, "AMEM_LIVE_QDRANT_URL"),
     qdrantApiKey: optional(env, "AMEM_LIVE_QDRANT_API_KEY"),
     qdrantTimeoutMs: integerSetting(
       env,

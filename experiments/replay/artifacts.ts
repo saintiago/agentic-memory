@@ -68,7 +68,8 @@ export interface FailureChange {
 /** A run stopped on purpose because its declared call or token budget was exhausted. */
 export interface BudgetChange {
   kind: "budget";
-  sourceId: string;
+  /** The insertion the stop interrupted; null when the budget was reached after the last one. */
+  sourceId: string | null;
   noteId: string | null;
   budgetReason: "call-budget" | "token-budget";
   detail: string;
@@ -76,18 +77,29 @@ export interface BudgetChange {
 
 export type ChangeRecord = InsertionChange | FailureChange | BudgetChange;
 
-/** One supplied source entry with the note identity it produced, as recorded in `sources.jsonl`. */
+/**
+ * One supplied source entry with the note identity it produced, as recorded in `sources.jsonl`. The
+ * entry is recorded whether or not the insertion succeeded, so a failed or stopped run still shows
+ * every supplied source and the identity its failed attempt allocated.
+ */
 export interface SourceRecord {
   sourceId: string;
   content: string;
   timestamp: string | null;
   metadata: Record<string, JsonValue> | null;
-  noteId: string;
+  /** The note identity the insertion allocated; null when no insertion attempt started. */
+  noteId: string | null;
+  /**
+   * How far the supplied entry got: a successful insertion, a failed or budget-stopped attempt, an
+   * entry the run deliberately excluded, or an entry the run never reached.
+   */
+  outcome: "inserted" | "failed" | "stopped" | "excluded" | "unattempted";
 }
 
 /** One exported current note with the source it came from, as recorded in `notes.jsonl`. */
 export interface FinalNoteRecord {
-  sourceId: string;
+  /** The fixture source whose insertion allocated this note; null when the run cannot attribute it. */
+  sourceId: string | null;
   note: Note;
 }
 
@@ -104,6 +116,8 @@ export interface RetrievalResultRecord {
   sourceId: string | null;
   origin: "match" | "link";
   score: number | null;
+  /** The complete note snapshot this mode returned, with its mode-specific attributes. */
+  note: Note;
   characters: ResultCharacters;
 }
 
@@ -139,10 +153,21 @@ export interface ManifestEncoder {
 export interface ManifestModel {
   endpoint: string | null;
   id: string;
-  thinking: boolean;
+  /**
+   * The thinking mode recorded for the run. The supplied transports send no thinking parameter, so
+   * this states how the provider or model configuration was set, not something the transport
+   * applied: `unspecified` when the host declared none.
+   */
+  thinking: "disabled-external" | "enabled-external" | "unspecified";
   maxOutputTokens: number | null;
   timeoutMs: number | null;
   retries: number;
+}
+
+/** The declared live call/token budget, preserved in the run artifacts. */
+export interface DeclaredBudget {
+  callBudget: number;
+  tokenBudget: number;
 }
 
 /** Storage identity and the isolated collections the run opened. */
@@ -172,6 +197,8 @@ export interface RunManifest {
   model: ManifestModel;
   storage: ManifestStorage;
   memory: { neighbors: number; directLimit: number; linkedLimit: number };
+  /** The declared live budget, when the run declared one; null otherwise. */
+  budget: DeclaredBudget | null;
   timing: {
     startedAt: string;
     finishedAt: string | null;
@@ -217,10 +244,27 @@ export interface CostRates {
 export interface UsageSummary {
   known: boolean;
   calls: { total: number; failed: number; withUsage: number };
-  uncachedInputTokens: number | null;
+  /** Total prompt tokens when every call reported them; null otherwise. */
+  inputTokens: number | null;
+  /** Total cache-hit tokens when every call reported them; null when any call did not. */
   cachedInputTokens: number | null;
+  /** Prompt tokens no call served from cache; null when the cache split is unknown. */
+  uncachedInputTokens: number | null;
   outputTokens: number | null;
 }
+
+/** The declared live budget and what the run could verify about it; null when none was declared. */
+export interface BudgetSummary extends DeclaredBudget {
+  /** Model calls the run made against the declaration. */
+  modelCalls: number;
+  /** Prompt and completion tokens the run measured; null when any call left them unreported. */
+  tokensUsed: number | null;
+  /** Whether every call reported the input and output tokens the token budget needs. */
+  usageComplete: boolean;
+}
+
+/** A stopping reason of an opt-in run that reached its declared budget. */
+export type StoppingReason = "call-budget" | "token-budget";
 
 /** A pass/fail check the run performed on its own evidence. */
 export interface RunCheck {
@@ -235,6 +279,22 @@ export interface SemanticReviewEntry {
   queryId: string | null;
   noteId: string | null;
   finding: string;
+}
+
+/** A distribution of a measured count or length, with its sample count and total. */
+export interface SampleSummary {
+  samples: number;
+  total: number;
+  median: number | null;
+  max: number | null;
+}
+
+/** What an environment could observe about the collection a run wrote to. */
+export interface StorageObservation {
+  /** Vectors the collection actually holds; null when the environment cannot count them. */
+  indexedVectors: number | null;
+  /** Provider collection configuration read back from storage; null when unavailable. */
+  configuration: JsonValue | null;
 }
 
 /** The measurement report written after retrieval evaluation. */
@@ -255,20 +315,31 @@ export interface RunReport {
     failedModelCalls: number;
   };
   generation: {
+    /** Construction responses an insertion accepted; a rejected response is an insertion failure. */
     successfulConstruct: number;
+    /** Evolution responses an insertion accepted before advancing past their validation. */
     successfulEvolve: number;
     totalSuccessful: number;
-    upperBound: number;
-    withinBound: boolean;
+    /** The documented uninterrupted-run bound; null when the run did not insert every source. */
+    upperBound: number | null;
+    /** Whether the successful calls stayed within that bound; null when it does not apply. */
+    withinBound: boolean | null;
+    note: string;
   };
   retrieval: Record<string, ModeSummary>;
   usage: UsageSummary;
   cost: {
+    /** Whether the exact documented cost was measurable from reported usage. */
     known: boolean;
-    rates: CostRates | null;
+    /** The cost from reported usage; null when it is not exactly measurable. */
     total: number | null;
+    /** The highest cost consistent with reported usage when the cache split is unknown; else null. */
+    upperBound: number | null;
+    rates: CostRates | null;
     note: string;
   };
+  /** The declared live budget and what the run verified about it; null when none was declared. */
+  budget: BudgetSummary | null;
   /** What the run replayed, so a measure keeps the corpus and settings it belongs to. */
   context: {
     corpusNotes: number;
@@ -277,6 +348,12 @@ export interface RunReport {
       total: number;
       median: number | null;
       max: number | null;
+    };
+    /** The candidate neighbors the insertion phase selected, per insertion that had candidates. */
+    neighbors: {
+      insertionsWithCandidates: number;
+      count: SampleSummary;
+      characters: SampleSummary;
     };
     limits: { neighbors: number; direct: number; linked: number };
     concurrency: number;
@@ -287,11 +364,27 @@ export interface RunReport {
     notes: number;
     dimensions: number;
     rawVectorBytes: number;
+    /** Vectors the runtime collection actually held; null when the environment cannot report it. */
+    indexedVectors: number | null;
+    /** Provider configuration read back from the runtime collection; null when unavailable. */
+    configuration: JsonValue | null;
     note: string;
   };
   timings: {
+    /** Costs the host and the runner measured before the first insertion. */
+    startup: {
+      /** The host's embedder resolution, including cold encoder loading; null when unmeasured. */
+      encoderLoadMs: number | null;
+      /** The host's model transport setup; null when unmeasured. */
+      modelSetupMs: number | null;
+      /** Opening the runtime collection, including creation when it did not exist. */
+      runtimeCollectionMs: number;
+      /** Materializing the comparison baselines; null when retrieval evaluation was skipped. */
+      baselineMaterializationMs: number | null;
+    };
     insertions: {
-      coldMs: number | null;
+      /** The first insertion, measured apart from the warm ones; not a cold-startup measure. */
+      firstMs: number | null;
       warm: TimingSummary;
       all: TimingSummary;
     };
@@ -307,7 +400,7 @@ export interface RunReport {
     };
     search: Record<
       string,
-      { coldMs: number | null; warm: TimingSummary; all: TimingSummary }
+      { firstMs: number | null; warm: TimingSummary; all: TimingSummary }
     >;
   };
   checks: RunCheck[];
@@ -324,7 +417,7 @@ export interface RunReport {
     note: string;
   };
   semanticReview: SemanticReviewEntry[];
-  stoppingReason: string | null;
+  stoppingReason: StoppingReason | null;
   limits: string[];
   extrapolations: string[];
   artifacts: string[];

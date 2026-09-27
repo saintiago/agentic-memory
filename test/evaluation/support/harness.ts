@@ -153,7 +153,7 @@ export const testQueries: QueryCase[] = [
 export const modelDescription = {
   endpoint: "in-process",
   id: "scripted-test-model",
-  thinking: false,
+  thinking: "disabled-external",
   maxOutputTokens: 6_000,
   timeoutMs: 120_000,
   retries: 0,

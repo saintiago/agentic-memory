@@ -106,7 +106,9 @@ export const createRecordingFetch = (options: {
     const details = readProviderDetails(responseBody);
     options.exchanges.push({
       requestBody,
-      responseBody,
+      // Usage, finish reason and request ID are parsed first; the raw body is retained only when
+      // the host opted in, so the default run keeps no private provider text in memory.
+      responseBody: keepBodies ? responseBody : "",
       status: response.status,
       usage: details.usage,
       finishReason: details.finishReason,

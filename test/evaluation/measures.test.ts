@@ -46,6 +46,15 @@ const record = (
       sourceId,
       origin: "match" as const,
       score,
+      note: {
+        id: `00000000-0000-4000-8000-${sourceId.padEnd(12, "0")}`,
+        content: `the ${sourceId} content`,
+        timestamp: "2026-09-01T10:00:00Z",
+        context: "a context",
+        keywords: ["keyword"],
+        tags: ["tag"],
+        links: [],
+      },
       characters: { content: 10, attributes: 20, total: 30 },
     })),
     ...linked.map((sourceId) => ({
@@ -53,6 +62,15 @@ const record = (
       sourceId,
       origin: "link" as const,
       score: null,
+      note: {
+        id: `00000000-0000-4000-8000-${sourceId.padEnd(12, "0")}`,
+        content: `the ${sourceId} content`,
+        timestamp: "2026-09-01T10:00:00Z",
+        context: "a context",
+        keywords: ["keyword"],
+        tags: ["tag"],
+        links: [],
+      },
       characters: { content: 5, attributes: 15, total: 20 },
     })),
   ];
@@ -165,32 +183,39 @@ describe("cost", () => {
       computeCost(
         { inputTokens: 1_000, cachedInputTokens: 200, outputTokens: 100 },
         RATES,
-      ),
+      ).exact,
     ).toBeCloseTo((800 * 1 + 200 * 0.5 + 100 * 2) / 1_000_000, 12);
   });
 
-  it("treats unreported cache hits as uncached input", () => {
-    expect(
-      computeCost(
-        { inputTokens: 1_000, cachedInputTokens: null, outputTokens: 0 },
-        RATES,
-      ),
-    ).toBeCloseTo(1_000 / 1_000_000, 12);
+  it("keeps the cost unknown and reports a labeled bound without reported cache hits", () => {
+    const cost = computeCost(
+      { inputTokens: 1_000, cachedInputTokens: null, outputTokens: 100 },
+      RATES,
+    );
+    expect(cost.exact).toBeNull();
+    // The bound assumes every input token was uncached, the highest cost the rates can produce.
+    expect(cost.upperBound).toBeCloseTo((1_000 * 1 + 100 * 2) / 1_000_000, 12);
+  });
+
+  it("measures the cost when unknown cache hits cannot change it", () => {
+    const cost = computeCost(
+      { inputTokens: 1_000, cachedInputTokens: null, outputTokens: 0 },
+      { ...RATES, cachedInputPerMillion: RATES.uncachedInputPerMillion },
+    );
+    expect(cost.exact).toBeCloseTo(1_000 / 1_000_000, 12);
+    expect(cost.upperBound).toBeNull();
   });
 
   it("stays unknown without input or output usage", () => {
-    expect(
-      computeCost(
-        { inputTokens: null, cachedInputTokens: 10, outputTokens: 10 },
-        RATES,
-      ),
-    ).toBeNull();
-    expect(
-      computeCost(
-        { inputTokens: 10, cachedInputTokens: 0, outputTokens: null },
-        RATES,
-      ),
-    ).toBeNull();
+    for (const usage of [
+      { inputTokens: null, cachedInputTokens: 10, outputTokens: 10 },
+      { inputTokens: 10, cachedInputTokens: 0, outputTokens: null },
+    ]) {
+      expect(computeCost(usage, RATES)).toEqual({
+        exact: null,
+        upperBound: null,
+      });
+    }
   });
 });
 
@@ -209,9 +234,11 @@ describe("usage summary", () => {
     },
     usage: {
       known: true,
-      uncachedInputTokens: 10,
+      cachedKnown: true,
+      inputTokens: 10,
       cachedInputTokens: 0,
       outputTokens: 5,
+      tokensUsed: 15,
       ...usage,
     },
     insertionDurations: [],
@@ -226,7 +253,9 @@ describe("usage summary", () => {
   it("reports totals only when usage is known for every call", () => {
     expect(summarizeUsage(summary())).toMatchObject({
       known: true,
+      inputTokens: 10,
       uncachedInputTokens: 10,
+      cachedInputTokens: 0,
       outputTokens: 5,
     });
     expect(
@@ -234,6 +263,19 @@ describe("usage summary", () => {
     ).toMatchObject({ known: false, uncachedInputTokens: null });
     expect(summarizeUsage(summary({ total: 0, construct: 0 }))).toMatchObject({
       known: false,
+    });
+  });
+
+  it("keeps an unreported cache split unknown instead of assuming zero cache hits", () => {
+    const usage = summarizeUsage(
+      summary({}, { cachedKnown: false, cachedInputTokens: 0 }),
+    );
+    expect(usage).toMatchObject({
+      known: true,
+      inputTokens: 10,
+      cachedInputTokens: null,
+      uncachedInputTokens: null,
+      outputTokens: 5,
     });
   });
 });

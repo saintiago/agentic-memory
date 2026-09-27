@@ -18,7 +18,7 @@ import {
   type NoteStore,
   type NoteStoreSpace,
 } from "../../src/index.js";
-import type { ManifestModel } from "../replay/artifacts.js";
+import type { ManifestModel, StorageObservation } from "../replay/artifacts.js";
 import { runtimeRepresentation } from "../replay/comparison.js";
 import type {
   EnvironmentDescription,
@@ -28,6 +28,7 @@ import type {
 import type { ExchangeLog } from "../replay/recorder.js";
 import {
   deleteEvaluationCollection,
+  evaluationClient,
   openEvaluationBaselineStore,
 } from "./baseline-store.js";
 
@@ -100,6 +101,35 @@ export const createLiveEnvironment = (
             });
       created.push(collection);
       return { store, collection };
+    },
+    async observe(collection: string): Promise<StorageObservation | null> {
+      try {
+        const client = evaluationClient({
+          url: options.url,
+          ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+          ...(timeout === undefined ? {} : { timeoutMs: timeout }),
+        });
+        const [info, counted] = await Promise.all([
+          client.getCollection(collection),
+          client.count(collection, { exact: true }),
+        ]);
+        const config = info.config as unknown as {
+          params?: { vectors?: unknown };
+          hnsw_config?: unknown;
+          metadata?: unknown;
+        };
+        return {
+          indexedVectors: counted.count,
+          configuration: {
+            vectors: (config.params?.vectors ?? null) as JsonValue,
+            hnsw: (config.hnsw_config ?? null) as JsonValue,
+            metadata: (config.metadata ?? null) as JsonValue,
+          },
+        };
+      } catch {
+        // An unavailable observation stays unknown instead of being invented or failing the run.
+        return null;
+      }
     },
     async dispose(): Promise<void> {
       if (!cleanup) {

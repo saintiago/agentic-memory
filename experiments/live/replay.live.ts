@@ -26,7 +26,7 @@ import { reportSummaryLines } from "../replay/report-summary.js";
 import { runReplay } from "../replay/runner.js";
 import { createLiveEnvironment } from "./environment.js";
 import { createRecordingFetch, RecordedExchanges } from "./exchange.js";
-import { readLiveSettings } from "./settings.js";
+import { readLiveSettings, recordedThinking } from "./settings.js";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -55,6 +55,9 @@ describe("live replay", () => {
     // Usage and finish reasons come from the provider exchange; raw prompts and bodies are kept in
     // the artifacts only when the host opted in, because they can contain private source text.
     const exchanges = new RecordedExchanges();
+    // The host resolves the transport and the encoder before the replay starts, so their cold cost
+    // is measured here and reported apart from the in-run timings.
+    const modelStarted = performance.now();
     const model = createHostModelTransport({
       endpoint: settings.modelEndpoint,
       model: settings.modelId,
@@ -68,10 +71,13 @@ describe("live replay", () => {
         ? {}
         : { apiKey: settings.modelApiKey }),
     });
+    const modelSetupMs = performance.now() - modelStarted;
+    const encoderStarted = performance.now();
     const embedder = await openReferenceEmbedder({
       cacheDir: settings.embeddingCacheDir,
       allowDownloads: settings.allowEmbeddingDownloads,
     });
+    const encoderLoadMs = performance.now() - encoderStarted;
     const version = await qdrantVersion(settings.qdrantUrl);
     const environment = createLiveEnvironment({
       url: settings.qdrantUrl,
@@ -88,7 +94,7 @@ describe("live replay", () => {
       modelDescription: {
         endpoint: settings.modelEndpoint,
         id: settings.modelId,
-        thinking: settings.modelThinking,
+        thinking: recordedThinking(settings.modelThinking),
         maxOutputTokens: settings.modelMaxOutputTokens,
         timeoutMs: settings.modelTimeoutMs,
         retries: 0,
@@ -110,6 +116,7 @@ describe("live replay", () => {
         sourceHash: fixtureHash(sourceText),
         queryHash: fixtureHash(queryText),
         environment,
+        startup: { encoderLoadMs, modelSetupMs },
         ...(settings.insertionOrder === null
           ? {}
           : { insertionOrder: settings.insertionOrder }),
@@ -127,6 +134,8 @@ describe("live replay", () => {
             "claiming a quality improvement.",
           "Reported timings include the configured network, provider and hardware conditions; " +
             "they are not a capacity guarantee.",
+          "The recorded thinking mode is a host-declared provider setting: this transport sends " +
+            "no thinking parameter, so the provider or model ID must honor it.",
         ],
       });
       for (const line of reportSummaryLines(result.report)) {

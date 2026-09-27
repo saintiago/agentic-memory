@@ -15,7 +15,14 @@ import type {
   NoteStore,
   Page,
 } from "../../src/index.js";
-import type { ModelCallRecord, RunArtifacts, TokenUsage } from "./artifacts.js";
+import { embeddingText } from "../../src/index.js";
+import type {
+  DeclaredBudget,
+  ModelCallRecord,
+  RunArtifacts,
+  StoppingReason,
+  TokenUsage,
+} from "./artifacts.js";
 
 /** One provider HTTP exchange observed by a recording fetch, when a live run supplies one. */
 export interface ModelExchange {
@@ -34,10 +41,7 @@ export interface ExchangeLog {
 }
 
 /** A declared call/token budget that stops a live run instead of overspending. */
-export interface ModelBudget {
-  callBudget: number;
-  tokenBudget: number;
-}
+export type ModelBudget = DeclaredBudget;
 
 /** Raised before a model call once the declared budget is exhausted. */
 export class BudgetExhaustedError extends Error {
@@ -57,6 +61,11 @@ export interface InsertionCapture {
   constructResponse: unknown;
   /** The first embedding of the insertion: the constructed representation and its vector. */
   firstEmbedding: { text: string; vector: number[] } | null;
+  /**
+   * The candidates the insertion's candidate search returned: how many, and their total length under
+   * the declared canonical serialization. Null when the insertion never reached candidate selection.
+   */
+  neighbors: { count: number; characters: number } | null;
   /** Batch writes with the current-note state each record replaced and their acknowledgment. */
   writes: Array<{
     acknowledged: boolean;
@@ -66,6 +75,7 @@ export interface InsertionCapture {
 
 /** Aggregates the report needs from the instrumentation; raw records already live in the files. */
 export interface RecorderSummary {
+  /** Every model invocation, whatever its outcome. */
   calls: {
     construct: number;
     evolve: number;
@@ -74,10 +84,15 @@ export interface RecorderSummary {
     withUsage: number;
   };
   usage: {
+    /** Whether every invocation reported input and output tokens and none failed. */
     known: boolean;
-    uncachedInputTokens: number;
+    /** Whether every invocation also reported its cache-hit tokens. */
+    cachedKnown: boolean;
+    inputTokens: number;
     cachedInputTokens: number;
     outputTokens: number;
+    /** Prompt and completion tokens the run measured; partial when `known` is false. */
+    tokensUsed: number;
   };
   insertionDurations: number[];
   callDurations: { construct: number[]; evolve: number[] };
@@ -118,7 +133,8 @@ export class ReplayRecorder {
   };
   #usage = {
     known: true,
-    uncachedInputTokens: 0,
+    cachedKnown: true,
+    inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
     tokensUsed: 0,
@@ -145,7 +161,7 @@ export class ReplayRecorder {
       get: [] as number[],
     },
   };
-  #budgetState: "call-budget" | "token-budget" | null = null;
+  #budgetState: { reason: StoppingReason; detail: string } | null = null;
 
   constructor(
     artifacts: RunArtifacts,
@@ -168,6 +184,7 @@ export class ReplayRecorder {
       sourceId,
       constructResponse: null,
       firstEmbedding: null,
+      neighbors: null,
       writes: [],
     };
   }
@@ -205,8 +222,13 @@ export class ReplayRecorder {
   }
 
   /** The budget stopping reason, once a call exceeded the declared budget. */
-  budgetState(): "call-budget" | "token-budget" | null {
-    return this.#budgetState;
+  budgetState(): StoppingReason | null {
+    return this.#budgetState?.reason ?? null;
+  }
+
+  /** The explanation of the recorded budget state, when one exists. */
+  budgetDetail(): string | null {
+    return this.#budgetState?.detail ?? null;
   }
 
   summary(): RecorderSummary {
@@ -214,9 +236,11 @@ export class ReplayRecorder {
       calls: { ...this.#calls },
       usage: {
         known: this.#usage.known,
-        uncachedInputTokens: this.#usage.uncachedInputTokens,
+        cachedKnown: this.#usage.cachedKnown,
+        inputTokens: this.#usage.inputTokens,
         cachedInputTokens: this.#usage.cachedInputTokens,
         outputTokens: this.#usage.outputTokens,
+        tokensUsed: this.#usage.tokensUsed,
       },
       insertionDurations: [...this.#insertionDurations],
       callDurations: {
@@ -247,17 +271,17 @@ export class ReplayRecorder {
   assertBudget(): void {
     const state = this.#budgetState;
     if (state !== null) {
-      throw new BudgetExhaustedError(
-        state,
-        `The live run stopped after exhausting its ${state.replace("-", " ")}.`,
-      );
+      throw new BudgetExhaustedError(state.reason, state.detail);
     }
     const budget = this.budget;
     if (budget !== null && this.#calls.total >= budget.callBudget) {
-      this.#budgetState = "call-budget";
+      this.#budgetState = {
+        reason: "call-budget",
+        detail: `The live run stopped after ${String(budget.callBudget)} model calls.`,
+      };
       throw new BudgetExhaustedError(
-        "call-budget",
-        `The live run stopped after ${String(budget.callBudget)} model calls.`,
+        this.#budgetState.reason,
+        this.#budgetState.detail,
       );
     }
   }
@@ -271,6 +295,7 @@ export class ReplayRecorder {
       this.#calls.failed += 1;
       // A failed attempt may still have been billed; leave the run totals unknown.
       this.#usage.known = false;
+      this.#usage.cachedKnown = false;
     }
     const capture = this.#insertion;
     if (
@@ -286,9 +311,26 @@ export class ReplayRecorder {
       // The note identity is known only when the insertion resolves; flush the calls then.
       this.#pendingCalls.push(record);
     }
+    this.#observeUsage(record);
+  }
+
+  /**
+   * Fold one call's reported usage into the run totals and apply the declared token budget. A
+   * successful call that does not report the input and output tokens cannot be measured, so a
+   * declared token budget stops the run instead of silently continuing beyond an unknown total.
+   */
+  #observeUsage(record: ModelCallRecord): void {
+    const budget = this.budget;
     if (record.usage === null) {
       if (record.error === null) {
         this.#usage.known = false;
+        this.#usage.cachedKnown = false;
+        if (budget !== null) {
+          this.#exhaustTokenBudget(
+            `The ${record.stage} call did not report token usage, so the declared ` +
+              `${String(budget.tokenBudget)}-token budget cannot be verified.`,
+          );
+        }
       }
       return;
     }
@@ -296,20 +338,44 @@ export class ReplayRecorder {
     const input = record.usage.inputTokens;
     const cached = record.usage.cachedInputTokens;
     const output = record.usage.outputTokens;
-    if (input === null || output === null) {
+    if (input === null) {
       this.#usage.known = false;
+    } else {
+      this.#usage.inputTokens += input;
+    }
+    if (output === null) {
+      this.#usage.known = false;
+    } else {
+      this.#usage.outputTokens += output;
+    }
+    if (cached === null) {
+      // The total is measured, but the split between cached and uncached input stays unknown.
+      this.#usage.cachedKnown = false;
+    } else {
+      this.#usage.cachedInputTokens += cached;
+    }
+    if (input === null || output === null) {
+      if (budget !== null && record.error === null) {
+        this.#exhaustTokenBudget(
+          `The ${record.stage} call reported no ${input === null ? "input" : "output"} tokens, so ` +
+            `the declared ${String(budget.tokenBudget)}-token budget cannot be verified.`,
+        );
+      }
       return;
     }
-    // A provider that does not report cache hits is treated as fully uncached, the conservative
-    // reading: it can only overstate the input cost, never silently discount it.
-    const cachedTokens = cached ?? 0;
-    this.#usage.uncachedInputTokens += Math.max(0, input - cachedTokens);
-    this.#usage.cachedInputTokens += cachedTokens;
-    this.#usage.outputTokens += output;
     this.#usage.tokensUsed += input + output;
-    const budget = this.budget;
-    if (budget !== null && this.#usage.tokensUsed > budget.tokenBudget) {
-      this.#budgetState = "token-budget";
+    if (budget !== null && this.#usage.tokensUsed >= budget.tokenBudget) {
+      this.#exhaustTokenBudget(
+        `The run used ${String(this.#usage.tokensUsed)} tokens, reaching its declared ` +
+          `${String(budget.tokenBudget)}-token budget.`,
+      );
+    }
+  }
+
+  /** Record the first budget state the run reaches; a later call must not replace its reason. */
+  #exhaustTokenBudget(detail: string): void {
+    if (this.#budgetState === null) {
+      this.#budgetState = { reason: "token-budget", detail };
     }
   }
 
@@ -336,9 +402,26 @@ export class ReplayRecorder {
   recordStoreOperation(
     operation: "put" | "nearest" | "get",
     durationMs: number,
+    matches?: readonly Match[],
   ): void {
     const bucket = this.#phase === "insertion" ? "insertion" : "evaluation";
     this.#storeDurations[bucket][operation].push(durationMs);
+    const capture = this.#insertion;
+    if (
+      operation === "nearest" &&
+      this.#phase === "insertion" &&
+      capture !== null &&
+      capture.neighbors === null
+    ) {
+      const candidates = matches ?? [];
+      capture.neighbors = {
+        count: candidates.length,
+        characters: candidates.reduce(
+          (total, candidate) => total + embeddingText(candidate.note).length,
+          0,
+        ),
+      };
+    }
   }
 
   /**
@@ -515,7 +598,7 @@ export const instrumentStore = (
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     const started = now();
     const matches = await store.nearest(vector, limit);
-    recorder.recordStoreOperation("nearest", now() - started);
+    recorder.recordStoreOperation("nearest", now() - started, matches);
     return matches;
   },
   async page(limit: number, cursor?: string | number): Promise<Page> {

@@ -145,6 +145,12 @@ describe("live evaluation collections", () => {
     expect(result.status).toBe("completed");
     expect(result.report.checks.every((check) => check.ok)).toBe(true);
     expect(await pointCount(runtime!)).toBe(testSources.length);
+    // The live environment reports the collection's real indexed-vector count and configuration.
+    expect(result.report.storage.indexedVectors).toBe(testSources.length);
+    expect(result.report.storage.configuration).toMatchObject({
+      vectors: { size: 4, distance: "Cosine" },
+      metadata: { agenticMemory: { representation: "amem-note-v1" } },
+    });
 
     const runtimeMetadata = await metadataOf(runtime!);
     expect(runtimeMetadata["agenticMemory"]).toMatchObject({

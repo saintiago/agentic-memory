@@ -21,7 +21,7 @@ import {
   type NoteStoreSpace,
   type Page,
 } from "../../src/index.js";
-import type { ManifestModel } from "./artifacts.js";
+import type { ManifestModel, StorageObservation } from "./artifacts.js";
 import type { ExchangeLog } from "./recorder.js";
 
 /** A store opened for one representation, with the name recorded in the run artifacts. */
@@ -56,8 +56,43 @@ export interface EvaluationEnvironment {
     representation: string;
     label: string;
   }): Promise<OpenedCollection>;
+  /**
+   * Observe one opened collection's stored state for the measurement report. Environments that
+   * cannot report an indexed-vector count or a provider configuration leave this absent, and the
+   * report identifies the measurements as unavailable instead of inventing them.
+   */
+  observe?(collection: string): Promise<StorageObservation | null>;
   dispose(): Promise<void>;
 }
+
+/** Raised before a run directory exists when a recorded endpoint identity is unusable. */
+export class EvaluationEndpointError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvaluationEndpointError";
+  }
+}
+
+/**
+ * Reject an endpoint identity that embeds credentials before the run directory is created. The
+ * manifest records endpoint identities without credentials, so a rejected configuration must not
+ * leave a plaintext credential in a retained artifact. A value that is not a URL is left to its
+ * provider setting; the live settings validate the Qdrant URL itself before any provider loads.
+ */
+export const assertCredentialFreeEndpoint = (
+  endpoint: string | null,
+  description: string,
+): void => {
+  if (endpoint === null || !URL.canParse(endpoint)) {
+    return;
+  }
+  const parsed = new URL(endpoint);
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new EvaluationEndpointError(
+      `${description} must not embed credentials; supply them as the API key.`,
+    );
+  }
+};
 
 const positiveInteger = (value: number, description: string): number => {
   if (!Number.isSafeInteger(value) || value <= 0) {

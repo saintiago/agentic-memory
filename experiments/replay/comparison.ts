@@ -107,6 +107,9 @@ const retrievalRecord = (input: {
     sourceId: input.sourceIdByNoteId.get(result.note.id.toLowerCase()) ?? null,
     origin: result.via,
     score: result.via === "match" ? (result.score ?? null) : null,
+    // The complete returned snapshot: a baseline result carries the construction or source
+    // representation this mode actually ranked, not the runtime note's final attributes.
+    note: structuredClone(result.note),
     characters: resultCharacters(result.note),
   }));
   const directSourceIds = unique(

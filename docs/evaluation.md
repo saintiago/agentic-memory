@@ -61,20 +61,24 @@ judging model output against them.
 
 Create a separate directory per run with these logical artifacts (JSON/JSONL, UTF-8):
 
-| Artifact             | Required contents                                                                                                                                                                                                                                                                                                |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifest.json`      | Run ID, code revision, input/query hashes, insertion order, seed/resume provenance if any, exact prompt text, model endpoint identity without credentials, model ID/settings including thinking, output budget/timeout, encoder settings/space ID, storage version/configuration, hardware and timing conditions |
-| `sources.jsonl`      | Supplied entries and source-to-note mapping; private unless explicitly chosen for publication                                                                                                                                                                                                                    |
-| `calls.jsonl`        | Stage, source/note identity, full request and raw response when enabled, parsed response/error, duration, finish reason, usage including cached input if available; record failed calls too                                                                                                                      |
-| `construction.jsonl` | Attributes immediately after successful construction, before evolution; correlated to source ID                                                                                                                                                                                                                  |
-| `changes.jsonl`      | Before/after current-note snapshots for each successful insertion and its changed neighbors, including links; failed/uncertain operations recorded separately                                                                                                                                                    |
-| `notes.jsonl`        | Complete final notes exported through pagination, plus source mapping                                                                                                                                                                                                                                            |
-| `retrieval.jsonl`    | Query and mode, expected IDs, full ordered results, direct scores and link origin classification, latency and returned text size                                                                                                                                                                                 |
-| `report.json`        | Counts and metrics with denominators, failures, input exclusions, semantic review findings, timings, usage and clearly labeled extrapolations                                                                                                                                                                    |
+| Artifact             | Required contents                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifest.json`      | Run ID, code revision, input/query hashes, insertion order, seed/resume provenance if any, exact prompt text, model endpoint identity without credentials, model ID/settings including thinking, output budget/timeout, declared live call/token budget when one was declared, encoder settings/space ID, storage version/configuration, hardware and timing conditions |
+| `sources.jsonl`      | Supplied entries and source-to-note mapping; private unless explicitly chosen for publication                                                                                                                                                                                                                                                                           |
+| `calls.jsonl`        | Stage, source/note identity, full request and raw response when enabled, parsed response/error, duration, finish reason, usage including cached input if available; record failed calls too                                                                                                                                                                             |
+| `construction.jsonl` | Attributes immediately after successful construction, before evolution; correlated to source ID                                                                                                                                                                                                                                                                         |
+| `changes.jsonl`      | Before/after current-note snapshots for each successful insertion and its changed neighbors, including links; failed/uncertain operations recorded separately                                                                                                                                                                                                           |
+| `notes.jsonl`        | Complete final notes exported through pagination, plus source mapping                                                                                                                                                                                                                                                                                                   |
+| `retrieval.jsonl`    | Query and mode, expected IDs, full ordered results, direct scores and link origin classification, latency and returned text size                                                                                                                                                                                                                                        |
+| `report.json`        | Counts and metrics with denominators, failures, input exclusions, semantic review findings, timings, usage and clearly labeled extrapolations                                                                                                                                                                                                                           |
 
 Instrument host-supplied contracts to capture construction, usage and proposed writes. A prepared
 write is not a committed snapshot until acknowledged. This is experiment history, not a runtime
 revision store. Use public get/page operations to verify persisted state after the run.
+`sources.jsonl` accounts for every supplied entry and the identity an insertion allocated, so a
+failed or stopped run keeps its whole input and a construction that succeeded before a later
+failure stays recorded. `notes.jsonl` exports every note public pagination returns, including a
+batch whose acknowledgment was lost, without presenting that batch as acknowledged.
 
 Preserve existing run directories. A fresh replay uses a new isolated collection; clearing data is
 allowed only for the runner's explicitly named disposable collection. Resuming from a saved seed
@@ -145,9 +149,13 @@ cost = (uncached_input_tokens * uncached_input_rate
 
 Rates are per-million-token inputs to the report with currency and effective date, not hardcoded
 current prices. If a provider reports total input including cache hits, subtract cache hits before
-the uncached term. Unknown usage remains unknown. Include failed calls, experiment reruns, embedding
-compute, database hosting and backup costs separately where measured. Live evaluation is explicit
-opt-in with a declared call/token budget and no default retries; record its stopping reason.
+the uncached term. Unknown usage remains unknown; when only the cache split is unknown, an estimate
+or bound is reported separately from measured cost. Include failed calls, experiment reruns,
+embedding compute, database hosting and backup costs separately where measured. Live evaluation is
+explicit opt-in with a declared call/token budget and no default retries; record its stopping
+reason in the artifacts. Generation stops once reported usage reaches the declared token budget,
+and a call whose usage the provider does not report leaves that budget unverifiable: the run stops
+and records why instead of continuing with an unenforced budget.
 
 Raw float32 vectors occupy `N * dimensions * 4` bytes (4,096 bytes per 1,024-dimensional note).
 One million such vectors is 4.096 GB decimal before payloads, indexes, WAL, replicas, allocator
