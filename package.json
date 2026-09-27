@@ -31,7 +31,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "boundaries": "depcruise src test --config .dependency-cruiser.cjs",
+    "boundaries": "depcruise src examples test --config .dependency-cruiser.cjs",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:embeddings": "vitest run --config vitest.embeddings.config.ts",

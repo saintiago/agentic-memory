@@ -1,13 +1,20 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import * as packageExports from "../../src/index.js";
 import * as embeddings from "../../src/embeddings/index.js";
+import * as memory from "../../src/memory/index.js";
 import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
 import type {
   AddInput,
+  ConstructionResponse,
+  ConstructionSource,
   Embedder,
   EmbeddingSpace,
+  EvolutionResponse,
+  EvolutionSource,
+  EvolutionUpdate,
   LanguageModel,
+  MemoryPrompts,
   MemoryOptions,
   ModelRequest,
   Note,
@@ -71,6 +78,39 @@ describe("package root exports", () => {
     expectTypeOf<SearchResult>().toMatchTypeOf<
       { note: Note; via: "match"; score: number } | { note: Note; via: "link" }
     >();
+  });
+
+  it("re-exports the prompt and response contracts through the memory component index", () => {
+    const exportedNames = [
+      "ModelResponseError",
+      "assembleConstructionPrompt",
+      "assembleEvolutionPrompt",
+      "constructionResponseSchema",
+      "defaultPrompts",
+      "evolutionResponseSchema",
+      "evolutionUpdateSchema",
+      "readConstructionResponse",
+      "readEvolutionResponse",
+    ] as const;
+
+    for (const name of exportedNames) {
+      expect(packageExports[name]).toBe(memory[name]);
+    }
+  });
+
+  it("keeps the documented prompt and response types usable through the package root", () => {
+    expectTypeOf<MemoryPrompts["evolution"]>().toEqualTypeOf<string>();
+    expectTypeOf<ConstructionSource["timestamp"]>().toEqualTypeOf<string>();
+    expectTypeOf<EvolutionSource["neighbors"]>().toEqualTypeOf<
+      readonly Note[]
+    >();
+    expectTypeOf<ConstructionResponse>().toEqualTypeOf<{
+      context: string;
+      keywords: string[];
+      tags: string[];
+    }>();
+    expectTypeOf<EvolutionResponse["links"]>().toEqualTypeOf<string[]>();
+    expectTypeOf<EvolutionUpdate["id"]>().toEqualTypeOf<string>();
   });
 
   it("re-exports the reference encoder through the same modules as its component index", () => {
