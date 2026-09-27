@@ -13,9 +13,13 @@ import type {
   EvolutionResponse,
   EvolutionSource,
   EvolutionUpdate,
+  JsonValue,
   LanguageModel,
+  MemoryError,
   MemoryPrompts,
   MemoryOptions,
+  MemoryOperation,
+  MemoryStage,
   ModelRequest,
   Note,
   NoteStore,
@@ -96,6 +100,36 @@ describe("package root exports", () => {
     for (const name of exportedNames) {
       expect(packageExports[name]).toBe(memory[name]);
     }
+  });
+
+  it("re-exports the memory implementation through the memory component index", () => {
+    const exportedNames = [
+      "AgenticMemory",
+      "MemoryError",
+      "embeddingText",
+    ] as const;
+
+    for (const name of exportedNames) {
+      expect(packageExports[name]).toBe(memory[name]);
+    }
+  });
+
+  it("keeps the documented memory failure fields usable through the package root", () => {
+    expectTypeOf<MemoryError["operation"]>().toEqualTypeOf<MemoryOperation>();
+    expectTypeOf<MemoryError["stage"]>().toEqualTypeOf<MemoryStage>();
+    expectTypeOf<MemoryError["persistence"]>().toEqualTypeOf<
+      "unchanged" | "uncertain"
+    >();
+    expectTypeOf<MemoryError["noteId"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<MemoryError["affectedNoteIds"]>().toEqualTypeOf<
+      readonly string[] | undefined
+    >();
+    expectTypeOf<AddInput["metadata"]>().toEqualTypeOf<
+      Record<string, JsonValue> | undefined
+    >();
+    expectTypeOf<
+      ReturnType<typeof packageExports.embeddingText>
+    >().toEqualTypeOf<string>();
   });
 
   it("keeps the documented prompt and response types usable through the package root", () => {
