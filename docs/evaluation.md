@@ -72,6 +72,12 @@ Create a separate directory per run with these logical artifacts (JSON/JSONL, UT
 | `retrieval.jsonl`    | Query and mode, expected IDs, full ordered results, direct scores and link origin classification, latency and returned text size                                                                                                                                                                                                                                        |
 | `report.json`        | Counts and metrics with denominators, failures, input exclusions, semantic review findings, timings, usage and clearly labeled extrapolations                                                                                                                                                                                                                           |
 
+Remove configured provider credentials from every saved artifact, including parsed responses,
+assembled prompts, diagnostics and derived note snapshots, whether raw recording is enabled or
+disabled. Sanitize evidence copies only; transport, memory processing and measurements use the
+original values. Consequently, hashes and text lengths describe the original data and may differ
+from redacted evidence. Printed reports use the saved, redacted report.
+
 Instrument host-supplied contracts to capture construction, usage and proposed writes. A prepared
 write is not a committed snapshot until acknowledged. This is experiment history, not a runtime
 revision store. Use public get/page operations to verify persisted state after the run.

@@ -58,7 +58,7 @@ Required settings are `AMEM_LIVE_QDRANT_URL`, `AMEM_LIVE_MODEL_ENDPOINT`, `AMEM_
 | `AMEM_LIVE_QDRANT_API_KEY`               | none                         | Qdrant credential; never written to artifacts or records                                                               |
 | `AMEM_LIVE_QDRANT_TIMEOUT_MS`            | `120000`                     | Qdrant request timeout                                                                                                 |
 | `AMEM_LIVE_COLLECTION_BASE`              | `amem-live-evaluation`       | Prefix of the collections the run may create                                                                           |
-| `AMEM_LIVE_MODEL_API_KEY`                | none                         | Provider credential, redacted from retained exchange bodies and every diagnostic                                       |
+| `AMEM_LIVE_MODEL_API_KEY`                | none                         | Provider credential, redacted from every retained artifact and diagnostic                                              |
 | `AMEM_LIVE_MODEL_TIMEOUT_MS`             | `120000`                     | Provider request timeout                                                                                               |
 | `AMEM_LIVE_MODEL_MAX_OUTPUT_TOKENS`      | `6000`                       | Provider output budget per request                                                                                     |
 | `AMEM_LIVE_MODEL_THINKING`               | `false`                      | Provider thinking setting the host declares; the transport does not send it, so the provider or model ID must honor it |
@@ -85,6 +85,11 @@ Each run writes `manifest.json`, `sources.jsonl`, `calls.jsonl`, `construction.j
 `changes.jsonl`, `notes.jsonl`, `retrieval.jsonl` and `report.json` under its own directory. Run
 directories and source corpora stay outside the published package: the default `.data/evaluations`
 directory is ignored by Git, and a private corpus belongs outside this repository entirely.
+
+The live runner supplies both provider credentials through `runReplay`'s `artifactCredentials`.
+Every artifact writer redacts these values from saved evidence, including parsed responses and
+derived snapshots, without altering the transport or memory inputs. See the
+[redaction and measurement rules](../docs/evaluation.md#run-artifacts).
 
 `sources.jsonl` records every supplied entry, the note UUID its insertion allocated and how far it
 got (`inserted`, `failed`, `stopped`, an excluded entry or one the run never reached), so a failed

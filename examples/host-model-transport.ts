@@ -96,21 +96,31 @@ const MAX_DIAGNOSTIC_LENGTH = 300;
 
 /**
  * Remove every credential form an untrusted provider or fetch diagnostic can echo: the value
- * itself, the authorization header the transport sent, and a JSON-escaped copy, because provider
- * error bodies are commonly JSON. Redaction runs before shortening, so truncation cannot leave
- * part of a credential behind.
+ * itself, the authorization header the transport sent, and JSON-escaped copies (including JSON
+ * nested in provider message content). Redaction runs before shortening, so truncation cannot
+ * leave part of a credential behind.
  */
 export const redactCredential = (
   text: string,
   apiKey: string | undefined,
 ): string => {
-  if (apiKey === undefined) {
+  if (apiKey === undefined || apiKey === "") {
     return text;
   }
-  return text
-    .replaceAll(`Bearer ${apiKey}`, "[redacted]")
-    .replaceAll(JSON.stringify(apiKey).slice(1, -1), "[redacted]")
-    .replaceAll(apiKey, "[redacted]");
+  const forms: string[] = [];
+  for (let form = apiKey; form.length <= text.length;) {
+    forms.push(form);
+    const escaped = JSON.stringify(form).slice(1, -1);
+    if (escaped === form) break;
+    form = escaped;
+  }
+  // Longest first: replacing a shorter form must not leave part of its escaped copy behind.
+  for (const form of forms.reverse()) {
+    text = text
+      .replaceAll(`Bearer ${form}`, "[redacted]")
+      .replaceAll(form, "[redacted]");
+  }
+  return text;
 };
 
 const summarize = (text: string): string => {

@@ -7,6 +7,7 @@
  * setting fails instead of reporting a pass. See experiments/README.md.
  */
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -24,6 +25,7 @@ import {
 } from "../replay/fixture.js";
 import { reportSummaryLines } from "../replay/report-summary.js";
 import { runReplay } from "../replay/runner.js";
+import type { RunReport } from "../replay/artifacts.js";
 import { createLiveEnvironment } from "./environment.js";
 import { createRecordingFetch, RecordedExchanges } from "./exchange.js";
 import { readLiveSettings, recordedThinking } from "./settings.js";
@@ -124,6 +126,12 @@ describe("live replay", () => {
           ? {}
           : { insertionOrder: settings.insertionOrder }),
         recordRawExchanges: settings.recordRawExchanges,
+        artifactCredentials: [
+          settings.modelApiKey,
+          settings.qdrantApiKey,
+        ].filter(
+          (credential): credential is string => credential !== undefined,
+        ),
         budget: {
           callBudget: settings.callBudget,
           tokenBudget: settings.tokenBudget,
@@ -141,7 +149,11 @@ describe("live replay", () => {
             "no thinking parameter, so the provider or model ID must honor it.",
         ],
       });
-      for (const line of reportSummaryLines(result.report)) {
+      // Print the same sanitized evidence as the saved report.
+      const report = JSON.parse(
+        await readFile(path.join(result.directory, "report.json"), "utf8"),
+      ) as RunReport;
+      for (const line of reportSummaryLines(report)) {
         console.log(line);
       }
       console.log(`Artifacts: ${result.directory}`);

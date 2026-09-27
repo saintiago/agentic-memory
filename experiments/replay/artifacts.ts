@@ -9,6 +9,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { Attributes, JsonValue, Note } from "../../src/index.js";
+import { redactCredential } from "../../examples/host-model-transport.js";
 
 /** Token usage a provider reported for one model call; `null` means it did not report that part. */
 export interface TokenUsage {
@@ -445,11 +446,6 @@ export class RunDirectoryError extends Error {
   }
 }
 
-const jsonLine = (record: unknown): string => `${JSON.stringify(record)}\n`;
-
-const jsonl = (records: readonly unknown[]): string =>
-  records.map((record) => jsonLine(record)).join("");
-
 /**
  * One run directory. JSONL artifacts are created empty and appended as the run proceeds; the
  * manifest, sources, notes, retrieval list and report are written once their content is known. A
@@ -458,15 +454,49 @@ const jsonl = (records: readonly unknown[]): string =>
 export class RunArtifacts {
   readonly directory: string;
   readonly #manifestPath: string;
+  readonly #credentials: readonly string[];
 
-  private constructor(directory: string) {
+  private constructor(directory: string, credentials: readonly string[]) {
     this.directory = directory;
     this.#manifestPath = path.join(directory, "manifest.json");
+    this.#credentials = [...credentials].sort((a, b) => b.length - a.length);
+  }
+
+  /** Sanitize only the serialized evidence, leaving transport, memory and measurement inputs intact. */
+  #serialize(record: unknown, pretty = false): string {
+    const redact = (text: string): string =>
+      this.#credentials.reduce(
+        (value, credential) => redactCredential(value, credential),
+        text,
+      );
+    return `${JSON.stringify(
+      record,
+      (_key, value: unknown): unknown => {
+        if (typeof value === "string") return redact(value);
+        if (
+          value !== null &&
+          typeof value === "object" &&
+          !Array.isArray(value)
+        ) {
+          // Unknown provider JSON and source metadata can also carry credentials in object keys.
+          return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [redact(key), item]),
+          );
+        }
+        return value;
+      },
+      pretty ? 2 : undefined,
+    )}\n`;
+  }
+
+  #jsonl(records: readonly unknown[]): string {
+    return records.map((record) => this.#serialize(record)).join("");
   }
 
   static async create(
     runsDirectory: string,
     manifest: RunManifest,
+    credentials: readonly string[] = [],
   ): Promise<RunArtifacts> {
     if (!runIdPattern.test(manifest.runId)) {
       throw new RunDirectoryError(
@@ -491,7 +521,7 @@ export class RunArtifacts {
       }
       throw cause;
     }
-    const artifacts = new RunArtifacts(directory);
+    const artifacts = new RunArtifacts(directory, credentials);
     await artifacts.writeManifest(manifest);
     await Promise.all(
       ["calls.jsonl", "construction.jsonl", "changes.jsonl"].map((file) =>
@@ -504,7 +534,7 @@ export class RunArtifacts {
   async writeManifest(manifest: RunManifest): Promise<void> {
     await writeFile(
       this.#manifestPath,
-      `${JSON.stringify(manifest, null, 2)}\n`,
+      this.#serialize(manifest, true),
       "utf8",
     );
   }
@@ -512,7 +542,7 @@ export class RunArtifacts {
   async appendModelCall(record: ModelCallRecord): Promise<void> {
     await appendFile(
       path.join(this.directory, "calls.jsonl"),
-      jsonLine(record),
+      this.#serialize(record),
       "utf8",
     );
   }
@@ -520,7 +550,7 @@ export class RunArtifacts {
   async appendConstruction(record: ConstructionRecord): Promise<void> {
     await appendFile(
       path.join(this.directory, "construction.jsonl"),
-      jsonLine(record),
+      this.#serialize(record),
       "utf8",
     );
   }
@@ -528,7 +558,7 @@ export class RunArtifacts {
   async appendChange(record: ChangeRecord): Promise<void> {
     await appendFile(
       path.join(this.directory, "changes.jsonl"),
-      jsonLine(record),
+      this.#serialize(record),
       "utf8",
     );
   }
@@ -536,7 +566,7 @@ export class RunArtifacts {
   async writeSources(records: readonly SourceRecord[]): Promise<void> {
     await writeFile(
       path.join(this.directory, "sources.jsonl"),
-      jsonl(records),
+      this.#jsonl(records),
       "utf8",
     );
   }
@@ -544,7 +574,7 @@ export class RunArtifacts {
   async writeNotes(records: readonly FinalNoteRecord[]): Promise<void> {
     await writeFile(
       path.join(this.directory, "notes.jsonl"),
-      jsonl(records),
+      this.#jsonl(records),
       "utf8",
     );
   }
@@ -552,7 +582,7 @@ export class RunArtifacts {
   async writeRetrieval(records: readonly RetrievalRecord[]): Promise<void> {
     await writeFile(
       path.join(this.directory, "retrieval.jsonl"),
-      jsonl(records),
+      this.#jsonl(records),
       "utf8",
     );
   }
@@ -560,7 +590,7 @@ export class RunArtifacts {
   async writeReport(report: RunReport): Promise<void> {
     await writeFile(
       path.join(this.directory, "report.json"),
-      `${JSON.stringify(report, null, 2)}\n`,
+      this.#serialize(report, true),
       "utf8",
     );
   }

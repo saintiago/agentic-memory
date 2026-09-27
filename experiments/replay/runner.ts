@@ -104,6 +104,8 @@ export interface ReplayRunOptions {
   linkedLimit?: number;
   /** Record complete prompts and raw provider bodies; off by default for private material. */
   recordRawExchanges?: boolean;
+  /** Host credentials removed from every serialized artifact; never passed to Memory. */
+  artifactCredentials?: readonly string[];
   /** A declared call/token budget; a live run stops instead of overspending. */
   budget?: ModelBudget | null;
   /**
@@ -437,7 +439,11 @@ export const runReplay = async (
       conditions: { ...defaultConditions(), ...(options.conditions ?? {}) },
     },
   };
-  const artifacts = await RunArtifacts.create(options.runsDirectory, manifest);
+  const artifacts = await RunArtifacts.create(
+    options.runsDirectory,
+    manifest,
+    options.artifactCredentials,
+  );
   const recorder = new ReplayRecorder(artifacts, {
     recordRawExchanges: options.recordRawExchanges ?? false,
     budget: declaredBudget,
