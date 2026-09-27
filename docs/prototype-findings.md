@@ -167,10 +167,14 @@ ranked their required source first; four of five new New Zealand queries did so.
 and hazard-light queries returned both jurisdictions, a reasonable outcome rather than an automatic
 failure. Scope labels guided similarity; they did not act as filters.
 
-The original 20 New Zealand questions moved from 20 first-source hits / 19 complete top-five hits
-under the preceding prompt to 18/20 after regeneration, then 17/20 after adding Great Britain.
-Here `18/20` and `17/20` mean first-source hits / complete top-five hits, each out of 20 questions.
-Thus complete evidence coverage improved while first-result accuracy fell. The six workspace checks
+For the original 20 New Zealand questions:
+
+| Measurement                             | Preceding prompt | Regenerated NZ | After adding GB |
+| --------------------------------------- | ---------------: | -------------: | --------------: |
+| Required source first                   |            20/20 |          18/20 |           17/20 |
+| All required sources in direct top five |            19/20 |          20/20 |           20/20 |
+
+Complete evidence coverage improved while first-result accuracy fell. The six workspace checks
 remained five first-source hits and six complete top-five hits.
 
 Country labels generally survived evolution, yet one cycling recommendation became a requirement.
