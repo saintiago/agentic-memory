@@ -48,9 +48,12 @@ loading and external-state checks from deterministic cacheable validation. The f
 change establishes the real toolchain; subsequent tasks add their tests to the appropriate scopes.
 
 Validate a packed build from a temporary consumer directory before considering the library usable.
-The package must not include private fixtures, `.data`, secrets, model caches or prototype paths as
-runtime dependencies. Document public usage and fresh Linux/WSL preparation. Publishing to npm,
-deploying a server and integrating Nexus as a memory consumer are not part of this backlog.
+`npm run verify:pack` builds, packs and installs the package there, and the consumer check exercises
+the public exports and the assembled add, search and inspection operations without
+repository-relative imports. The package must not include private fixtures, `.data`, secrets, model
+caches or prototype paths as runtime dependencies. Document public usage and fresh Linux/WSL
+preparation. Publishing to npm, deploying a server and integrating Nexus as a memory consumer are
+not part of this backlog.
 
 ### Local Qdrant fixture
 

@@ -6,8 +6,10 @@ import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
 import type {
   AddInput,
+  AgenticMemory,
   ConstructionResponse,
   ConstructionSource,
+  Cursor,
   Embedder,
   EmbeddingSpace,
   EvolutionResponse,
@@ -82,6 +84,25 @@ describe("package root exports", () => {
     expectTypeOf<SearchResult>().toMatchTypeOf<
       { note: Note; via: "match"; score: number } | { note: Note; via: "link" }
     >();
+  });
+
+  it("keeps the documented memory operations usable through the package root", () => {
+    expectTypeOf<AgenticMemory["add"]>().returns.toEqualTypeOf<Promise<Note>>();
+    expectTypeOf<AgenticMemory["get"]>().returns.toEqualTypeOf<
+      Promise<Note | undefined>
+    >();
+    expectTypeOf<AgenticMemory["page"]>().returns.toEqualTypeOf<
+      Promise<Page>
+    >();
+    expectTypeOf<AgenticMemory["page"]>()
+      .parameter(1)
+      .toEqualTypeOf<Cursor | undefined>();
+    expectTypeOf<AgenticMemory["search"]>().returns.toEqualTypeOf<
+      Promise<SearchResult[]>
+    >();
+    expectTypeOf<AgenticMemory["search"]>()
+      .parameter(1)
+      .toEqualTypeOf<SearchOptions | undefined>();
   });
 
   it("re-exports the prompt and response contracts through the memory component index", () => {
