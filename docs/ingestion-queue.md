@@ -85,11 +85,12 @@ pending work. Disk exhaustion rejects new submissions without deleting accepted 
 ## Writer lifecycle and retries
 
 Acquire one process-scoped OS advisory lock per queue for the worker lifetime. A second worker
-must not drain it. Release ownership on process exit, not through a time-based lease or stale-lock
-stealing. Queue submission uses short database transactions and never waits for a model call or
-holds a transaction across external work. Journal transactions are local writes on the submitting
-process, so a host that must keep them off its event loop runs the queue in its own process, as the
-[local memory service](service.md) does. Closing a producer settles submissions, not the backlog.
+must not drain it, including when a handle names the journal file through a filesystem alias:
+ownership follows the journal file's canonical identity. Release ownership on process exit, not
+through a time-based lease or stale-lock stealing. Queue submission uses short database transactions
+and never waits for a model call or holds a transaction across external work. Journal work runs on
+the queue's own thread, so a contended lock or a slow durable commit never blocks a producer's event
+loop. Closing a producer settles submissions, not the backlog.
 
 The worker starts independently of producer lifetimes and polls for durable pending work, including
 work submitted while it was stopped. A supervised worker restarts after failure. On graceful stop,
@@ -101,11 +102,14 @@ invalid input or model output fails explicitly. Invalid credentials or incompati
 processing with an actionable diagnostic until corrected. No tight retry loop or retry count that
 silently drops accepted work is allowed.
 
-A provider failure that reports an unauthorized, forbidden or missing resource (an HTTP status of
-401, 403 or 404 on the failure or one of its causes) is that credential or storage condition: the
-receipt stays blocked with its safe diagnostic and is retried only at the retry limit until the host
-corrects the configuration. Reconciliation, not automatic retry, clears a plan the queue cannot
-read or apply.
+A model transport reports failures with a machine-readable category
+([language model](language-model.md#transport-behavior)). A rejected credential or a missing
+provider resource blocks the receipt with a safe diagnostic and is retried only at the retry limit
+until the host corrects the configuration; unusable model output fails the receipt permanently; a
+temporary provider or transport failure is retried. A storage failure that reports an unauthorized,
+forbidden or missing resource (an HTTP status of 401, 403 or 404 on the failure or one of its
+causes) is that credential or storage condition and blocks the same way. Reconciliation, not
+automatic retry, clears a plan the queue cannot read or apply.
 
 ## Crash recovery
 
@@ -115,7 +119,9 @@ read or apply.
    a complete plan is durably committed, restart preparation with the same note ID and observation.
 3. Commit the complete plan before attempting any note write. Include all generated attributes,
    links, vectors, affected identities and fixed update timestamps. A partial journal transaction
-   must never look like a complete plan.
+   must never look like a complete plan. Commit the evidence that a complete plan existed together
+   with it, so restart can tell preparation that never finished — preparation restarts — from a
+   committed plan the journal no longer holds, which blocks for reconciliation instead.
 4. Apply the plan and wait for storage acknowledgement before marking the receipt stored. If the
    worker or database crashes during application, or acknowledgement is lost, replay the exact plan
    before processing any later item. Identity-preserving replacement makes this replay idempotent.
@@ -139,6 +145,14 @@ durable plan require reconciliation before further collection writes; the new re
 cannot reconstruct a plan that was never saved. Stop old writers during migration and remove their
 competing ingestion path before starting the queue worker.
 
+An unresolved legacy uncertainty blocks every further collection write, whatever its position in
+the drain order and whatever a batch also contains: the legacy mutation may have changed the state
+that any later write would evolve. Reimporting a legacy record whose observation text matches an
+accepted receipt stays idempotent only while the recorded outcomes agree. An uncertain record that
+names an observation the queue has not written turns that receipt into a reconciliation block, an
+operator decision leaves the receipt as it is, and a disagreeing completed identity is refused as a
+conflict. Uncertain legacy evidence is never treated as a known-unwritten observation.
+
 One blocked receipt is reconciled explicitly: `stored` records the completed note identity, and
 `not-written` clears the unusable plan so preparation restarts with the accepted note identity and
 observation. Until then the blocked receipt keeps its place, so no later observation is written.
@@ -146,12 +160,19 @@ observation. Until then the blocked receipt keeps its place, so no later observa
 ## Visibility and verification
 
 Expose backlog size, oldest pending age, worker availability and receipt outcomes. Report accepted,
-stored, retrying and blocked distinctly. The graph shows persisted notes; queued observations are
-not graph nodes. Dashboard polling discovers stored notes without a page reload.
+stored, retrying and blocked distinctly. Worker availability and the safe diagnostic that holds the
+backlog are properties of the queue, not of the handle that reports them, and a reopened queue still
+explains a durable block. The graph shows persisted notes; queued observations are not graph nodes.
+Dashboard polling discovers stored notes without a page reload.
 
 Verify concurrent unique submissions and duplicate keys; acceptance during provider/worker outage;
 producer exit after acknowledgement; worker exclusion; and restart at every boundary above. Inject
 a partial batch write and lost acknowledgement, then verify one new note identity, every intended
 neighbor update and unchanged timestamps after replay. Check retry delay, corrupt-plan blocking,
-disk-full rejection, idempotent receipt migration and concurrent reads. Do not equate a visible new
-note with successful completion of the whole insertion.
+disk-full rejection, idempotent receipt migration and concurrent reads. Verify that a filesystem
+alias of the journal cannot start a second worker, that a committed plan a damaged journal lost
+blocks instead of preparing again, that an unresolved legacy uncertainty holds every write whatever
+its order, and that a shutdown which arrives during startup settles. Verify that a scheduled timer
+still runs while another connection holds the journal's write lock, so journal contention never
+blocks a producer's event loop. Do not equate a visible new note with successful completion of the
+whole insertion.

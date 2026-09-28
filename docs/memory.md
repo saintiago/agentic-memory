@@ -180,7 +180,9 @@ Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `apply`, `get`,
 `stage`, a safe `reason` and message, and `persistence` (`unchanged` or `uncertain`). An insertion
 error after ID allocation also includes `noteId`; a write-attempt error includes `affectedNoteIds`
 for the prepared batch. Preserve the underlying cause for diagnosis without embedding credentials or
-complete prompts in public messages.
+complete prompts in public messages. The cause keeps the provider's own failure contract, including
+a model transport's machine-readable category, so a caller can classify the failure without reading
+provider text.
 
 Stages are `input`, `construct`, `embed`, `candidates`, `evolve`, `persist`, `read`. Model schema
 failures use the corresponding model stage. All failures before a write attempt are `unchanged`.

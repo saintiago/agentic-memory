@@ -12,6 +12,12 @@ interface ModelRequest {
   stage: "construct" | "evolve";
   prompt: string;
 }
+type ModelFailureCategory =
+  "authentication" | "resource" | "unavailable" | "output";
+class ModelRequestError extends Error {
+  readonly stage: ModelRequest["stage"];
+  readonly category: ModelFailureCategory;
+}
 interface LanguageModel {
   generate(request: ModelRequest): Promise<unknown>;
 }
@@ -30,9 +36,17 @@ transport demonstrate actual invocation without turning one provider into a core
 The host implementation must send the supplied instructions and data envelope without silently
 dropping neighbors or shortening content. Configure a finite timeout and provider output budget.
 Reject timeout, cancellation, provider error, incomplete/length-truncated output and invalid JSON.
-An optional single outer Markdown JSON fence can be removed; do not scrape a valid-looking fragment
-out of otherwise invalid output. Return parsed JSON, including a structurally invalid value, for
-the caller to validate. Do not repair a failed semantic response with an undisclosed second request.
+Report each failure as a `ModelRequestError` naming the stage and one machine-readable category:
+`authentication` for a rejected credential, `resource` for a missing provider resource,
+`unavailable` for a temporary outage, and `output` for an answer that cannot be used. The message is
+a safe diagnostic; a caller reacts to the category and never parses provider text to classify a
+failure. An optional single outer Markdown JSON fence can be removed; do not scrape a valid-looking
+fragment out of otherwise invalid output. Return parsed JSON, including a structurally invalid
+value, for the caller to validate. Do not repair a failed semantic response with an undisclosed
+second request.
+
+Memory preserves a provider failure as the cause of its operation failure, so a consumer such as
+the ingestion queue reads the category through the wrapped error instead of matching messages.
 
 There are no implicit retries in the supplied example or evaluation default. A host implementing
 transport retries must bound and account for them; retrying this read-only generation boundary is

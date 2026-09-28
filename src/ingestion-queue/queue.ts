@@ -5,10 +5,12 @@
  *
  * See docs/ingestion-queue.md.
  */
-import { mkdirSync } from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 
+import {
+  ModelRequestError,
+  type ModelFailureCategory,
+} from "../language-model/index.js";
 import {
   MemoryError,
   ModelResponseError,
@@ -35,12 +37,8 @@ import {
   type ReconcileOutcome,
 } from "./contract.js";
 import { QueueClosedError, QueueRequestError } from "./errors.js";
-import {
-  Journal,
-  journalFileName,
-  type JournalFailure,
-  type JournalRecord,
-} from "./journal.js";
+import { Journal, type JournalFailure, type JournalRecord } from "./journal.js";
+import { openJournalPath } from "./journal-path.js";
 import { WorkerLock } from "./worker-lock.js";
 
 /** The subset of Memory's public contract the ingestion worker consumes. */
@@ -167,14 +165,63 @@ const providerStatus = (cause: unknown): number | undefined => {
 };
 
 /**
- * Classify one failed attempt. Memory's failure contract carries most of the decision: invalid
- * source material and invalid model output fail permanently, a rejected plan or binding needs
- * reconciliation, and a write attempt or provider failure is retried. A provider failure that
- * reports an unauthorized, forbidden or missing resource blocks the queue until it is corrected.
+ * The safe diagnostics of model-transport failure categories. They name the condition a caller must
+ * correct without repeating provider text, which can echo credentials or source material.
+ */
+const MODEL_FAILURE_DECISIONS: Record<ModelFailureCategory, FailureDecision> = {
+  authentication: {
+    kind: "blocked",
+    retryAfterBackoff: true,
+    reason:
+      "The model provider rejected the queue's credential, which must be corrected before this " +
+      "observation can be processed.",
+  },
+  resource: {
+    kind: "blocked",
+    retryAfterBackoff: true,
+    reason:
+      "The model provider reports a missing model or resource, which must be corrected before " +
+      "this observation can be processed.",
+  },
+  unavailable: {
+    kind: "retry",
+    retryAfterBackoff: true,
+    reason: "A temporary model provider failure interrupted this observation.",
+  },
+  output: {
+    kind: "failed",
+    retryAfterBackoff: false,
+    reason:
+      "The model returned output the queue cannot use, so this observation failed permanently.",
+  },
+};
+
+/** The failure category a model transport reported for the failed attempt, if any. */
+const transportFailure = (cause: unknown): ModelRequestError | undefined => {
+  for (const link of errorChain(cause)) {
+    if (link instanceof ModelRequestError) {
+      return link;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Classify one failed attempt. A model transport's machine-readable category decides the reaction
+ * at the provider boundary: a rejected credential or missing resource blocks the queue until it is
+ * corrected, unusable model output fails permanently, and a temporary outage is retried. Memory's
+ * failure contract carries the rest: invalid source material and invalid model output fail
+ * permanently, a rejected plan or binding needs reconciliation, and a write attempt or provider
+ * failure is retried. A storage failure that reports an unauthorized, forbidden or missing resource
+ * blocks the queue until it is corrected.
  */
 const classifyFailure = (cause: unknown): FailureDecision => {
   if (cause instanceof QueuePlanError) {
     return { kind: "blocked", retryAfterBackoff: false, reason: cause.reason };
+  }
+  const transport = transportFailure(cause);
+  if (transport !== undefined) {
+    return MODEL_FAILURE_DECISIONS[transport.category];
   }
   // An unauthorized, forbidden or missing resource is a credential or storage condition that
   // provider wrapping does not change; it blocks the queue rather than being retried as an outage.
@@ -272,7 +319,16 @@ class DurableQueue implements IngestionQueue {
   readonly #pollIntervalMs: number;
   #worker: Promise<void> | undefined;
   #starting: Promise<void> | undefined;
-  #stopping = false;
+  #closing: Promise<void> | undefined;
+  /**
+   * Whether a stop was requested for the current or pending worker. Only `start()` clears it, so a
+   * shutdown that arrives during acquisition cannot be lost, and a stopped worker never starts
+   * claiming again.
+   */
+  #stopRequested = false;
+  /** Ordering evidence: a start is cancelled by a stop issued after it, not by an earlier one. */
+  #startEpoch = 0;
+  #stopEpoch = 0;
   #closed = false;
   #wakeup: (() => void) | undefined;
   #lastError: string | undefined;
@@ -299,7 +355,10 @@ class DurableQueue implements IngestionQueue {
         parsed.error,
       );
     }
-    const record = this.#journal.submit(parsed.data, new Date().toISOString());
+    const record = await this.#journal.submit(
+      parsed.data,
+      new Date().toISOString(),
+    );
     // New work should not wait for the next poll, but the submission never waits for the worker.
     this.#wake();
     return toReceipt(record);
@@ -311,13 +370,17 @@ class DurableQueue implements IngestionQueue {
     if (!parsed.success) {
       return undefined;
     }
-    const record = this.#journal.byId(parsed.data);
+    const record = await this.#journal.byId(parsed.data);
     return record === undefined ? undefined : toReceipt(record);
   }
 
   async status(): Promise<QueueStatus> {
     this.#assertOpen();
-    const { counts, oldestPendingAt } = this.#journal.status();
+    const [journalStatus, workerOwned] = await Promise.all([
+      this.#journal.status(),
+      WorkerLock.isHeld(this.journalPath),
+    ]);
+    const { counts, oldestPendingAt, oldestPendingError } = journalStatus;
     const accepted = Object.values(counts).reduce(
       (total, count) => total + count,
       0,
@@ -325,8 +388,11 @@ class DurableQueue implements IngestionQueue {
     const backlog =
       counts.queued + counts.processing + counts.retrying + counts.blocked;
     const now = Date.now();
+    // A handle-local failure wins; otherwise the durable pending receipt carries the reason the
+    // backlog is held, which another handle and a reopened queue must also report.
+    const lastError = this.#lastError ?? oldestPendingError;
     return queueStatusSchema.parse({
-      worker: this.#worker === undefined ? "stopped" : "running",
+      worker: workerOwned ? "running" : "stopped",
       accepted,
       backlog,
       counts,
@@ -336,7 +402,7 @@ class DurableQueue implements IngestionQueue {
         : {
             oldestPendingAgeMs: Math.max(0, now - Date.parse(oldestPendingAt)),
           }),
-      ...(this.#lastError === undefined ? {} : { lastError: this.#lastError }),
+      ...(lastError === undefined ? {} : { lastError }),
     });
   }
 
@@ -351,7 +417,7 @@ class DurableQueue implements IngestionQueue {
         parsed.error,
       );
     }
-    const result = this.#journal.importLegacy(
+    const result = await this.#journal.importLegacy(
       parsed.data,
       new Date().toISOString(),
     );
@@ -380,7 +446,7 @@ class DurableQueue implements IngestionQueue {
         parsedOutcome.error,
       );
     }
-    const record = this.#journal.reconcile(
+    const record = await this.#journal.reconcile(
       parsedId.data,
       parsedOutcome.data,
       new Date().toISOString(),
@@ -389,47 +455,102 @@ class DurableQueue implements IngestionQueue {
     return toReceipt(record);
   }
 
+  /**
+   * Acquire worker ownership and drain durable pending work. Concurrent starts share one worker, and
+   * a start that arrives while a stopped worker is still settling takes over once it released
+   * ownership. A stop that was issued after this start cancels it.
+   */
   async start(): Promise<void> {
     this.#assertOpen();
-    if (this.#worker !== undefined) {
+    const epoch = (this.#startEpoch += 1);
+    for (;;) {
+      const pending = this.#starting;
+      if (pending !== undefined) {
+        // Another caller already acquires ownership; a later start joins that acquisition.
+        await pending.catch(() => undefined);
+        continue;
+      }
+      const worker = this.#worker;
+      if (worker === undefined) {
+        break;
+      }
+      if (!this.#stopRequested) {
+        // A worker already drains this queue.
+        return;
+      }
+      await worker;
+    }
+    this.#assertOpen();
+    if (epoch <= this.#stopEpoch) {
+      // A stop issued after this start cancelled it before it owned anything.
       return;
     }
-    if (this.#starting === undefined) {
-      this.#starting = this.#acquireAndRun();
-    }
+    this.#stopRequested = false;
+    const starting = this.#acquireAndRun(epoch);
+    this.#starting = starting;
     try {
-      await this.#starting;
+      await starting;
     } finally {
-      this.#starting = undefined;
+      if (this.#starting === starting) {
+        this.#starting = undefined;
+      }
     }
   }
 
+  /**
+   * Stop claiming work, settle the active operation and release ownership. A stop that arrives
+   * while ownership is still being acquired waits for that acquisition, so a shutdown never
+   * returns while a worker could still start behind it; a start issued after the stop supersedes
+   * it and owns the next worker.
+   */
   async stop(): Promise<void> {
-    const worker = this.#worker;
-    if (worker === undefined) {
-      return;
-    }
-    this.#stopping = true;
+    this.#stopEpoch = this.#startEpoch;
+    this.#stopRequested = true;
     this.#wake();
-    await worker;
-  }
-
-  async close(): Promise<void> {
-    if (this.#closed) {
+    const starting = this.#starting;
+    const observed = this.#worker;
+    if (starting !== undefined) {
+      // A refused acquisition is not a stop failure: there was never a worker to stop.
+      await starting.catch(() => undefined);
+    }
+    if (this.#startEpoch > this.#stopEpoch) {
+      // A start issued after this stop superseded it and owns whatever runs now.
       return;
     }
-    await this.stop();
-    this.#closed = true;
-    this.#journal.close();
+    const worker = observed ?? this.#worker;
+    if (worker !== undefined) {
+      await worker;
+    }
   }
 
-  async #acquireAndRun(): Promise<void> {
+  /**
+   * Stop the worker and close the journal. Concurrent closes share one completion, and a close that
+   * arrives during startup releases the ownership that startup acquired.
+   */
+  async close(): Promise<void> {
+    if (this.#closing === undefined) {
+      this.#closing = this.#close();
+    }
+    await this.#closing;
+  }
+
+  async #close(): Promise<void> {
+    // A closed queue accepts nothing, and a pending acquisition must release its ownership.
+    this.#closed = true;
+    await this.stop();
+    await this.#journal.close();
+  }
+
+  async #acquireAndRun(epoch: number): Promise<void> {
     // Ownership is taken before any durable work is claimed and released on process exit.
     const lock = await WorkerLock.acquire(this.journalPath);
-    this.#stopping = false;
     if (this.#closed) {
       await lock.release();
       throw new QueueClosedError();
+    }
+    if (this.#stopRequested || epoch <= this.#stopEpoch) {
+      await lock.release();
+      return;
     }
     // The worker loop reports its own failures through `status()`, so it never rejects; a
     // supervisor restarts it by calling `start()` again.
@@ -440,12 +561,21 @@ class DurableQueue implements IngestionQueue {
 
   /**
    * Poll for durable pending work and process the oldest unresolved receipt. A receipt that waits
-   * for its retry time, or for reconciliation, keeps later observations behind it.
+   * for its retry time, or for reconciliation, keeps later observations behind it, and an
+   * unresolved legacy uncertainty keeps every collection write waiting.
    */
   async #runWorker(lock: WorkerLock): Promise<void> {
     try {
-      while (!this.#stopping) {
-        const pending = this.#journal.nextPending();
+      while (!this.#stopRequested) {
+        const unresolved = await this.#journal.unresolvedReconciliation();
+        if (unresolved !== undefined) {
+          // The legacy system may have written this observation, so no collection write may
+          // proceed until an operator reconciles it, whatever its place in the drain order.
+          this.#lastError = unresolved.lastError;
+          await this.#wait(this.#pollIntervalMs);
+          continue;
+        }
+        const pending = await this.#journal.nextPending();
         if (pending === undefined) {
           await this.#wait(this.#pollIntervalMs);
           continue;
@@ -469,7 +599,6 @@ class DurableQueue implements IngestionQueue {
       // A failure that stops the loop leaves pending work durable for a supervised restart.
       this.#lastError = classifyFailure(cause).reason;
     } finally {
-      this.#stopping = false;
       try {
         await lock.release();
       } catch (cause) {
@@ -480,22 +609,24 @@ class DurableQueue implements IngestionQueue {
 
   /** Prepare if needed, then apply exactly one plan for one accepted observation. */
   async #process(pending: JournalRecord): Promise<void> {
-    const claimed = this.#journal.claim(
+    const claimed = await this.#journal.claim(
       pending.sequence,
       new Date().toISOString(),
     );
     try {
       const plan =
-        claimed.plan === undefined
-          ? await this.#prepare(claimed)
-          : this.#readPlan(claimed);
+        claimed.plan !== undefined
+          ? this.#readPlan(claimed)
+          : claimed.planCommitted
+            ? this.#missingPlan(claimed)
+            : await this.#prepare(claimed);
       const note = await this.#memory.apply(plan);
       if (note.id.toLowerCase() !== claimed.noteId.toLowerCase()) {
         throw new QueuePlanError(
           "Applying the insertion plan produced another note identity than the accepted one.",
         );
       }
-      this.#journal.markStored(
+      await this.#journal.markStored(
         claimed.sequence,
         note.id,
         new Date().toISOString(),
@@ -509,7 +640,7 @@ class DurableQueue implements IngestionQueue {
           ).toISOString()
         : undefined;
       const diagnostic = decision.reason;
-      this.#journal.markFailure(
+      await this.#journal.markFailure(
         claimed.sequence,
         {
           status: statusFor(decision.kind),
@@ -520,6 +651,19 @@ class DurableQueue implements IngestionQueue {
       );
       this.#lastError = diagnostic;
     }
+  }
+
+  /**
+   * The receipt's preparation committed a plan, so a receipt without one lost it: a journal
+   * restored from the wrong backup, or a damaged file. Regenerating would change the attributes,
+   * neighbor updates and timestamps of an insertion the collection may already hold, so only
+   * reconciliation clears it.
+   */
+  #missingPlan(receipt: JournalRecord): never {
+    throw new QueuePlanError(
+      `The insertion plan committed for receipt ${receipt.receiptId} is missing, so the ` +
+        "original insertion cannot be replayed.",
+    );
   }
 
   /** Prepare one plan and commit it durably before any note write is attempted. */
@@ -534,7 +678,7 @@ class DurableQueue implements IngestionQueue {
     };
     const plan = await this.#memory.prepare(input);
     assertPlanBinding(plan, this.binding, receipt.noteId);
-    this.#journal.savePlan(
+    await this.#journal.savePlan(
       receipt.sequence,
       JSON.stringify(plan),
       new Date().toISOString(),
@@ -563,7 +707,12 @@ class DurableQueue implements IngestionQueue {
     return parsed.data;
   }
 
+  /** Wait for the poll interval, a producer's wake-up or a stop request, whichever comes first. */
   #wait(ms: number): Promise<void> {
+    if (this.#stopRequested) {
+      // A wait that starts after the stop must not lose the request, whatever interrupted the loop.
+      return Promise.resolve();
+    }
     return new Promise<void>((resolve) => {
       const finish = (): void => {
         this.#wakeup = undefined;
@@ -592,15 +741,16 @@ class DurableQueue implements IngestionQueue {
 
 /**
  * Open or create the durable queue in its directory and verify the journal's binding. Submission
- * works before the worker starts; start it separately to drain accepted work.
+ * works before the worker starts; start it separately to drain accepted work. The directory and
+ * file are resolved to their canonical identity, so a symlinked or relative name reaches the same
+ * queue as the path it points to.
  */
 export const openIngestionQueue = async (
   options: IngestionQueueOptions,
 ): Promise<IngestionQueue> => {
   const parsed = optionsSchema.parse(options);
-  mkdirSync(parsed.directory, { recursive: true });
-  const journalPath = path.join(parsed.directory, journalFileName);
-  const journal = Journal.open(journalPath, parsed.binding);
+  const journalPath = openJournalPath(parsed.directory);
+  const journal = await Journal.open(journalPath, parsed.binding);
   return new DurableQueue(
     journal,
     parsed.binding,

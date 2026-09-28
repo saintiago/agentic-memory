@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import * as packageExports from "../../src/index.js";
 import * as embeddings from "../../src/embeddings/index.js";
 import * as ingestionQueue from "../../src/ingestion-queue/index.js";
+import * as languageModel from "../../src/language-model/index.js";
 import * as memory from "../../src/memory/index.js";
 import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
@@ -29,7 +30,9 @@ import type {
   MemoryPreparer,
   MemoryPrompts,
   MemoryStage,
+  ModelFailureCategory,
   ModelRequest,
+  ModelRequestError,
   Note,
   NoteStore,
   Page,
@@ -155,6 +158,22 @@ describe("package root exports", () => {
     for (const name of exportedNames) {
       expect(packageExports[name]).toBe(memory[name]);
     }
+  });
+
+  it("re-exports the model failure contract through the language-model index", () => {
+    expect(packageExports["ModelRequestError"]).toBe(
+      languageModel["ModelRequestError"],
+    );
+    // The queue classifies by this machine-readable category, not by provider text.
+    expectTypeOf<ModelFailureCategory>().toEqualTypeOf<
+      "authentication" | "resource" | "unavailable" | "output"
+    >();
+    expectTypeOf<
+      ModelRequestError["category"]
+    >().toEqualTypeOf<ModelFailureCategory>();
+    expectTypeOf<ModelRequestError["stage"]>().toEqualTypeOf<
+      ModelRequest["stage"]
+    >();
   });
 
   it("keeps the documented memory failure fields usable through the package root", () => {

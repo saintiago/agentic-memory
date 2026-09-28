@@ -12,7 +12,12 @@
  */
 import { z } from "zod";
 
-import type { LanguageModel, ModelRequest } from "../src/index.js";
+import {
+  ModelRequestError,
+  type LanguageModel,
+  type ModelFailureCategory,
+  type ModelRequest,
+} from "../src/index.js";
 
 /**
  * Whether the platform can send this credential unchanged in the `authorization` header.
@@ -77,19 +82,31 @@ const optionsSchema = z.strictObject({
 export type HostModelTransportOptions = z.infer<typeof optionsSchema>;
 
 /**
- * A transport failure carrying the memory stage and a safe diagnostic. Provider and fetch failures
- * are untrusted text that may echo request headers, so every diagnostic is redacted and no raw
- * provider or fetch cause is attached.
+ * A transport failure carrying the memory stage, the machine-readable failure category and a safe
+ * diagnostic. Provider and fetch failures are untrusted text that may echo request headers, so
+ * every diagnostic is redacted and no raw provider or fetch cause is attached.
  */
-export class HostModelTransportError extends Error {
-  readonly stage: ModelRequest["stage"];
-
-  constructor(stage: ModelRequest["stage"], reason: string) {
-    super(`The ${stage} model request failed: ${reason}.`);
+export class HostModelTransportError extends ModelRequestError {
+  constructor(
+    stage: ModelRequest["stage"],
+    category: ModelFailureCategory,
+    reason: string,
+  ) {
+    super(stage, category, reason);
     this.name = "HostModelTransportError";
-    this.stage = stage;
   }
 }
+
+/**
+ * The category of an answered non-success response: a rejected credential, a missing provider
+ * resource, or a temporary provider outage the host may retry later.
+ */
+const statusCategory = (status: number): ModelFailureCategory =>
+  status === 401 || status === 403
+    ? "authentication"
+    : status === 404
+      ? "resource"
+      : "unavailable";
 
 /** Provider diagnostics stay short and never include the configured credential. */
 const MAX_DIAGNOSTIC_LENGTH = 300;
@@ -183,6 +200,7 @@ const parseModelOutput = (
   } catch {
     throw new HostModelTransportError(
       stage,
+      "output",
       "the model returned output that is not valid JSON",
     );
   }
@@ -248,6 +266,7 @@ export const createHostModelTransport = (
       } catch (cause) {
         throw new HostModelTransportError(
           request.stage,
+          "unavailable",
           describeFetchFailure(cause, timeoutMs, apiKey),
         );
       }
@@ -258,6 +277,7 @@ export const createHostModelTransport = (
       } catch {
         throw new HostModelTransportError(
           request.stage,
+          "unavailable",
           "the provider response body could not be read",
         );
       }
@@ -265,6 +285,7 @@ export const createHostModelTransport = (
       if (!response.ok) {
         throw new HostModelTransportError(
           request.stage,
+          statusCategory(response.status),
           `the provider answered HTTP ${response.status}${providerFailureDetail(
             bodyText,
             apiKey,
@@ -278,6 +299,7 @@ export const createHostModelTransport = (
       } catch {
         throw new HostModelTransportError(
           request.stage,
+          "output",
           "the provider response body is not JSON",
         );
       }
@@ -286,6 +308,7 @@ export const createHostModelTransport = (
       if (!completion.success) {
         throw new HostModelTransportError(
           request.stage,
+          "output",
           "the provider response is not a chat completion",
         );
       }
@@ -294,12 +317,14 @@ export const createHostModelTransport = (
       if (choice === undefined) {
         throw new HostModelTransportError(
           request.stage,
+          "output",
           "the provider response contains no completion choice",
         );
       }
       if (choice.finish_reason !== "stop") {
         throw new HostModelTransportError(
           request.stage,
+          "output",
           `the provider stopped before finishing (finish reason ${JSON.stringify(
             choice.finish_reason === null
               ? null
@@ -310,6 +335,7 @@ export const createHostModelTransport = (
       if (choice.message.content === null) {
         throw new HostModelTransportError(
           request.stage,
+          "output",
           "the provider response contains no message content",
         );
       }

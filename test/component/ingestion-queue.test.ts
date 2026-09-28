@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgenticMemory,
   QueueBindingError,
+  QueueClosedError,
   QueueConflictError,
   QueueRequestError,
   QueueWorkerLockedError,
@@ -26,6 +27,7 @@ import {
   RecordingStore,
   ScriptedModel,
   flush,
+  rejection,
 } from "./support/memory-harness.js";
 
 /**
@@ -459,6 +461,116 @@ describe("worker lifecycle", () => {
     expect((await harness.queue.status()).worker).toBe("stopped");
   });
 
+  it("settles a stop that arrives while ownership is still being acquired", async () => {
+    const harness = await createHarness();
+
+    // A shutdown handler that runs before startup finished must not leave a worker behind.
+    const starting = harness.queue.start();
+    await harness.queue.stop();
+    await starting;
+
+    const accepted = await harness.queue.submit({
+      sourceKey: "after-stop",
+      content: "The observation.",
+    });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect((await receiptOf(harness.queue, accepted.id)).status).toBe("queued");
+    expect(harness.model.requests).toEqual([]);
+    expect(harness.store.writes).toEqual([]);
+    expect((await harness.queue.status()).worker).toBe("stopped");
+
+    // A later explicit start runs again and drains the work the stop left durable.
+    harness.model.queue("construct", CONSTRUCTED);
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.receipt(accepted.id))?.status === "stored",
+      "the explicitly restarted worker to drain",
+    );
+  });
+
+  it("shares one completion between a close, a pending start and its own retry", async () => {
+    const harness = await createHarness();
+
+    const starting = rejection(harness.queue.start());
+    await harness.queue.close();
+    expect(await starting).toBeInstanceOf(QueueClosedError);
+
+    // Concurrent closes settle on the same completion instead of closing the journal twice.
+    await expect(
+      Promise.all([
+        harness.queue.close(),
+        harness.queue.close(),
+        harness.queue.close(),
+      ]),
+    ).resolves.toBeDefined();
+    await expect(harness.queue.status()).rejects.toBeInstanceOf(
+      QueueClosedError,
+    );
+    await expect(
+      harness.queue.submit({ sourceKey: "closed", content: "Closed." }),
+    ).rejects.toBeInstanceOf(QueueClosedError);
+  });
+
+  it("lets a start issued after a stop take over the ownership the stop released", async () => {
+    const harness = await createHarness();
+    await harness.queue.start();
+
+    // The stop and the start race: the later start waits for the stop to release ownership.
+    await Promise.all([harness.queue.stop(), harness.queue.start()]);
+    expect((await harness.queue.status()).worker).toBe("running");
+
+    harness.model.queue("construct", CONSTRUCTED);
+    const accepted = await harness.queue.submit({
+      sourceKey: "after-restart",
+      content: "The observation.",
+    });
+    await settle(
+      async () =>
+        (await harness.queue.receipt(accepted.id))?.status === "stored",
+      "the restarted worker to drain",
+    );
+  });
+
+  it("refuses a second worker that names the journal through a filesystem alias", async () => {
+    const first = await createHarness();
+    await first.queue.start();
+    const aliases = await temporaryDirectory();
+
+    // The same journal reached through a directory symlink.
+    const directoryAlias = path.join(aliases, "directory-alias");
+    await symlink(first.directory, directoryAlias, "dir");
+    const viaDirectory = await createHarness({
+      directory: directoryAlias,
+      store: first.store,
+      embedder: first.embedder,
+      model: first.model,
+    });
+    expect(viaDirectory.queue.journalPath).toBe(first.queue.journalPath);
+    await expect(viaDirectory.queue.start()).rejects.toBeInstanceOf(
+      QueueWorkerLockedError,
+    );
+
+    // And the same journal reached through a file symlink.
+    const fileAlias = path.join(aliases, "file-alias");
+    await mkdir(fileAlias, { recursive: true });
+    await symlink(
+      first.queue.journalPath,
+      path.join(fileAlias, "ingestion-queue.sqlite"),
+      "file",
+    );
+    const viaFile = await createHarness({
+      directory: fileAlias,
+      store: first.store,
+      embedder: first.embedder,
+      model: first.model,
+    });
+    expect(viaFile.queue.journalPath).toBe(first.queue.journalPath);
+    await expect(viaFile.queue.start()).rejects.toBeInstanceOf(
+      QueueWorkerLockedError,
+    );
+  });
+
   it("keeps reads available while a write is in flight", async () => {
     const harness = await createHarness();
     harness.model.queue("construct", CONSTRUCTED);
@@ -760,6 +872,80 @@ describe("retry, blocking and recovery", () => {
     expect(store.stored(stored.noteId!)?.timestamp).toBe(NOTE_TIMESTAMP);
   });
 
+  it("blocks a receipt whose committed plan was lost instead of preparing again", async () => {
+    const directory = await temporaryDirectory();
+    const store = new RecordingStore();
+    const embedder = new ControlledEmbedder();
+    const model = new ScriptedModel();
+    const crashed = await createHarness({ directory, store, embedder, model });
+    store.seed({ note: candidate(), vector: [1, 0, 0, 0] });
+    model.queue("construct", CONSTRUCTED);
+    model.queue("evolve", () => ({
+      links: [CANDIDATE_ID],
+      newTags: ["incoming"],
+      updates: [],
+    }));
+    store.failNextWrites(new Error("the connection was reset"));
+    await crashed.queue.start();
+    const accepted = await crashed.queue.submit({
+      sourceKey: "source-key",
+      content: "The incoming account.",
+    });
+    await settle(
+      async () =>
+        (await crashed.queue.receipt(accepted.id))?.status === "retrying",
+      "the plan to be committed",
+    );
+    await crashed.queue.close();
+
+    // A partial journal write or a restoring backup drops the plan but keeps the commit evidence.
+    const journal = new DatabaseSync(crashed.queue.journalPath);
+    journal
+      .prepare("UPDATE receipts SET plan = NULL WHERE id = ?")
+      .run(accepted.id);
+    journal.close();
+
+    const restarted = await createHarness({
+      directory,
+      store,
+      embedder,
+      model,
+    });
+    await restarted.queue.start();
+    await settle(
+      async () =>
+        (await restarted.queue.receipt(accepted.id))?.status === "blocked",
+      "the lost plan to block the queue",
+    );
+    const blocked = await receiptOf(restarted.queue, accepted.id);
+    expect(blocked.nextRetryAt).toBeUndefined();
+    expect(blocked.lastError).toContain("missing");
+    // Regeneration could change attributes, timestamps and neighbor updates, so none happened.
+    expect(restarted.preparer.prepares).toEqual([]);
+    expect(model.requests).toHaveLength(2);
+
+    // The operator confirms the insertion was not applied, so preparation restarts exactly.
+    model.queue("construct", CONSTRUCTED);
+    model.queue("evolve", () => ({
+      links: [CANDIDATE_ID],
+      newTags: ["incoming"],
+      updates: [],
+    }));
+    const reconciled = await restarted.queue.reconcile(accepted.id, {
+      outcome: "not-written",
+    });
+    expect(reconciled.status).toBe("queued");
+    await settle(
+      async () =>
+        (await restarted.queue.receipt(accepted.id))?.status === "stored",
+      "the reconciled receipt to be prepared again",
+    );
+    expect(restarted.preparer.prepares).toHaveLength(1);
+    expect(restarted.preparer.prepares[0]?.noteId).toBe(
+      crashed.preparer.prepares[0]?.noteId,
+    );
+  });
+
   it("fails invalid model output explicitly and continues with later work", async () => {
     const harness = await createHarness();
     harness.model.queue("construct", () => ({ context: "Only a context." }));
@@ -1020,6 +1206,195 @@ describe("legacy receipt migration", () => {
 
     expect((await harness.queue.status()).accepted).toBe(1);
   });
+
+  it("holds a mixed legacy batch until its uncertainty is reconciled", async () => {
+    const harness = await createHarness();
+    expect(
+      await harness.queue.importLegacyReceipts([
+        {
+          status: "pending",
+          sourceKey: "legacy-pending",
+          content: "Known unwritten.",
+        },
+        {
+          status: "uncertain",
+          sourceKey: "legacy-uncertain",
+          content: "Unknown outcome.",
+          receiptId: LEGACY_RECEIPT_ID,
+        },
+      ]),
+    ).toEqual({ imported: 2, existing: 0, blocked: 1 });
+
+    harness.model.queue("construct", CONSTRUCTED);
+    await harness.queue.start();
+    await vi.advanceTimersByTimeAsync(120_000);
+    // The earlier, known-unwritten record must not be written while the uncertainty is open.
+    expect((await harness.queue.status()).counts).toMatchObject({
+      queued: 1,
+      blocked: 1,
+    });
+    expect(harness.model.requests).toEqual([]);
+    expect(harness.store.writes).toEqual([]);
+
+    const reconciled = await harness.queue.reconcile(LEGACY_RECEIPT_ID, {
+      outcome: "stored",
+      noteId: OTHER_ID,
+    });
+    expect(reconciled.status).toBe("stored");
+    await settle(
+      async () => (await harness.queue.status()).counts.stored === 2,
+      "the legacy batch to drain after reconciliation",
+    );
+  });
+
+  it("holds accepted work while a later legacy uncertainty is unresolved", async () => {
+    const harness = await createHarness();
+    const accepted = await harness.queue.submit({
+      sourceKey: "accepted",
+      content: "The accepted observation.",
+    });
+    harness.model.queue("construct", CONSTRUCTED);
+    harness.model.queue("construct", CONSTRUCTED);
+    harness.model.queue("evolve", unchanged);
+    expect(
+      await harness.queue.importLegacyReceipts([
+        {
+          status: "uncertain",
+          sourceKey: "legacy-uncertain",
+          content: "Unknown outcome.",
+          receiptId: LEGACY_RECEIPT_ID,
+        },
+      ]),
+    ).toEqual({ imported: 1, existing: 0, blocked: 1 });
+
+    await harness.queue.start();
+    await vi.advanceTimersByTimeAsync(120_000);
+    // The uncertainty is later in the drain order, yet no collection write may proceed.
+    expect((await receiptOf(harness.queue, accepted.id)).status).toBe("queued");
+    expect(harness.model.requests).toEqual([]);
+    expect(harness.store.writes).toEqual([]);
+    expect((await harness.queue.status()).lastError).toContain(
+      "reconciliation",
+    );
+
+    const reconciled = await harness.queue.reconcile(LEGACY_RECEIPT_ID, {
+      outcome: "not-written",
+    });
+    expect(reconciled.status).toBe("queued");
+    await settle(
+      async () => (await harness.queue.status()).counts.stored === 2,
+      "the accepted and reconciled work to drain",
+    );
+  });
+
+  it("blocks an accepted receipt when an uncertain legacy record names the same observation", async () => {
+    const harness = await createHarness();
+    const accepted = await harness.queue.submit({
+      sourceKey: "shared-key",
+      content: "The observation.",
+      provenance: { host: "cli" },
+    });
+    const record: LegacyReceipt = {
+      status: "uncertain",
+      sourceKey: "shared-key",
+      content: "The observation.",
+      provenance: { host: "cli" },
+      noteId: OTHER_ID,
+    };
+
+    // Equal observation text is not equal evidence: the legacy system may have written it.
+    expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+      imported: 0,
+      existing: 0,
+      blocked: 1,
+    });
+    const blocked = await receiptOf(harness.queue, accepted.id);
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.nextRetryAt).toBeUndefined();
+    expect(blocked.lastError).toContain("reconciliation");
+
+    harness.model.queue("construct", CONSTRUCTED);
+    await harness.queue.start();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(harness.model.requests).toEqual([]);
+    expect(harness.store.writes).toEqual([]);
+
+    // The completed identity resolves it, and the repeated import stays idempotent.
+    const reconciled = await harness.queue.reconcile(accepted.id, {
+      outcome: "stored",
+      noteId: OTHER_ID,
+    });
+    expect(reconciled.status).toBe("stored");
+    expect(reconciled.noteId).toBe(OTHER_ID);
+    expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+      imported: 0,
+      existing: 1,
+      blocked: 0,
+    });
+  });
+
+  it("keeps an operator decision when the same uncertainty is imported again", async () => {
+    const harness = await createHarness();
+    const accepted = await harness.queue.submit({
+      sourceKey: "shared-key",
+      content: "The observation.",
+    });
+    const record: LegacyReceipt = {
+      status: "uncertain",
+      sourceKey: "shared-key",
+      content: "The observation.",
+    };
+    expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+      imported: 0,
+      existing: 0,
+      blocked: 1,
+    });
+
+    const reconciled = await harness.queue.reconcile(accepted.id, {
+      outcome: "not-written",
+    });
+    expect(reconciled.status).toBe("queued");
+    // The operator already decided this receipt's outcome; the import neither blocks nor conflicts.
+    expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+      imported: 0,
+      existing: 1,
+      blocked: 0,
+    });
+
+    harness.model.queue("construct", CONSTRUCTED);
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.receipt(accepted.id))?.status === "stored",
+      "the reconciled receipt to drain",
+    );
+  });
+
+  it("refuses an uncertain legacy record that names another completed identity", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", CONSTRUCTED);
+    const accepted = await harness.queue.submit({
+      sourceKey: "shared-key",
+      content: "The observation.",
+    });
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.receipt(accepted.id))?.status === "stored",
+      "the observation to be stored",
+    );
+
+    await expect(
+      harness.queue.importLegacyReceipts([
+        {
+          status: "uncertain",
+          sourceKey: "shared-key",
+          content: "The observation.",
+          noteId: OTHER_ID,
+        },
+      ]),
+    ).rejects.toBeInstanceOf(QueueConflictError);
+  });
 });
 
 describe("receipts and status", () => {
@@ -1079,5 +1454,49 @@ describe("receipts and status", () => {
         outcome: "not-written",
       }),
     ).rejects.toBeInstanceOf(QueueRequestError);
+  });
+
+  it("reports shared worker availability and durable diagnostics through another handle", async () => {
+    const first = await createHarness();
+    await first.queue.start();
+    const second = await createHarness({
+      directory: first.directory,
+      store: first.store,
+      embedder: first.embedder,
+      model: first.model,
+    });
+
+    // Availability belongs to the queue, not to the handle that happens to run the worker.
+    expect((await second.queue.status()).worker).toBe("running");
+
+    expect(
+      await second.queue.importLegacyReceipts([
+        {
+          status: "uncertain",
+          sourceKey: "legacy-uncertain",
+          content: "Unknown outcome.",
+          receiptId: LEGACY_RECEIPT_ID,
+        },
+      ]),
+    ).toEqual({ imported: 1, existing: 0, blocked: 1 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const reported = await second.queue.status();
+    expect(reported.lastError).toContain("reconciliation");
+    expect(reported.counts.blocked).toBe(1);
+
+    await first.queue.close();
+    expect((await second.queue.status()).worker).toBe("stopped");
+    await second.queue.close();
+
+    // A reopened queue still reports why its durable backlog is blocked.
+    const reopened = await createHarness({
+      directory: first.directory,
+      store: first.store,
+      embedder: first.embedder,
+      model: first.model,
+    });
+    const durable = await reopened.queue.status();
+    expect(durable.worker).toBe("stopped");
+    expect(durable.lastError).toContain("reconciliation");
   });
 });
