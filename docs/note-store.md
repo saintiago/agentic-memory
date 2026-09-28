@@ -23,6 +23,7 @@ interface Note extends Attributes {
   id: string;
   content: string;
   timestamp: string;
+  updatedAt?: string; // absent only when the historical update time is unknown
   links: string[];
   metadata?: Record<string, JsonValue>;
 }
@@ -39,11 +40,16 @@ interface Page {
   notes: Note[];
   cursor?: Cursor;
 }
+interface EmbeddedPage {
+  records: EmbeddedNote[];
+  cursor?: Cursor;
+}
 interface NoteStore {
   put(records: EmbeddedNote[]): Promise<void>;
   get(ids: string[]): Promise<Note[]>;
   nearest(vector: number[], limit: number): Promise<Match[]>;
   page(limit: number, cursor?: Cursor): Promise<Page>;
+  pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage>;
 }
 ```
 
@@ -55,10 +61,32 @@ completion. Cursors belong to the current collection/provider, not a portable pa
 An unchanged collection must be fully traversable without duplicates or an internal total-count cap.
 Concurrent writes can change the traversal; snapshot pagination is not promised.
 
+`pageEmbedded` is the explicit vector-inspection operation. It returns complete current notes and
+actual stored vectors, validated against the collection's embedding space, as detached records.
+It uses the same limit constraints, cursor rules and traversal guarantees as `page`; cursors must
+be continued with the operation that produced them. An empty page may still have a cursor, so
+consumers stop only when the cursor is omitted. Missing or invalid vectors fail the operation,
+not silently skip a record or trigger re-embedding. It performs no writes, embeddings or generation.
+Ordinary `page`, `get` and `nearest` remain vector-free in their responses. Export `EmbeddedPage`
+through the public package boundary; the inspection host calls the supplied store directly.
+
 `put` replaces complete supplied records at their IDs. Empty input is a no-op. Validate the entire
 batch before dispatch; duplicate record IDs in one batch are invalid. Return only after acknowledged
 application, or throw. This is an upsert primitive, not caller-content conflict detection. It does
 not promise a multi-record transaction or guaranteed rollback on failure.
+
+## Update time
+
+`updatedAt`, when present, is an ISO 8601 instant with timezone recording when the current note
+version was prepared for persistence. It is distinct from the immutable observation `timestamp`.
+The writer supplies it; storage preserves it without replacing it with request or acknowledgment
+time. It is not a commit timestamp, revision counter, change cursor or evidence of acknowledgment.
+The writer owns assignment on actual note changes; the store does not infer those changes.
+
+The optional field permits existing records with unknown historical update time. Absence means
+unknown; do not infer a value from observation time, read time or collection opening. Reject null
+or malformed values. A supplied observation time may be later than `updatedAt`, so do not impose
+ordering between these two clocks.
 
 ## Record validation
 
@@ -83,7 +111,8 @@ replace earlier records; no second database, cache or shadow JSON files particip
 persistence.
 
 Use direct retrieve-by-ID, vector query with a limit, and scroll with its returned cursor. Request
-payloads and omit vectors from reads. Upsert batches with `wait: true`. Normal operations must not
+payloads and omit vectors from ordinary reads. Only `pageEmbedded` requests both payloads and
+stored vectors through scroll. Upsert batches with `wait: true`. Normal operations must not
 first list the collection, rebuild BM25, touch retrieval counters or rewrite records as a read effect.
 Expose failures; do not convert transport errors into empty results.
 
@@ -100,6 +129,12 @@ metadata under key `agenticMemory` with this value:
   embeddingSpace: { id: string, dimensions: number, distance: "Cosine" }
 }
 ```
+
+`updatedAt` is an additive optional payload field within schema version 1. Opening an existing
+compatible collection neither backfills timestamps nor rewrites vectors or collection metadata.
+The representation stays `amem-note-v1` because the field is excluded from embedding text. Deploy
+readers and the active writer with support for this field before writing it; older binaries are not
+promised to accept or preserve the extended payload. No concurrent legacy writer is supported.
 
 The embedding-space ID identifies the exact encoding configuration, not just a model family name.
 On open, compare all these values and the actual vector configuration, including its declared
@@ -125,4 +160,8 @@ change search results, pagination reaches a sentinel past 10,000 records, and di
 do not rely on pagination. A small-dimensional synthetic corpus is adequate for that correctness
 test; it is not a representative embedding-performance benchmark. Test incompatible model identity
 at equal dimensions, malformed payloads and actual vector configuration mismatches. Use controlled
-transport failures separately to exercise uncertain write acknowledgment.
+transport failures separately to exercise uncertain write acknowledgment. Apply pagination coverage
+also to `pageEmbedded`: verify stored vectors and notes survive export/reopen, returned data is
+detached, invalid vectors fail, and ordinary reads do not request vectors. Verify legacy records
+without `updatedAt` remain readable without backfill, valid values survive round trips and malformed
+values fail validation.

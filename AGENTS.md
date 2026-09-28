@@ -66,6 +66,7 @@ experiment or existing ticket does not establish a requirement.
 - [A-MEM alignment audit](docs/paper-alignment.md)
 - [Prototype findings](docs/prototype-findings.md)
 - [Replay, evaluation and graph inspection](docs/evaluation.md)
+- [Local memory dashboard (Sigma.js)](docs/dashboard.md)
 - [Tech stack](docs/tech-stack.md)
 - [Testing architecture](docs/testing.md)
 - [Development and delivery](docs/development.md)

@@ -180,3 +180,7 @@ into a stored link. Escape source text when rendering; do not execute source HTM
 
 The graph is an inspection tool, not a quality score. Export enough JSON alongside it to reproduce
 the evidence without the old prototype or an active database.
+
+For live inspection with vector-based positions, freshness and request highlighting, see the
+separate [Sigma.js dashboard design](dashboard.md). Its projected positions have approximate semantic
+meaning; this offline report's topology layout does not.
