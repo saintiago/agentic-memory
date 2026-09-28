@@ -19,3 +19,33 @@ export interface ModelRequest {
 export interface LanguageModel {
   generate(request: ModelRequest): Promise<unknown>;
 }
+
+/**
+ * The machine-readable failure categories a model transport reports, so a caller decides how to
+ * react without reading provider text: a rejected credential, a missing provider resource, a
+ * temporary outage, and output that cannot be used as an answer.
+ */
+export type ModelFailureCategory =
+  "authentication" | "resource" | "unavailable" | "output";
+
+/**
+ * A failed model request as the transport boundary reports it: the stage that failed, one
+ * machine-readable category and a safe description that never contains credentials or complete
+ * prompts. Memory preserves the error as the underlying cause of its operation failure, and the
+ * ingestion queue classifies the receipt by category instead of by provider text.
+ */
+export class ModelRequestError extends Error {
+  readonly stage: ModelRequest["stage"];
+  readonly category: ModelFailureCategory;
+
+  constructor(
+    stage: ModelRequest["stage"],
+    category: ModelFailureCategory,
+    reason: string,
+  ) {
+    super(`The ${stage} model request failed: ${reason}.`);
+    this.name = "ModelRequestError";
+    this.stage = stage;
+    this.category = category;
+  }
+}

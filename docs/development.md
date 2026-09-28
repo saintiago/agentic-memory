@@ -13,7 +13,8 @@ src/
   note-store/      # note schema and persistence contract; Qdrant implementation
   embeddings/      # encoder contract, settings and local implementation
   language-model/  # host invocation contract
-  index.ts        # supported package exports
+  ingestion-queue/ # durable acceptance, writer ownership and restart recovery
+  index.ts         # supported package exports
 examples/         # host composition and provider transport example
 experiments/      # replay, evaluation and graph artifact consumers
 inspector/        # local inspection host: entry point, HTTP API and projection worker

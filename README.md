@@ -35,6 +35,11 @@ Failures are `MemoryError` values naming the operation, stage and persistence; t
 [memory design](docs/memory.md) defines the operations, and the [host examples](examples/README.md)
 show the assembled composition with the pinned encoder, Qdrant storage and model transport.
 
+Concurrent clients use the durable [ingestion queue](docs/ingestion-queue.md): it accepts an
+observation after a local journal commit, deduplicates by source key, drains accepted work through
+Memory's `prepare`/`apply` contract with one writer per collection, and replays persisted insertion
+plans after a restart.
+
 ## Development
 
 Use Linux or WSL with Node.js 24. Preparation installs the locked dependencies, and the aggregate

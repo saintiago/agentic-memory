@@ -1,12 +1,15 @@
 import type { Note } from "../note-store/index.js";
 
+/** The declared representation version of the canonical embedding text below. */
+export const representationVersion = "amem-note-v1";
+
 /**
  * The canonical text an embedding represents, with LF separators and no extra prefix or final
  * newline. Identity, the observation timestamp, the persisted update time, links and provenance
  * are excluded; identifiers or dates that remain in the original content stay represented.
  *
- * The representation version is `amem-note-v1`. Changing this text requires a declared new version
- * and re-embedding existing records rather than an invisible prompt change.
+ * The representation version is `amem-note-v1`. Changing this text requires a declared new
+ * version and re-embedding existing records rather than an invisible prompt change.
  *
  * See docs/memory.md#representation.
  */

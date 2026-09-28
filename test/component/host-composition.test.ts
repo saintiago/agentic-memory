@@ -25,6 +25,18 @@ vi.mock("../../src/index.js", () => {
   /** The space the substitute encoder reports; the example copies it into the store options. */
   const space = { id: "example-space", dimensions: 2, distance: "Cosine" };
 
+  /** The failure contract the example transport reports through. */
+  class ModelRequestError extends Error {
+    readonly stage: string;
+    readonly category: string;
+
+    constructor(stage: string, category: string, reason: string) {
+      super(`The ${stage} model request failed: ${reason}.`);
+      this.stage = stage;
+      this.category = category;
+    }
+  }
+
   class AgenticMemory {
     constructor(store: unknown, embedder: unknown, model: unknown) {
       observed.calls.push("memory");
@@ -62,6 +74,7 @@ vi.mock("../../src/index.js", () => {
 
   return {
     AgenticMemory,
+    ModelRequestError,
     embeddingText: () => "",
     openReferenceEmbedder: async (options: unknown) => {
       observed.calls.push("embedder");

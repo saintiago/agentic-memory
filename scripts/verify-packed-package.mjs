@@ -18,10 +18,14 @@ const repositoryRoot = path.resolve(import.meta.dirname, "..");
 /**
  * The consumer imports the installed package by name and exercises the public contract of the
  * assembled library: exports and schemas, then add, search, get and page through host-supplied
- * implementations of the provider contracts.
+ * implementations of the provider contracts, then a durable queue submission drained through
+ * Memory's prepare/apply operations in a temporary journal directory.
  */
 const consumerCheck = `
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import * as memory from "agentic-memory";
 
 const note = {
@@ -188,10 +192,47 @@ await assert.rejects(
     error.persistence === "unchanged",
 );
 
+// The durable queue accepts after a local commit and drains through the same Memory instance.
+const journalDirectory = await mkdtemp(path.join(tmpdir(), "amem-packed-queue-"));
+const queue = await memory.openIngestionQueue({
+  directory: journalDirectory,
+  binding: {
+    endpoint: "http://127.0.0.1:6333",
+    collection: "packed-collection",
+    embeddingSpace: { id: "packed-consumer-space", dimensions: 2, distance: "Cosine" },
+  },
+  memory: agent,
+});
+const receipt = await queue.submit({
+  sourceKey: "packed-observation",
+  content: "The packed observation.",
+});
+assert.equal(receipt.status, "queued");
+assert.equal(receipt.noteId, undefined, "acceptance does not publish a note identity");
+assert.equal(
+  (await queue.submit({ sourceKey: "packed-observation", content: "The packed observation." })).id,
+  receipt.id,
+  "an identical resubmission returns the existing receipt",
+);
+await queue.start();
+const deadline = Date.now() + 10000;
+let settled = await queue.receipt(receipt.id);
+while (settled !== undefined && settled.status !== "stored" && Date.now() < deadline) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  settled = await queue.receipt(receipt.id);
+}
+assert.equal(settled.status, "stored", "the queued observation is stored");
+assert.equal(typeof settled.noteId, "string");
+assert.notEqual(await agent.get(settled.noteId), undefined);
+const queueStatus = await queue.status();
+assert.equal(queueStatus.counts.stored, 1);
+await queue.close();
+await rm(journalDirectory, { recursive: true, force: true });
+
 console.log(
     "packed consumer imported " +
     Object.keys(memory).length +
-    " runtime exports and exercised add, search, get, page and pageEmbedded",
+    " runtime exports and exercised add, search, get, page, pageEmbedded and the durable queue",
 );
 `;
 

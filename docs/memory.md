@@ -10,7 +10,8 @@ events from an application's logs or decide whether an event deserves to be reme
 
 Dependencies are the provider-owned [NoteStore](note-store.md#interface),
 [Embedder](embeddings.md#interface) and [LanguageModel](language-model.md#interface) contracts.
-`Note`, `Attributes`, `Page` and `Cursor` below are imported from NoteStore's public interface.
+`Note`, `Attributes`, `EmbeddedNote`, `Page` and `Cursor` below are imported from NoteStore's public
+interface, and `EmbeddingSpace` from the Embeddings interface.
 Composition and dependency lifecycle are described in [architecture](architecture.md#library-composition).
 
 ```ts
@@ -18,6 +19,19 @@ interface AddInput {
   content: string;
   timestamp?: string;
   metadata?: Record<string, JsonValue>;
+}
+interface PrepareInput {
+  noteId: string;
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, JsonValue>;
+}
+interface InsertionPlan {
+  version: 1;
+  representation: "amem-note-v1";
+  embeddingSpace: EmbeddingSpace;
+  noteId: string;
+  records: EmbeddedNote[];
 }
 interface MemoryPrompts {
   construction: string;
@@ -42,6 +56,8 @@ class AgenticMemory {
     options?: MemoryOptions,
   );
   add(input: AddInput): Promise<Note>;
+  prepare(input: PrepareInput): Promise<InsertionPlan>;
+  apply(plan: InsertionPlan): Promise<Note>;
   get(id: string): Promise<Note | undefined>;
   page(limit?: number, cursor?: Cursor): Promise<Page>;
   search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
@@ -160,10 +176,13 @@ insertion's writes; no multi-note snapshot is promised.
 
 ## Failures
 
-Expose a typed `MemoryError` with `operation` (`add`, `get`, `page`, `search`), `stage`, a safe message,
-and `persistence` (`unchanged` or `uncertain`). An add error after ID allocation also includes
-`noteId`; a write-attempt error includes `affectedNoteIds` for the prepared batch. Preserve the
-underlying cause for diagnosis without embedding credentials or complete prompts in public messages.
+Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `apply`, `get`, `page`, `search`),
+`stage`, a safe `reason` and message, and `persistence` (`unchanged` or `uncertain`). An insertion
+error after ID allocation also includes `noteId`; a write-attempt error includes `affectedNoteIds`
+for the prepared batch. Preserve the underlying cause for diagnosis without embedding credentials or
+complete prompts in public messages. The cause keeps the provider's own failure contract, including
+a model transport's machine-readable category, so a caller can classify the failure without reading
+provider text.
 
 Stages are `input`, `construct`, `embed`, `candidates`, `evolve`, `persist`, `read`. Model schema
 failures use the corresponding model stage. All failures before a write attempt are `unchanged`.
@@ -180,10 +199,13 @@ exactly-once ingestion or reconstruction of an interrupted evolution plan.
 
 The [ingestion queue interface](ingestion-queue.md#interface) also requires public prepare/apply
 operations. Preparation uses the same construction and evolution rules as add, accepts the durable
-operation's fixed note ID and timestamp, and produces complete records without writes. Application
-validates plan version and collection/embedding binding and writes the exact supplied records without
-regeneration. Reapplication preserves identities, vectors and timestamps. The queue owns exclusivity
-and plan durability; raw add's uncertain-failure behavior above remains unchanged.
+operation's fixed note ID and timestamp, and returns one immutable plan with its declared
+representation, embedding space and complete records, without writes. Application rejects a plan of
+another schema version, representation or embedding space before any write, requires the incoming
+note among the records and one record per identity, and then writes the exact supplied records
+without regeneration. Reapplying the same plan preserves identities, vectors and timestamps; the
+declared embedding space is the instance's own, while the queue binds the collection. The queue owns
+exclusivity and plan durability; raw add's uncertain-failure behavior above remains unchanged.
 
 ## Verification
 

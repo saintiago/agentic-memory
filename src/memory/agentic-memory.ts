@@ -6,6 +6,10 @@
  * matches and follow one bounded hop of their outgoing links; read notes and pages without
  * generating text or changing a record.
  *
+ * Insertion is available in one call through `add` and as the durable, two-step `prepare`/`apply`
+ * path the ingestion queue consumes. Both share this algorithm: `prepare` returns the immutable
+ * plan without writing, and `apply` writes the exact supplied plan without regeneration.
+ *
  * See docs/memory.md, docs/architecture.md#insertion-and-evolution and
  * docs/architecture.md#retrieval.
  */
@@ -36,12 +40,17 @@ import {
   type MemoryStage,
 } from "./memory-error.js";
 import {
+  insertionPlanSchema,
+  insertionPlanVersion,
+  type InsertionPlan,
+} from "./insertion-plan.js";
+import {
   assembleConstructionPrompt,
   assembleEvolutionPrompt,
   defaultPrompts,
   type MemoryPrompts,
 } from "./prompts.js";
-import { embeddingText } from "./representation.js";
+import { embeddingText, representationVersion } from "./representation.js";
 import {
   readConstructionResponse,
   readEvolutionResponse,
@@ -90,6 +99,23 @@ const addInputSchema = z.strictObject({
 
 /** Source material accepted for a new note. Provenance is caller-supplied and returned unchanged. */
 export type AddInput = z.infer<typeof addInputSchema>;
+
+/**
+ * Source material for one durable insertion whose identity and observation time were fixed at
+ * acceptance: content, the previously allocated note identity and the original timestamp.
+ */
+const prepareInputSchema = z.strictObject({
+  noteId: noteIdSchema,
+  content: nonWhitespaceText("Content"),
+  timestamp: z.iso.datetime({
+    offset: true,
+    message: "A timestamp must be an ISO 8601 instant with a timezone.",
+  }),
+  metadata: metadataSchema.optional(),
+});
+
+/** Source material accepted for durable preparation. */
+export type PrepareInput = z.infer<typeof prepareInputSchema>;
 
 /** A positive safe integer with one message for both the format and the range check. */
 const positiveSafeInteger = (description: string) => {
@@ -145,35 +171,46 @@ const DEFAULT_LINKED_LIMIT = 5;
 /** The retrieval operations. They never write, so their failures are always `unchanged`. */
 type RetrievalOperation = Extract<MemoryOperation, "get" | "page" | "search">;
 
-const readAddInput = (input: unknown): AddInput => {
-  const parsed = addInputSchema.safeParse(input);
+/** The insertion operations. Preparation never writes; application is the single batch write. */
+type InsertionOperation = Extract<MemoryOperation, "add" | "prepare" | "apply">;
+
+/**
+ * Validate one insertion request. The public reason stays fixed: schema issues can quote
+ * caller-supplied property names or metadata paths, so the structured issues stay attached as the
+ * cause instead.
+ */
+const readInsertionInput = <Output>(
+  operation: "add" | "prepare",
+  schema: z.ZodType<Output>,
+  input: unknown,
+): Output => {
+  const parsed = schema.safeParse(input);
   if (!parsed.success) {
-    // The public reason stays fixed: schema issues can quote caller-supplied property names or
-    // metadata paths, so the structured issues stay attached as the cause instead.
     throw new MemoryError({
-      operation: "add",
+      operation,
       stage: "input",
       persistence: "unchanged",
-      reason: "The input is not a valid add request.",
+      reason: `The input is not a valid ${operation} request.`,
       cause: parsed.error,
     });
   }
   return parsed.data;
 };
 
-/** A failure before the batch write leaves stored notes unchanged. */
-const addFailure = (
+/** An insertion failure before the batch write attempt leaves stored notes unchanged. */
+const insertionFailure = (
+  operation: InsertionOperation,
   stage: MemoryStage,
   reason: string,
-  noteId: string,
+  noteId?: string,
   cause?: unknown,
 ): MemoryError =>
   new MemoryError({
-    operation: "add",
+    operation,
     stage,
     persistence: "unchanged",
     reason,
-    noteId,
+    ...(noteId === undefined ? {} : { noteId }),
     ...(cause === undefined ? {} : { cause }),
   });
 
@@ -264,6 +301,28 @@ const detachNote = (note: Note): Note => noteSchema.parse(note);
 const batchPreparationTime = (): string => new Date().toISOString();
 
 /**
+ * Freeze a prepared plan in place. Preparation promises an immutable plan, and the queue may keep
+ * one for a long time, so a caller cannot change pending work after preparation succeeded.
+ */
+const deepFreeze = <Value>(value: Value): Value => {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  for (const nested of Object.values(value)) {
+    deepFreeze(nested);
+  }
+  return Object.freeze(value);
+};
+
+/** One insertion the persistence path builds a plan for; identity and timestamp are fixed. */
+interface InsertionRequest {
+  readonly noteId: string;
+  readonly content: string;
+  readonly timestamp: string;
+  readonly metadata?: Record<string, JsonValue> | undefined;
+}
+
+/**
  * The library's memory operations. Insertions on one instance are serialized in invocation order;
  * the host still owns collecting source material, awaiting writes and reconciling uncertain
  * outcomes. This queue is not a durable job system or a distributed writer lock.
@@ -300,14 +359,42 @@ export class AgenticMemory {
    * block the ones queued after it.
    */
   async add(input: AddInput): Promise<Note> {
-    const request = readAddInput(input);
-    const operation = this.#queue.then(() => this.#insert(request));
-    // The queue only tracks completion; a failed insertion must not poison later ones.
-    this.#queue = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return operation;
+    const request = readInsertionInput("add", addInputSchema, input);
+    return await this.#enqueue(async () => {
+      // Resolve the observation time when the queued insertion starts, not when it was invoked.
+      const timestamp = request.timestamp ?? new Date().toISOString();
+      const plan = await this.#buildPlan("add", {
+        noteId: randomUUID(),
+        content: request.content,
+        timestamp,
+        ...(request.metadata === undefined
+          ? {}
+          : { metadata: request.metadata }),
+      });
+      return await this.#applyPlan("add", this.#readPlan("add", plan));
+    });
+  }
+
+  /**
+   * Prepare one durable insertion without writing notes. The caller supplies the identity and
+   * observation time fixed at acceptance; the returned plan is immutable and contains every
+   * record the later application writes. The same construction, evolution and embedding rules as
+   * `add` apply, and preparation is serialized with every other insertion on this instance.
+   */
+  async prepare(input: PrepareInput): Promise<InsertionPlan> {
+    const request = readInsertionInput("prepare", prepareInputSchema, input);
+    return await this.#enqueue(() => this.#buildPlan("prepare", request));
+  }
+
+  /**
+   * Apply one prepared plan: validate its version and declared embedding space, then write its
+   * exact records through the store's `put` contract without regenerating anything. Reapplying the
+   * same plan preserves identities, vectors and update times. Validation detaches the supplied
+   * plan at invocation, before waiting for earlier insertions.
+   */
+  async apply(plan: InsertionPlan): Promise<Note> {
+    const prepared = this.#readPlan("apply", plan);
+    return await this.#enqueue(() => this.#applyPlan("apply", prepared));
   }
 
   /**
@@ -433,29 +520,49 @@ export class AgenticMemory {
     return results;
   }
 
-  async #insert(request: AddInput): Promise<Note> {
-    // Resolve the observation time when the queued insertion starts, not when it was invoked.
-    const timestamp = request.timestamp ?? new Date().toISOString();
-    const noteId = randomUUID();
+  /** Run one insertion step after every earlier insertion on this instance. */
+  async #enqueue<Value>(run: () => Promise<Value>): Promise<Value> {
+    const result = this.#queue.then(run);
+    // The queue only tracks completion; a failed insertion must not poison later ones.
+    this.#queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await result;
+  }
 
+  /**
+   * Construct, link and evolve one note without writing. The same rules serve `add` and `prepare`;
+   * only the failure's operation name and the moment the result becomes durable differ.
+   */
+  async #buildPlan(
+    operation: "add" | "prepare",
+    request: InsertionRequest,
+  ): Promise<InsertionPlan> {
+    const { noteId, content, timestamp, metadata } = request;
     const attributes = await this.#construct(
-      request.content,
+      operation,
+      content,
       timestamp,
       noteId,
     );
     const constructed: Note = {
       id: noteId,
-      content: request.content,
+      content,
       timestamp,
       context: attributes.context,
       keywords: attributes.keywords,
       tags: attributes.tags,
       links: [],
-      ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+      ...(metadata === undefined ? {} : { metadata }),
     };
 
-    const initialVector = await this.#embed(embeddingText(constructed), noteId);
-    const candidates = await this.#nearest(initialVector, noteId);
+    const initialVector = await this.#embed(
+      operation,
+      embeddingText(constructed),
+      noteId,
+    );
+    const candidates = await this.#nearest(operation, initialVector, noteId);
 
     if (candidates.length === 0) {
       // Insertion always supplies an update time. It is sampled after preparation succeeded and
@@ -464,24 +571,28 @@ export class AgenticMemory {
         ...constructed,
         updatedAt: batchPreparationTime(),
       };
-      await this.#persist([{ note: inserted, vector: initialVector }], noteId);
-      return detachNote(inserted);
+      return this.#plan(noteId, [{ note: inserted, vector: initialVector }]);
     }
 
-    const decision = await this.#evolve(constructed, candidates, noteId);
+    const decision = await this.#evolve(
+      operation,
+      constructed,
+      candidates,
+      noteId,
+    );
     const incoming: Note = {
       ...constructed,
       links: decision.links,
       tags: decision.newTags,
     };
-    const changed = await this.#revise(decision, candidates, noteId);
+    const changed = await this.#revise(operation, decision, candidates, noteId);
 
     // Link-only changes reuse the constructed vector; a changed incoming representation is
     // embedded again before the batch write.
     const incomingVector =
       embeddingText(incoming) === embeddingText(constructed)
         ? initialVector
-        : await this.#embed(embeddingText(incoming), noteId);
+        : await this.#embed(operation, embeddingText(incoming), noteId);
 
     // All interpretation and embedding work succeeded. Sample the batch preparation time once,
     // immediately before the write, and record it on the incoming note and every actually changed
@@ -495,11 +606,107 @@ export class AgenticMemory {
       })),
       { note: incomingNote, vector: incomingVector },
     ];
-    await this.#persist(batch, noteId);
-    return detachNote(incomingNote);
+    return this.#plan(noteId, batch);
+  }
+
+  /** Detach provider-owned records before freezing the completed insertion decision. */
+  #plan(noteId: string, records: EmbeddedNote[]): InsertionPlan {
+    const space = this.#embedder.space;
+    return deepFreeze({
+      version: insertionPlanVersion,
+      representation: representationVersion,
+      embeddingSpace: {
+        id: space.id,
+        dimensions: space.dimensions,
+        distance: space.distance,
+      },
+      noteId,
+      records: structuredClone(records),
+    });
+  }
+
+  /**
+   * Validate and detach one plan. A plan is applicable when it declares this schema version and
+   * representation and the exact embedding space of this instance. Validation runs before
+   * enqueueing caller-supplied plans, so later mutations cannot change pending work.
+   */
+  #readPlan(operation: "add" | "apply", plan: InsertionPlan): InsertionPlan {
+    const parsed = insertionPlanSchema.safeParse(plan);
+    if (!parsed.success) {
+      throw insertionFailure(
+        operation,
+        "input",
+        "The insertion plan does not satisfy the documented contract.",
+        undefined,
+        parsed.error,
+      );
+    }
+    const prepared = parsed.data;
+    const space = this.#embedder.space;
+    if (
+      prepared.embeddingSpace.id !== space.id ||
+      prepared.embeddingSpace.dimensions !== space.dimensions ||
+      prepared.embeddingSpace.distance !== space.distance
+    ) {
+      throw insertionFailure(
+        operation,
+        "input",
+        "The insertion plan belongs to a different embedding space than this instance.",
+        prepared.noteId,
+      );
+    }
+    const identities = new Set<string>();
+    for (const record of prepared.records) {
+      const identity = record.note.id.toLowerCase();
+      if (identities.has(identity)) {
+        throw insertionFailure(
+          operation,
+          "input",
+          `The insertion plan repeats the note identity ${record.note.id}.`,
+          prepared.noteId,
+        );
+      }
+      identities.add(identity);
+      if (record.vector.length !== prepared.embeddingSpace.dimensions) {
+        throw insertionFailure(
+          operation,
+          "input",
+          "The insertion plan contains a vector that does not match its declared embedding " +
+            "space.",
+          prepared.noteId,
+        );
+      }
+    }
+    const incoming = prepared.records.find(
+      (record) =>
+        record.note.id.toLowerCase() === prepared.noteId.toLowerCase(),
+    );
+    if (incoming === undefined) {
+      throw insertionFailure(
+        operation,
+        "input",
+        "The insertion plan does not contain its incoming note.",
+        prepared.noteId,
+      );
+    }
+    return prepared;
+  }
+
+  /** Apply the already validated, detached records in insertion order. */
+  async #applyPlan(
+    operation: "add" | "apply",
+    prepared: InsertionPlan,
+  ): Promise<Note> {
+    const incoming = prepared.records.find(
+      (record) =>
+        record.note.id.toLowerCase() === prepared.noteId.toLowerCase(),
+    )!;
+    await this.#persist(operation, prepared.records, prepared.noteId);
+    return detachNote(incoming.note);
   }
 
   async #construct(
+    operation: "add" | "prepare",
     content: string,
     timestamp: string,
     noteId: string,
@@ -512,7 +719,8 @@ export class AgenticMemory {
     try {
       response = await this.#model.generate({ stage: "construct", prompt });
     } catch (cause) {
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "construct",
         "The language model failed to answer the construction request.",
         noteId,
@@ -524,7 +732,8 @@ export class AgenticMemory {
     } catch (cause) {
       // Only the fixed description is public: response-validation detail can quote untrusted
       // response content and stays in the attached cause.
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "construct",
         "The construction response does not satisfy the documented contract.",
         noteId,
@@ -533,12 +742,17 @@ export class AgenticMemory {
     }
   }
 
-  async #embed(text: string, noteId: string): Promise<number[]> {
+  async #embed(
+    operation: "add" | "prepare",
+    text: string,
+    noteId: string,
+  ): Promise<number[]> {
     let vector: unknown;
     try {
       vector = await this.#embedder.embed(text);
     } catch (cause) {
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "embed",
         "The embedder failed to produce a vector for the note text.",
         noteId,
@@ -549,7 +763,13 @@ export class AgenticMemory {
     // unusable vector is reported as an unchanged failure instead of an uncertain write.
     const parsed = parseProviderVector(vector, this.#embedder.space.dimensions);
     if (!("vector" in parsed)) {
-      throw addFailure("embed", parsed.reason, noteId, parsed.cause);
+      throw insertionFailure(
+        operation,
+        "embed",
+        parsed.reason,
+        noteId,
+        parsed.cause,
+      );
     }
     return parsed.vector;
   }
@@ -587,11 +807,16 @@ export class AgenticMemory {
     }
   }
 
-  async #nearest(vector: number[], noteId: string): Promise<Match[]> {
+  async #nearest(
+    operation: "add" | "prepare",
+    vector: number[],
+    noteId: string,
+  ): Promise<Match[]> {
     try {
       return await this.#store.nearest(vector, this.#neighbors);
     } catch (cause) {
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "candidates",
         "The note store failed to return nearest neighbors.",
         noteId,
@@ -601,6 +826,7 @@ export class AgenticMemory {
   }
 
   async #evolve(
+    operation: "add" | "prepare",
     incoming: Note,
     candidates: Match[],
     noteId: string,
@@ -613,7 +839,8 @@ export class AgenticMemory {
     try {
       response = await this.#model.generate({ stage: "evolve", prompt });
     } catch (cause) {
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "evolve",
         "The language model failed to answer the evolution request.",
         noteId,
@@ -628,7 +855,8 @@ export class AgenticMemory {
     } catch (cause) {
       // Only the fixed description is public: response-validation detail can quote untrusted
       // response content and stays in the attached cause.
-      throw addFailure(
+      throw insertionFailure(
+        operation,
         "evolve",
         "The evolution response does not satisfy the documented contract.",
         noteId,
@@ -642,6 +870,7 @@ export class AgenticMemory {
    * unchanged is omitted; every other revision receives a fresh embedding before any write.
    */
   async #revise(
+    operation: "add" | "prepare",
     decision: EvolutionResponse,
     candidates: Match[],
     noteId: string,
@@ -655,7 +884,8 @@ export class AgenticMemory {
       const current = stored.get(update.id.toLowerCase());
       if (current === undefined) {
         // readEvolutionResponse already rejected references outside the candidate set.
-        throw addFailure(
+        throw insertionFailure(
+          operation,
           "evolve",
           `The evolution response references the unknown note ${update.id}.`,
           noteId,
@@ -671,7 +901,10 @@ export class AgenticMemory {
       if (text === embeddingText(current)) {
         continue;
       }
-      prepared.push({ note: revised, vector: await this.#embed(text, noteId) });
+      prepared.push({
+        note: revised,
+        vector: await this.#embed(operation, text, noteId),
+      });
     }
     return prepared;
   }
@@ -680,12 +913,16 @@ export class AgenticMemory {
    * Issue the single batch write. A rejected write attempt is reported as uncertain: the provider
    * may have applied part of the batch, and Memory never attempts a rollback.
    */
-  async #persist(records: EmbeddedNote[], noteId: string): Promise<void> {
+  async #persist(
+    operation: "add" | "apply",
+    records: EmbeddedNote[],
+    noteId: string,
+  ): Promise<void> {
     try {
       await this.#store.put(records);
     } catch (cause) {
       throw new MemoryError({
-        operation: "add",
+        operation,
         stage: "persist",
         persistence: "uncertain",
         noteId,

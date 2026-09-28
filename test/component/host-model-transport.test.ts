@@ -160,6 +160,50 @@ describe("host model transport example", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("reports one machine-readable category per failure condition", async () => {
+    const category = async (
+      handler: FetchStub,
+    ): Promise<{ stage: string; category: string }> => {
+      const error = await failure(
+        createHostModelTransport(settings({ fetch: handler })).generate({
+          stage: "construct",
+          prompt: "p",
+        }),
+      );
+      expect(error).toBeInstanceOf(HostModelTransportError);
+      const transport = error as HostModelTransportError;
+      return { stage: transport.stage, category: transport.category };
+    };
+    const rejected = { error: { message: "rejected" } };
+
+    await expect(
+      category(async () => jsonResponse(rejected, 401)),
+    ).resolves.toEqual({ stage: "construct", category: "authentication" });
+    await expect(
+      category(async () => jsonResponse(rejected, 403)),
+    ).resolves.toEqual({ stage: "construct", category: "authentication" });
+    await expect(
+      category(async () => jsonResponse(rejected, 404)),
+    ).resolves.toEqual({ stage: "construct", category: "resource" });
+    await expect(
+      category(async () => jsonResponse(rejected, 503)),
+    ).resolves.toEqual({ stage: "construct", category: "unavailable" });
+    await expect(
+      category(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    ).resolves.toEqual({ stage: "construct", category: "unavailable" });
+    await expect(
+      category(async () => new Response("<html>", { status: 200 })),
+    ).resolves.toEqual({ stage: "construct", category: "output" });
+    await expect(category(async () => completion("not JSON"))).resolves.toEqual(
+      { stage: "construct", category: "output" },
+    );
+    await expect(
+      category(async () => completion('{"context":"cut', "length")),
+    ).resolves.toEqual({ stage: "construct", category: "output" });
+  });
+
   it("redacts a credential echoed by a JSON provider error", async () => {
     const apiKey = "sk-review-synthetic-secret";
     const { fetch } = controlledFetch(async () =>

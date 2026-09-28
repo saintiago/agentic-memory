@@ -10,6 +10,7 @@ export { AgenticMemory } from "./agentic-memory.js";
 export type {
   AddInput,
   MemoryOptions,
+  PrepareInput,
   SearchOptions,
   SearchResult,
 } from "./agentic-memory.js";
@@ -20,6 +21,8 @@ export type {
   MemoryPersistence,
   MemoryStage,
 } from "./memory-error.js";
+export { insertionPlanSchema, insertionPlanVersion } from "./insertion-plan.js";
+export type { InsertionPlan } from "./insertion-plan.js";
 export {
   assembleConstructionPrompt,
   assembleEvolutionPrompt,
@@ -30,7 +33,7 @@ export type {
   EvolutionSource,
   MemoryPrompts,
 } from "./prompts.js";
-export { embeddingText } from "./representation.js";
+export { embeddingText, representationVersion } from "./representation.js";
 export {
   constructionResponseSchema,
   evolutionResponseSchema,
