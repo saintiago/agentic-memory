@@ -184,19 +184,23 @@ The added-outlier check (`test/responsive/inspector-camera.responsive.ts`) fits 
 moves and zooms the camera, then refreshes into a completed view whose extent grows far to one side
 through an asymmetric outlier. It compares the viewport positions of unchanged memories before and
 after that update through the real renderer, so an added outlier that rescales the existing view
-fails the check instead of passing a camera sample taken after the fact.
+fails the check instead of passing a camera sample taken after the fact. Separate real-renderer
+cases use a controlled browser clock to grow bounds during wheel zoom and drag inertia, compare
+the trajectory with identical input without a refresh, and verify that **Fit all** includes the
+added outlier. Mixed-case UUID component cases cover refresh reconciliation, result highlighting,
+link navigation and comparison selection while preserving returned evidence.
 
 Recorded run on the development machine (13th Gen Intel Core i7-13700KF, 24 cores, 16 GiB, WSL2;
 Chromium 153 with software WebGL through SwiftShader):
 
-| Measurement                       | Value                                                                                                                |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                                |
-| Initial load                      | 2693 ms from navigation to the displayed view; 171 ms to apply it in 12 batches                                      |
-| Refresh, request to applied view  | 24185 ms wall clock including the held interaction window; 14 ms to apply the diff in 1 batch                        |
-| Interaction during the update     | search → results panel 3106 ms, click → panels 37 ms, wheel → camera 55 ms, drag → camera 4856 ms                    |
-| Main thread                       | 31 long tasks, longest 1554 ms; frame gaps p95 1478 ms over 104 samples                                              |
-| Preservation and failure handling | interaction ran while pending, largest viewport drift 0.000025 px, selection preserved, failed refresh kept the view |
+| Measurement                       | Value                                                                                                            |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                            |
+| Initial load                      | 2943 ms from navigation to the displayed view; 222 ms to apply it in 12 batches                                  |
+| Refresh, request to applied view  | 27765 ms wall clock including the held interaction window; 10 ms to apply the diff in 1 batch                    |
+| Interaction during the update     | search → results panel 3656 ms, click → panels 56 ms, wheel → camera 47 ms, drag → camera 4426 ms                |
+| Main thread                       | 46 long tasks, longest 1842 ms; frame gaps p95 1306 ms over 192 samples                                          |
+| Preservation and failure handling | interaction ran while pending, viewport drift 0 px, camera and selection preserved, failed refresh kept the view |
 
 The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link
 layer costs about 1.3 s, and repeated runs of the same check vary with how many of those redraws
@@ -206,7 +210,7 @@ search still complete, and the update applies in one batch while they run. The r
 click figures are the page's own handler latencies (submission to the updated results panel, click
 to the updated panels); the driver-observed round trips that include queued redraws are in the
 report as `observedSearchMs` and `observedClickMs`. The scale check's growth also changes the
-normalization box slightly, so the recorded camera state is re-expressed while the displayed
+fit extent slightly; the normalization box and camera state stay fixed while the displayed
 memories keep their screen positions.
 
 ## Acceptance checks

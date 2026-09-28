@@ -37,6 +37,8 @@ Use the public [Memory API](memory.md#interface) for note details and search, th
 [NoteStore contract](note-store.md#interface) for storage-owned inspection capabilities, and
 [embedding-space identity](embeddings.md#interface) to identify compatible vectors. The host owns
 configuration and credentials; the browser receives display data, not provider credentials.
+UI identity comparisons follow the NoteStore UUID contract; returned note and link spellings remain
+unchanged in displayed evidence.
 
 Search calls `AgenticMemory.search(query, { limit, linkedLimit })` against the selected collection
 with the same configuration used by its consumer. Show the returned `via` classification and preserve
@@ -247,12 +249,12 @@ No runtime event bus or durable update stream is required for this first inspect
   coordinates. Show pending projection explicitly instead of presenting stale coordinates as current.
 - Provide an explicit **Rebuild projection** action when the corpus has changed substantially.
   A full refit may rearrange the map; it is not evidence that all memories changed.
-- Preserve selection and camera state. Use Sigma's `setCustomBBox()` to own the normalization
-  bounds: when a completed export extends them, update the box together with the camera state so
-  the whole graph-to-viewport transform is unchanged, the graph point at the viewport center stays
-  centered and the aspect-dependent correction Sigma derives from the box is compensated. An added
-  outlier must not rescale or move memories that were already displayed. Apply the coordinates of a
-  completed full refit in one commit, so no frame draws a mixture of the old and new projections.
+- Preserve selection and camera state, including active wheel zoom and drag inertia. Use Sigma's
+  `setCustomBBox()` to keep normalization fixed for the renderer's lifetime, so refreshes leave
+  both the viewport transformation and active gesture/animation targets unchanged. Track the
+  growing graph extent separately for explicit **Fit all**. An added outlier must not rescale or
+  move memories that were already displayed. Apply the coordinates of a completed full refit in
+  one commit, so no frame draws a mixture of the old and new projections.
 
 Sigma subscribes to Graphology changes and refreshes automatically. Use v3 `nodeReducer` and
 `edgeReducer` for temporary result/selection styling, retaining underlying note data. When external

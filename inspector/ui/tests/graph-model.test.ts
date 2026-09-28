@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { SearchResults } from "../results.js";
+import { nodeStyle, linkStyle } from "../style.js";
 import { GraphModel, type ResultsSource } from "../graph-model.js";
 import {
   linkKey,
@@ -22,6 +24,8 @@ import {
   graphSnapshot,
   graphView,
   nodeId,
+  note,
+  searchOutcome,
   snapshotText,
 } from "./support.js";
 
@@ -368,5 +372,100 @@ describe("displayed graph", () => {
     expect(() => parseGraphSnapshot(snapshotText(invalid))).toThrow(
       "does not match the documented inspection contract",
     );
+  });
+});
+
+describe("case-insensitive memory identity", () => {
+  it("reconciles spelling changes, directed links, selection and fallback indexes", async () => {
+    const a = "abcdef01-0000-4000-8000-000000000001";
+    const b = "abcdef01-0000-4000-8000-000000000002";
+    const graph = model();
+    const first = graphSnapshot({
+      view: graphView({
+        nodes: [graphNode(0, { id: a.toUpperCase() }), graphNode(1, { id: b })],
+        edges: [{ source: a, target: b.toUpperCase() }],
+      }),
+    });
+    await apply(graph, first);
+    expect(graph.counts()).toEqual({ nodes: 2, links: 1 });
+    expect(graph.hasNode(a.toUpperCase())).toBe(true);
+    expect(graph.missingIds([a, b.toUpperCase()])).toEqual([]);
+    graph.select(a.toUpperCase());
+    expect(graph.selectedId).toBe(a);
+    expect(graph.isNearSelection(b.toUpperCase())).toBe(true);
+
+    const next = graphSnapshot({
+      view: graphView({
+        nodes: [
+          graphNode(0, { id: a, label: "Updated" }),
+          graphNode(1, { id: b.toUpperCase() }),
+        ],
+        edges: [{ source: a.toUpperCase(), target: b }],
+      }),
+    });
+    // Both the worker's index and the displayed fallback index use the same identities.
+    const diff = planViewDiff(indexView(first.view), next);
+    expect(planViewDiff(graph.viewIndex(), next)).toEqual(diff);
+    expect(diff.addedNodes).toEqual([]);
+    expect(diff.removedNodeIds).toEqual([]);
+    expect(diff.updatedNodes).toHaveLength(1);
+    expect(diff.addedLinks).toEqual([]);
+    expect(diff.removedLinkKeys).toEqual([]);
+    await graph.applyDiff(diff);
+    expect(graph.selectedId).toBe(a);
+    expect(graph.graph.getNodeAttributes(a).label).toBe("Updated");
+    const removed = graphSnapshot({
+      view: graphView({ nodes: [graphNode(1, { id: b })] }),
+    });
+    await apply(graph, removed, graph.viewIndex());
+    expect(graph.counts()).toEqual({ nodes: 1, links: 0 });
+    expect(graph.selectedId).toBeUndefined();
+  });
+
+  it("highlights mixed-case results and links while preserving returned evidence", async () => {
+    const a = "abcdef01-0000-4000-8000-000000000001";
+    const b = "abcdef01-0000-4000-8000-000000000002";
+    const results = new SearchResults();
+    const outcome = searchOutcome([
+      {
+        note: note(0, { id: a.toUpperCase(), links: [b.toUpperCase()] }),
+        via: "match",
+        score: 0.7,
+      },
+      { note: note(1, { id: b }), via: "link" },
+    ]);
+    results.accept(results.begin({ query: "mixed case" }), outcome);
+    const graph = new GraphModel({ results });
+    await apply(
+      graph,
+      graphSnapshot({
+        view: graphView({
+          nodes: [
+            graphNode(0, { id: a }),
+            graphNode(1, { id: b.toUpperCase() }),
+          ],
+          edges: [{ source: a, target: b }],
+        }),
+      }),
+    );
+    expect(results.unmappedIds((id) => graph.hasNode(id))).toEqual([]);
+    expect(results.state().outcome).toEqual(outcome);
+    expect(results.noteFor(a)).toBe(outcome.results[0]?.note);
+    expect(results.noteFor(a.toUpperCase())).toBe(outcome.results[0]?.note);
+    expect(results.resultIds()).toEqual([a.toUpperCase(), b]);
+    expect(nodeStyle(graph, a, graph.graph.getNodeAttributes(a))).toMatchObject(
+      { highlighted: true, label: "Direct match — Memory 0" },
+    );
+    expect(
+      nodeStyle(graph, b.toUpperCase(), graph.graph.getNodeAttributes(b)),
+    ).toMatchObject({ highlighted: true, label: "Linked addition — Memory 1" });
+    expect(
+      linkStyle(graph, { source: a.toUpperCase(), target: b }),
+    ).toMatchObject({ zIndex: 1, hidden: false });
+    graph.select(b.toUpperCase());
+    graph.setLinkMode("focused");
+    expect(
+      linkStyle(graph, { source: a, target: b.toUpperCase() }),
+    ).toMatchObject({ zIndex: 2, hidden: false });
   });
 });

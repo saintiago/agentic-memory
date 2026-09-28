@@ -414,8 +414,8 @@ describe("inspection dashboard at scale", () => {
       expect(updateDiagnostics.nodes).toBe(after.nodes);
       expect(updateDiagnostics.links).toBe(after.links);
       expect(updateDiagnostics.selectedId).toBe(selectedDuringUpdate);
-      // The displayed view is preserved; the camera state itself may be re-expressed for the new
-      // normalization box, so unchanged memories keeping their viewport positions is the evidence.
+      // Fixed normalization preserves both the camera state and unchanged viewport positions.
+      expect(updateCamera).toEqual(cameraBeforeApply);
       expect(maxViewportDriftPx).toBeLessThan(1);
       const changed = await display(page, [syntheticId(0)]);
       expect(changed[0]?.label).toContain("remains the same subject");
@@ -492,11 +492,10 @@ describe("inspection dashboard at scale", () => {
             p95Ms: percentile(gaps, 0.95),
           },
           maxViewportDriftPx,
-          cameraStateChangedByNormalization: !(
+          cameraStatePreserved:
             updateCamera.x === cameraBeforeApply.x &&
             updateCamera.y === cameraBeforeApply.y &&
-            updateCamera.ratio === cameraBeforeApply.ratio
-          ),
+            updateCamera.ratio === cameraBeforeApply.ratio,
           selectionPreservedAcrossUpdate:
             updateDiagnostics.selectedId === selectedDuringUpdate,
           failedRefreshKeptTheView:

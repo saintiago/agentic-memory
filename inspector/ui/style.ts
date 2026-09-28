@@ -8,6 +8,7 @@
  */
 import { freshnessOf } from "./freshness.js";
 import { withAlpha } from "./format.js";
+import { memoryKey } from "./identity.js";
 
 /** The evidence one displayed node carries. */
 export interface NodeAttributes {
@@ -24,11 +25,11 @@ export interface LinkAttributes {
 
 /** The display state the reducers read: the model's selection and the request's results. */
 export interface StyleSource {
-  /** The returned memory IDs of the latest accepted request. */
+  /** The canonical memory keys of the latest accepted request. */
   readonly highlightIds: ReadonlySet<string>;
   /** The retrieval classification of one returned memory. */
   retrievalKind(nodeId: string): "match" | "link" | undefined;
-  /** The selected memory ID, or `undefined`. */
+  /** The selected canonical memory key, or `undefined`. */
   readonly selectedId: string | undefined;
   /** Whether links are shown for the whole displayed graph or around the selection. */
   readonly linkMode: "all" | "focused";
@@ -100,6 +101,7 @@ export const nodeStyle = (
   nodeId: string,
   attributes: NodeAttributes,
 ): NodeStyle => {
+  nodeId = memoryKey(nodeId);
   const freshness = freshnessOf(attributes.updatedAt, source.now());
   const selected = source.selectedId === nodeId;
   const returned = source.highlightIds.has(nodeId);
@@ -154,7 +156,8 @@ export const linkStyle = (
   const focus = source.linkMode === "focused" && selected !== undefined;
   const touchesSelection =
     selected !== undefined &&
-    (link.source === selected || link.target === selected);
+    (memoryKey(link.source) === selected ||
+      memoryKey(link.target) === selected);
   if (focus && !touchesSelection) {
     return {
       label: null,
@@ -177,8 +180,8 @@ export const linkStyle = (
   }
   const betweenResults =
     source.highlightIds.size > 0 &&
-    source.highlightIds.has(link.source) &&
-    source.highlightIds.has(link.target);
+    source.highlightIds.has(memoryKey(link.source)) &&
+    source.highlightIds.has(memoryKey(link.target));
   if (betweenResults) {
     return {
       label: null,

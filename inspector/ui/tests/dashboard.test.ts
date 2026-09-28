@@ -1357,3 +1357,61 @@ describe("dashboard", () => {
     expect(text(root, "#comparison")).not.toContain("obsolete comparison");
   });
 });
+
+it("resolves mixed-case result and link selections without losing returned spelling", async () => {
+  const a = "abcdef01-0000-4000-8000-000000000001";
+  const b = "abcdef01-0000-4000-8000-000000000002";
+  const { dashboard, client, renderer, root } = start();
+  client.graphHandler = () =>
+    Promise.resolve(
+      snapshotText(
+        graphSnapshot({
+          view: graphView({
+            nodes: [
+              graphNode(0, { id: a }),
+              graphNode(1, { id: b.toUpperCase() }),
+            ],
+            edges: [{ source: a, target: b.toUpperCase() }],
+          }),
+        }),
+      ),
+    );
+  client.searchHandler = () =>
+    Promise.resolve(
+      searchOutcome([
+        {
+          note: note(0, { id: a.toUpperCase(), links: [b] }),
+          via: "match",
+          score: 0.7,
+        },
+        { note: note(1, { id: b }), via: "link" },
+      ]),
+    );
+  await waitFor(() => dashboard.diagnostics().nodes === 2);
+  submitSearch(root, "mixed case");
+  await waitFor(() => dashboard.diagnostics().resultOrder.length === 2);
+  expect(dashboard.diagnostics().unmappedIds).toEqual([]);
+  expect(client.calls.refresh).toBe(0);
+  element<HTMLButtonElement>(root, "#results-list .result button").click();
+  expect(dashboard.diagnostics().selectedId).toBe(a);
+  expect(text(root, "#details")).toContain(`ID ${a.toUpperCase()}`);
+  expect(text(root, "#details")).not.toContain(
+    "target not in the current view",
+  );
+  expect(root.querySelectorAll("#results-list .selected")).toHaveLength(1);
+  expect(element<HTMLButtonElement>(root, "#focus-selected").disabled).toBe(
+    false,
+  );
+  element<HTMLButtonElement>(root, "#focus-selected").click();
+  expect(renderer.focused).toEqual([a]);
+  element<HTMLButtonElement>(root, "#details .link-button").click();
+  expect(dashboard.diagnostics().selectedId).toBe(b);
+  expect(text(root, "#details")).toContain(`ID ${b}`);
+  expect(client.calls.note).toEqual([]);
+  // Re-selecting the same identity with another spelling must not replace the comparison pair.
+  dashboard.select(b.toUpperCase());
+  element<HTMLButtonElement>(root, "#compare").click();
+  await waitFor(() => client.calls.compare.length === 1);
+  expect(client.calls.compare).toEqual([{ leftId: a, rightId: b }]);
+  expect(dashboard.display([a.toUpperCase(), b])).toHaveLength(2);
+});

@@ -13,10 +13,11 @@ import {
   type GraphNode,
   type GraphSnapshot,
 } from "../payloads.js";
+import { memoryKey } from "./identity.js";
 
 /** The stable identity of one directed link, shared with the graph model. */
 export const linkKey = (source: string, target: string): string =>
-  `${source}\u0000${target}`;
+  `${memoryKey(source)}\u0000${memoryKey(target)}`;
 
 /**
  * The comparable identity of one displayed memory: the served evidence a refresh can change. The
@@ -88,7 +89,9 @@ export const indexView = (view: GraphSnapshot["view"]): ViewIndex => {
     throw new Error("A view index needs a completed view.");
   }
   return {
-    nodes: new Map(view.nodes.map((node) => [node.id, nodeIdentity(node)])),
+    nodes: new Map(
+      view.nodes.map((node) => [memoryKey(node.id), nodeIdentity(node)]),
+    ),
     links: new Set(view.edges.map((edge) => linkKey(edge.source, edge.target))),
   };
 };
@@ -128,7 +131,7 @@ export const planViewDiff = (
   if (view === undefined) {
     return emptyPlan(snapshot);
   }
-  const nodes = new Map(view.nodes.map((node) => [node.id, node]));
+  const nodes = new Map(view.nodes.map((node) => [memoryKey(node.id), node]));
   const links = new Set(
     view.edges.map((edge) => linkKey(edge.source, edge.target)),
   );
@@ -148,9 +151,11 @@ export const planViewDiff = (
     };
   }
 
-  const addedNodes = view.nodes.filter((node) => !previous.nodes.has(node.id));
+  const addedNodes = view.nodes.filter(
+    (node) => !previous.nodes.has(memoryKey(node.id)),
+  );
   const updatedNodes = view.nodes.filter((node) => {
-    const before = previous.nodes.get(node.id);
+    const before = previous.nodes.get(memoryKey(node.id));
     return before !== undefined && before !== nodeIdentity(node);
   });
   const removedNodeIds = [...previous.nodes.keys()].filter(

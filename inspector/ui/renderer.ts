@@ -10,6 +10,7 @@
 import type { DirectedGraph } from "graphology";
 import Sigma from "sigma";
 
+import { memoryKey } from "./identity.js";
 import type { GraphBounds } from "../payloads.js";
 import {
   linkStyle,
@@ -30,7 +31,7 @@ export interface CameraSnapshot {
 export interface DashboardRenderer {
   /** Re-apply the display rules after the selection, results or freshness time changed. */
   styleChanged(): void;
-  /** Union the supplied extent into the normalization box without moving the camera. */
+  /** Track the supplied extent for Fit all without changing the viewport transformation. */
   includeBounds(bounds: GraphBounds): void;
   fitAll(): void;
   fitNodes(nodeIds: readonly string[]): void;
@@ -84,25 +85,6 @@ const extentOf = (
   height: bounds.y[1] - bounds.y[0] || 1,
 });
 
-const sameBounds = (left: GraphBounds, right: GraphBounds): boolean =>
-  left.x[0] === right.x[0] &&
-  left.x[1] === right.x[1] &&
-  left.y[0] === right.y[0] &&
-  left.y[1] === right.y[1];
-
-/** The Sigma coordinate of one graph point inside the normalization box. */
-const framedPoint = (
-  bounds: GraphBounds,
-  point: { readonly x: number; readonly y: number },
-): { x: number; y: number } => {
-  const center = centerOf(bounds);
-  const span = spanOf(bounds);
-  return {
-    x: 0.5 + (point.x - center.x) / span,
-    y: 0.5 + (point.y - center.y) / span,
-  };
-};
-
 export interface SigmaRendererOptions {
   readonly container: HTMLElement;
   readonly graph: DirectedGraph<NodeAttributes, LinkAttributes>;
@@ -147,6 +129,7 @@ export const createSigmaRenderer = (
   });
 
   let customBBox: GraphBounds | undefined;
+  let fitBounds: GraphBounds | undefined;
 
   const dimensions = (): { readonly width: number; readonly height: number } =>
     sigma.getDimensions();
@@ -232,43 +215,22 @@ export const createSigmaRenderer = (
       sigma.scheduleRefresh();
     },
     includeBounds: (bounds: GraphBounds): void => {
-      const current = customBBox;
-      if (current === undefined) {
+      fitBounds = fitBounds === undefined ? bounds : unionOf(fitBounds, bounds);
+      // Pin normalization for this renderer's lifetime. Camera animations (wheel zoom and drag
+      // inertia) and captor gestures retain framed coordinates; changing their reference box
+      // would invalidate both their current state and their future targets. Outliers can live
+      // outside the initial box, and explicit fitting uses the growing extent independently.
+      if (customBBox === undefined) {
         customBBox = bounds;
         sigma.setCustomBBox(customBBox);
-        return;
       }
-      const next = unionOf(current, bounds);
-      if (sameBounds(current, next)) {
-        return;
-      }
-      // Keep the graph point at the viewport center centered and the pixel scale unchanged. The
-      // displayed scale depends on the normalization span, on the camera ratio and on Sigma's
-      // aspect-dependent correction ratio, which changes when an asymmetric extent changes the
-      // box ratio; both boxes are therefore measured through Sigma's own framed-graph conversion
-      // instead of compensating the span alone.
-      const { width, height } = dimensions();
-      const reference = sigma.viewportToGraph({ x: width / 2, y: height / 2 });
-      const camera = sigma.getCamera();
-      const state = camera.getState();
-      const before = pixelsPerFramedUnit(current);
-      const after = pixelsPerFramedUnit(next);
-      const framed = framedPoint(next, reference);
-      customBBox = next;
-      sigma.setCustomBBox(customBBox);
-      camera.setState({
-        x: framed.x,
-        y: framed.y,
-        ratio: camera.getBoundedRatio(
-          (state.ratio * (spanOf(current) / spanOf(next)) * after) / before,
-        ),
-      });
     },
     fitAll: (): void => {
-      fitToBounds(customBBox ?? sigma.getBBox());
+      fitToBounds(fitBounds ?? sigma.getBBox());
     },
     fitNodes: (nodeIds: readonly string[]): void => {
       const points = nodeIds
+        .map(memoryKey)
         .filter((nodeId) => graph.hasNode(nodeId))
         .map((nodeId) => graph.getNodeAttributes(nodeId));
       const bounds = boundsOfPoints(points);
@@ -277,6 +239,7 @@ export const createSigmaRenderer = (
       }
     },
     focus: (nodeId: string): void => {
+      nodeId = memoryKey(nodeId);
       if (!graph.hasNode(nodeId)) {
         return;
       }
@@ -293,6 +256,7 @@ export const createSigmaRenderer = (
     viewportPosition: (
       nodeId: string,
     ): { readonly x: number; readonly y: number } | undefined => {
+      nodeId = memoryKey(nodeId);
       if (!graph.hasNode(nodeId)) {
         return undefined;
       }

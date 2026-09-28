@@ -7,6 +7,7 @@
  */
 import type { Note } from "../../src/note-store/index.js";
 import { searchOutcomeSchema, type SearchOutcome } from "../payloads.js";
+import { memoryKey } from "./identity.js";
 
 export { searchOutcomeSchema };
 export type { SearchOutcome };
@@ -110,18 +111,18 @@ export class SearchResults {
     return (this.#outcome?.results ?? []).map((result) => result.note.id);
   }
 
-  /** The returned IDs the map highlights; empty after a failure or without a request. */
+  /** Canonical keys of the returned IDs; empty after a failure or without a request. */
   get highlightIds(): ReadonlySet<string> {
     return this.#highlight;
   }
 
   retrievalKind(nodeId: string): "match" | "link" | undefined {
-    return this.#kinds.get(nodeId);
+    return this.#kinds.get(memoryKey(nodeId));
   }
 
   /** The note payload returned by the request, used as the details evidence. */
   noteFor(nodeId: string): Note | undefined {
-    return this.#notes.get(nodeId);
+    return this.#notes.get(memoryKey(nodeId));
   }
 
   /** The returned IDs the display does not contain yet, in returned order. */
@@ -134,9 +135,9 @@ export class SearchResults {
     const kinds = new Map<string, "match" | "link">();
     const notes = new Map<string, Note>();
     for (const result of outcome?.results ?? []) {
-      highlight.add(result.note.id);
-      kinds.set(result.note.id, result.via);
-      notes.set(result.note.id, result.note);
+      highlight.add(memoryKey(result.note.id));
+      kinds.set(memoryKey(result.note.id), result.via);
+      notes.set(memoryKey(result.note.id), result.note);
     }
     this.#highlight = highlight;
     this.#kinds = kinds;

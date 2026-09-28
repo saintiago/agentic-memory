@@ -5,6 +5,7 @@
  *
  * See docs/dashboard.md#live-updates-with-sigma and docs/dashboard.md#large-collections.
  */
+import { build } from "esbuild";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,4 +185,113 @@ describe("inspection dashboard camera", () => {
       await server.close();
     }
   }, 180_000);
+});
+
+// A controlled browser clock makes identical wheel/drag input comparable across two real Sigma
+// instances. Updating after 48 ms and observing further movement proves this covers active
+// animation, rather than another settled-camera case.
+interface CameraFixture {
+  reset(): void;
+  grow(): void;
+  position(): { x: number; y: number };
+  fit(): void;
+  focus(): void;
+  fitResults(): void;
+  positionUpper(): { x: number; y: number };
+  outlier(): { x: number; y: number };
+}
+
+describe("refresh during camera animation", () => {
+  it.each(["wheel", "inertia"] as const)(
+    "preserves the %s trajectory across bounds growth",
+    async (gesture) => {
+      const bundle = await build({
+        entryPoints: [
+          path.join(repositoryRoot, "inspector/ui/tests/camera-fixture.ts"),
+        ],
+        bundle: true,
+        write: false,
+        platform: "browser",
+        format: "iife",
+      });
+      const browser = await launchChromium();
+      try {
+        const page = await browser.newPage({
+          viewport: { width: 800, height: 600 },
+        });
+        await page.clock.install({ time: new Date("2026-09-28T12:00:00Z") });
+        await page.clock.pauseAt(new Date("2026-09-28T12:00:01Z"));
+        await page.setContent(
+          '<div id="stage" style="position:absolute;inset:0"></div>',
+        );
+        await page.addScriptTag({ content: bundle.outputFiles[0]?.text ?? "" });
+        const call = (method: keyof CameraFixture) =>
+          page.evaluate((method) => {
+            const scope = globalThis as unknown as {
+              cameraFixture: CameraFixture;
+            };
+            return scope.cameraFixture[method]();
+          }, method);
+        const runs: Array<Array<{ x: number; y: number } | void>> = [];
+        for (const grow of [false, true]) {
+          await call("reset");
+          await page.clock.runFor(32);
+          await page.mouse.move(480, 250);
+          if (gesture === "wheel") {
+            await page.mouse.wheel(0, -240);
+          } else {
+            await page.mouse.down();
+            await page.mouse.move(500, 260);
+            await page.clock.runFor(16);
+            await page.mouse.move(530, 275);
+            await page.mouse.up();
+          }
+          await page.clock.runFor(48);
+          const before = await call("position");
+          if (grow) await call("grow");
+          const immediate = await call("position");
+          await page.clock.runFor(32);
+          const during = await call("position");
+          // Keep both runs on the same 16 ms animation-frame phase.
+          await page.clock.runFor(512);
+          const finished = await call("position");
+          // The animation advances both after the update and after the next sampled frame.
+          expect(during).not.toEqual(before);
+          expect(finished).not.toEqual(during);
+          expect(
+            maxViewportDrift([before ?? undefined], [immediate ?? undefined]),
+          ).toBeLessThan(0.5);
+          runs.push([before, during, finished]);
+        }
+        expect(
+          maxViewportDrift(
+            runs[0]?.map((p) => p ?? undefined) ?? [],
+            runs[1]?.map((p) => p ?? undefined) ?? [],
+          ),
+        ).toBeLessThan(0.5);
+        // Stable normalization must not keep explicit Fit all from including the new extent.
+        await call("fit");
+        await page.clock.runFor(32);
+        const outlier = await call("outlier");
+        expect(outlier?.x).toBeGreaterThan(0);
+        expect(outlier?.x).toBeLessThan(800);
+        expect(outlier?.y).toBeGreaterThan(0);
+        expect(outlier?.y).toBeLessThan(600);
+        expect(await call("positionUpper")).toEqual(await call("position"));
+        await call("fitResults");
+        await page.clock.runFor(32);
+        const result = await call("position");
+        expect(result?.x).toBeGreaterThan(0);
+        expect(result?.y).toBeLessThan(600);
+        await call("focus");
+        await page.clock.runFor(32);
+        const focused = await call("position");
+        expect(focused?.x).toBeCloseTo(400, 2);
+        expect(focused?.y).toBeCloseTo(300, 2);
+      } finally {
+        await browser.close();
+      }
+    },
+    30_000,
+  );
 });

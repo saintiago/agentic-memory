@@ -61,8 +61,8 @@ export interface ResponsivenessReport {
     };
     /** The largest distance one unchanged memory moved on screen across the update. */
     readonly maxViewportDriftPx: number;
-    /** Whether the camera state was re-expressed for the new normalization box. */
-    readonly cameraStateChangedByNormalization: boolean;
+    /** Whether the camera state stayed unchanged across the refresh. */
+    readonly cameraStatePreserved: boolean;
     readonly selectionPreservedAcrossUpdate: boolean;
     readonly failedRefreshKeptTheView: boolean;
   };
@@ -141,8 +141,8 @@ export const summarize = (report: ResponsivenessReport): string => {
       `frame gaps max ${String(measurements.frameGapsMs.maxMs)} ms, ` +
       `p95 ${String(measurements.frameGapsMs.p95Ms)} ms over ${String(measurements.frameGapsMs.samples)} samples.`,
     `Preserved across the update: displayed view (max drift ` +
-      `${measurements.maxViewportDriftPx.toFixed(3)} px; camera state re-expressed ` +
-      `${String(measurements.cameraStateChangedByNormalization)}), ` +
+      `${measurements.maxViewportDriftPx.toFixed(3)} px; camera state preserved ` +
+      `${String(measurements.cameraStatePreserved)}), ` +
       `selection ${String(measurements.selectionPreservedAcrossUpdate)}; ` +
       `failed refresh kept the view ${String(measurements.failedRefreshKeptTheView)}.`,
   ];

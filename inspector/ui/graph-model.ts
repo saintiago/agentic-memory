@@ -9,6 +9,7 @@
  */
 import { DirectedGraph } from "graphology";
 
+import { memoryKey } from "./identity.js";
 import {
   linkKey,
   nodeIdentity,
@@ -19,6 +20,7 @@ import type { LinkAttributes, NodeAttributes, StyleSource } from "./style.js";
 
 /** The result state the display highlight is derived from. */
 export interface ResultsSource {
+  /** Canonical memory keys, as used by the displayed graph. */
   readonly highlightIds: ReadonlySet<string>;
   retrievalKind(nodeId: string): "match" | "link" | undefined;
 }
@@ -99,7 +101,9 @@ export class GraphModel implements StyleSource {
   /** Select one displayed memory, or clear the selection with `undefined`. */
   select(nodeId: string | undefined): boolean {
     const next =
-      nodeId !== undefined && this.graph.hasNode(nodeId) ? nodeId : undefined;
+      nodeId !== undefined && this.hasNode(nodeId)
+        ? memoryKey(nodeId)
+        : undefined;
     if (next === this.#selectedId) {
       return false;
     }
@@ -116,6 +120,7 @@ export class GraphModel implements StyleSource {
   }
 
   isNearSelection(nodeId: string): boolean {
+    nodeId = memoryKey(nodeId);
     const selected = this.#selectedId;
     if (selected === undefined) {
       return false;
@@ -128,14 +133,14 @@ export class GraphModel implements StyleSource {
   }
 
   hasNode(nodeId: string): boolean {
-    return this.graph.hasNode(nodeId);
+    return this.graph.hasNode(memoryKey(nodeId));
   }
 
   /** The IDs of the supplied memories that the current display does not contain. */
   missingIds(nodeIds: Iterable<string>): string[] {
     const missing: string[] = [];
     for (const nodeId of nodeIds) {
-      if (!this.graph.hasNode(nodeId)) {
+      if (!this.hasNode(nodeId)) {
         missing.push(nodeId);
       }
     }
@@ -217,7 +222,8 @@ export class GraphModel implements StyleSource {
         }
       };
     }
-    for (const nodeId of diff.removedNodeIds) {
+    for (const id of diff.removedNodeIds) {
+      const nodeId = memoryKey(id);
       yield () => {
         if (this.graph.hasNode(nodeId)) {
           this.graph.dropNode(nodeId);
@@ -236,13 +242,15 @@ export class GraphModel implements StyleSource {
     }
     for (const edge of diff.addedLinks) {
       yield () => {
-        const key = linkKey(edge.source, edge.target);
+        const source = memoryKey(edge.source);
+        const target = memoryKey(edge.target);
+        const key = linkKey(source, target);
         if (
           !this.graph.hasEdge(key) &&
-          this.graph.hasNode(edge.source) &&
-          this.graph.hasNode(edge.target)
+          this.graph.hasNode(source) &&
+          this.graph.hasNode(target)
         ) {
-          this.graph.addDirectedEdgeWithKey(key, edge.source, edge.target, {
+          this.graph.addDirectedEdgeWithKey(key, source, target, {
             kind: "link",
           });
         }
@@ -264,10 +272,11 @@ export class GraphModel implements StyleSource {
       y: node.y,
       ...(node.updatedAt === undefined ? {} : { updatedAt: node.updatedAt }),
     };
-    if (this.graph.hasNode(node.id)) {
-      this.graph.replaceNodeAttributes(node.id, attributes);
+    const key = memoryKey(node.id);
+    if (this.graph.hasNode(key)) {
+      this.graph.replaceNodeAttributes(key, attributes);
     } else {
-      this.graph.addNode(node.id, attributes);
+      this.graph.addNode(key, attributes);
     }
   }
 }

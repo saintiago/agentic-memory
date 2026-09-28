@@ -8,6 +8,7 @@
  */
 import type { DirectedGraph } from "graphology";
 
+import { memoryKey } from "./identity.js";
 import type { InspectorClient } from "./client.js";
 import { renderComparison, renderDetails } from "./details.js";
 import type { ComparisonState, DetailsState } from "./details.js";
@@ -262,7 +263,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
 
   const labelFor = (nodeId: string): string => {
     if (model.hasNode(nodeId)) {
-      return model.graph.getNodeAttributes(nodeId).label;
+      return model.graph.getNodeAttributes(memoryKey(nodeId)).label;
     }
     return results.noteFor(nodeId)?.content ?? nodeId;
   };
@@ -315,7 +316,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
 
     for (const [index, result] of (state.outcome?.results ?? []).entries()) {
-      const selected = selectionId === result.note.id;
+      const selected = selectionId === memoryKey(result.note.id);
       const item = element("li", {
         className: selected ? "result selected" : "result",
       });
@@ -429,7 +430,9 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
     const selectedAt = now();
     const resolved =
-      nodeId !== undefined && selectionKnown(nodeId) ? nodeId : undefined;
+      nodeId !== undefined && selectionKnown(nodeId)
+        ? memoryKey(nodeId)
+        : undefined;
     if (resolved === undefined && selectionId === undefined) {
       return;
     }
@@ -605,8 +608,8 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
     const viewMoved = displayed?.capturedAt !== view?.capturedAt;
     const nodeChanged =
-      diff.updatedNodes.some((node) => node.id === selected) ||
-      diff.addedNodes.some((node) => node.id === selected);
+      diff.updatedNodes.some((node) => memoryKey(node.id) === selected) ||
+      diff.addedNodes.some((node) => memoryKey(node.id) === selected);
     if (viewMoved || nodeChanged) {
       void loadDetails();
       return;
@@ -885,7 +888,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       nodeIds
         .filter((nodeId) => model.hasNode(nodeId))
         .map((nodeId) => {
-          const attributes = model.graph.getNodeAttributes(nodeId);
+          const attributes = model.graph.getNodeAttributes(memoryKey(nodeId));
           return {
             id: nodeId,
             x: attributes.x,
