@@ -333,6 +333,53 @@ describe("inspection projection", () => {
     expect(foreign.embeddingSpaceId).toBe("space-2");
   });
 
+  it("rebuilds instead of reusing live coordinates after the service identity changes", () => {
+    const state = new ProjectionState();
+    const fitted = state.project(request(inputs(20)));
+
+    // The export is unchanged, but a reconfigured service owns another collection: the previous
+    // artifact, its fitted model and its coordinates never answer for the new identity.
+    const otherCollection = state.project(
+      request(inputs(20), { collection: "reconfigured-notes" }),
+    );
+    expect(otherCollection.collection).toBe("reconfigured-notes");
+    expect(otherCollection.embeddingSpaceId).toBe("space-1");
+    expect(otherCollection.coordinates).toHaveLength(20);
+    expectFinite(otherCollection);
+
+    // The same applies to another embedding space with unchanged vectors.
+    const otherSpace = state.project(
+      request(inputs(20), {
+        collection: "reconfigured-notes",
+        embeddingSpaceId: "space-2",
+      }),
+    );
+    expect(otherSpace.embeddingSpaceId).toBe("space-2");
+    expect(otherSpace.projectionId).not.toBe(fitted.projectionId);
+    expect(otherSpace.coordinates).toHaveLength(20);
+    expectFinite(otherSpace);
+  });
+
+  it("fits a changed export for the new identity instead of transforming through the old model", () => {
+    const state = new ProjectionState();
+    const fitted = state.project(request(inputs(20)));
+    const changed = [...inputs(20, 300), ...inputs(3, 900)];
+
+    const projected = state.project(
+      request(changed, { embeddingSpaceId: "space-2" }),
+    );
+
+    // A transformed export would keep the previous fit inputs and embedding space.
+    expect(projected.embeddingSpaceId).toBe("space-2");
+    expect(projected.fitInputs).toHaveLength(changed.length);
+    expect(projected.fitInputs.map(({ id }) => id).sort()).toEqual(
+      changed.map(({ id }) => id.toLowerCase()).sort(),
+    );
+    expect(projected.coordinates).toHaveLength(changed.length);
+    expect(projected.projectionId).not.toBe(fitted.projectionId);
+    expectFinite(projected);
+  });
+
   it("compares original stored vectors and rejects an unknown note without changing state", () => {
     const state = new ProjectionState();
     state.project(

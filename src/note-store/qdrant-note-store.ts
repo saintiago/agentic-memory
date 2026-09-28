@@ -104,6 +104,15 @@ const optionsSchema = z.strictObject({
 /** Connection and collection settings for a Qdrant note store; the timeout is in milliseconds. */
 export type QdrantNoteStoreOptions = z.infer<typeof optionsSchema>;
 
+/**
+ * Validate connection settings against the store's own rules without contacting Qdrant. A host
+ * that binds durable state to a collection runs this before opening the connection, so a
+ * malformed endpoint or credential fails while nothing is bound to it yet.
+ */
+export const parseQdrantNoteStoreOptions = (
+  options: QdrantNoteStoreOptions,
+): QdrantNoteStoreOptions => optionsSchema.parse(options);
+
 /** Raised when an existing collection is not the compatible store this connection requires. */
 export class QdrantCollectionCompatibilityError extends Error {
   readonly collection: string;
@@ -464,7 +473,7 @@ export const openQdrantNoteStore = async (
   options: QdrantNoteStoreOptions,
 ): Promise<NoteStore> => {
   const { url, apiKey, collection, space, timeoutMs } =
-    optionsSchema.parse(options);
+    parseQdrantNoteStoreOptions(options);
   const endpoint = new URL(url);
   const client = new QdrantClient({
     // The client defaults missing ports to 6333 and ignores URL paths. URL normalizes explicit

@@ -97,9 +97,11 @@ The concrete variables, launch command, supervision example and client usage are
 [service/openapi.json](../service/openapi.json).
 
 Initial deployment is loopback-only and trusts local operating-system users. Do not enable permissive
-CORS. Reject browser requests with an untrusted Origin; state-changing requests require JSON. The
-dashboard host accesses the API server-side and exposes only its inspection routes to the browser.
-Remote binding, authentication for remote clients and multi-host service replicas are outside scope.
+CORS. Requests must name the bound loopback authority: reject a foreign `Host` header and a browser
+`Origin` that is not that authority, so a hostname rebound to the loopback address cannot reach the
+API. State-changing requests require JSON. The dashboard host accesses the API server-side and
+exposes only its inspection routes to the browser. Remote binding, authentication for remote clients
+and multi-host service replicas are outside scope.
 
 ## Migration and verification
 
@@ -110,6 +112,8 @@ run an old direct writer alongside the service or silently fall back to direct a
 Contract tests cover each endpoint, validation, duplicate/conflicting submissions, pagination and
 error classification. Integration tests exercise concurrent clients with one encoder and writer,
 submission during provider outage, reads during ingestion, lost HTTP acknowledgement, and service
-restart with accepted and partially applied work. Reuse queue recovery tests instead of redefining
-their algorithm. Verify dashboard refresh and query highlighting through the service API, and that
-an unavailable service does not turn a successful agent task into a false memory-storage success.
+restart with accepted and partially applied work. The pinned-artifact encoder check loads the
+pinned encoder through the service's own encoder thread and confirms it serves the same vectors as
+the in-process reference encoder. Reuse queue recovery tests instead of redefining their algorithm.
+Verify dashboard refresh and query highlighting through the service API, and that an unavailable
+service does not turn a successful agent task into a false memory-storage success.

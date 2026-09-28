@@ -31,6 +31,7 @@ export type { NoteStore } from "./note-store.js";
 export {
   QdrantCollectionCompatibilityError,
   openQdrantNoteStore,
+  parseQdrantNoteStoreOptions,
 } from "./qdrant-note-store.js";
 export type {
   NoteStoreSpace,

@@ -1,3 +1,5 @@
+import { request as httpRequest } from "node:http";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { referenceEmbeddingSpace } from "../../src/index.js";
@@ -38,6 +40,50 @@ const receiptOf = (
   id: string,
 ): Promise<Awaited<ReturnType<typeof requestJson>>> =>
   requestJson(harness.url(`/v1/receipts/${id}`));
+
+/**
+ * Send one request with exact Host and Origin headers, which fetch never lets a test set. The
+ * connection still targets the loopback listener the service bound.
+ */
+const rawRequest = (
+  harness: ServiceHarness,
+  options: {
+    readonly path: string;
+    readonly method: "GET" | "POST";
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body?: string;
+  },
+): Promise<{ readonly status: number; readonly body: unknown }> =>
+  new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { ...options.headers };
+    if (options.body !== undefined) {
+      headers["content-length"] = String(Buffer.byteLength(options.body));
+    }
+    const request = httpRequest(
+      {
+        host: "127.0.0.1",
+        port: harness.runtime.port,
+        path: options.path,
+        method: options.method,
+        headers,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            status: response.statusCode ?? 0,
+            body: text === "" ? undefined : (JSON.parse(text) as unknown),
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    request.end(options.body);
+  });
 
 describe("submission route", () => {
   it("accepts a new observation with 202, Location and a durable receipt", async () => {
@@ -165,6 +211,56 @@ describe("submission route", () => {
     expect((unknown.body as { error: { code: string } }).error.code).toBe(
       "not-found",
     );
+  });
+
+  it("refuses a rebound hostname even when Host and Origin agree", async () => {
+    const harness = await openService();
+    const port = String(harness.runtime.port);
+    const attacker = `attacker.example:${port}`;
+
+    const rebound = await rawRequest(harness, {
+      path: "/v1/observations",
+      method: "POST",
+      headers: {
+        host: attacker,
+        origin: `http://${attacker}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sourceKey: "rebound-host",
+        content: "A submission through a rebound hostname.",
+      }),
+    });
+    expect(rebound.status).toBe(400);
+    expect(rebound.body).toEqual({
+      error: {
+        code: "invalid-request",
+        message: "The request host is not the local memory service.",
+        retryable: false,
+      },
+    });
+    // The refused submission never reached the durable queue.
+    const status = await requestJson(harness.url("/v1/status"));
+    expect(
+      (status.body as { queue: { accepted: number } }).queue.accepted,
+    ).toBe(0);
+
+    // Reads are guarded by the same check, and the local hostname spelling stays trusted.
+    const read = await rawRequest(harness, {
+      path: "/v1/status",
+      method: "GET",
+      headers: { host: attacker, origin: `http://${attacker}` },
+    });
+    expect(read.status).toBe(400);
+    const localhost = await rawRequest(harness, {
+      path: "/v1/status",
+      method: "GET",
+      headers: {
+        host: `localhost:${port}`,
+        origin: `http://localhost:${port}`,
+      },
+    });
+    expect(localhost.status).toBe(200);
   });
 });
 

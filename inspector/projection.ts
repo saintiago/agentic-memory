@@ -333,7 +333,8 @@ interface ProjectionCandidate {
 /**
  * The disposable projection state of one host process: the vectors of the latest completed
  * export, the fitted model, the coordinates and the recorded artifact. A failed request never
- * commits a partial state.
+ * commits a partial state, and a request for another collection or embedding space discards the
+ * state instead of projecting through the previous identity's fitted model.
  */
 export class ProjectionState {
   #vectors = new Map<string, readonly number[]>();
@@ -358,6 +359,9 @@ export class ProjectionState {
     const identities = inputs.map(identityOf);
     const key = identityKey(identities);
 
+    // A reconfigured service is another collection or embedding space: an artifact, model or
+    // coordinate set fitted for the previous identity is never reused or transformed.
+    this.#alignToIdentity(request);
     if (
       !request.rebuild &&
       this.#artifact !== undefined &&
@@ -375,6 +379,23 @@ export class ProjectionState {
       }
     }
     return this.#fit(request, inputs, identities);
+  }
+
+  /** Drop live state that belongs to another collection or embedding space than the request. */
+  #alignToIdentity(request: ProjectionRequest): void {
+    const artifact = this.#artifact;
+    if (
+      artifact === undefined ||
+      (artifact.collection === request.collection &&
+        artifact.embeddingSpaceId === request.embeddingSpaceId)
+    ) {
+      return;
+    }
+    this.#vectors = new Map();
+    this.#coordinates = new Map();
+    this.#anchors = [];
+    this.#model = undefined;
+    this.#artifact = undefined;
   }
 
   /** Cosine similarity of two stored vectors of the latest completed export. */

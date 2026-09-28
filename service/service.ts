@@ -185,7 +185,9 @@ export class MemoryService {
 
   /** Report collection identity, capability availability and durable queue outcomes. */
   async status(): Promise<ServiceStatus> {
-    const providersReady = this.#providers.ready;
+    // Provider availability reflects both initialization and the last operational outcome, so a
+    // known database or model outage is never reported as available.
+    const capabilities = this.#providers.availability();
     let queue: QueueStatus | undefined;
     let journalError: string | undefined;
     try {
@@ -204,9 +206,11 @@ export class MemoryService {
       },
       availability: {
         submission: queue !== undefined && !this.#stopping,
-        retrieval: providersReady && !this.#stopping,
+        retrieval: capabilities.retrieval && !this.#stopping,
         ingestion:
-          providersReady && !this.#stopping && queue?.worker === "running",
+          capabilities.ingestion &&
+          !this.#stopping &&
+          queue?.worker === "running",
       },
       ...(queue === undefined ? {} : { queue }),
       ...(error === undefined ? {} : { error }),

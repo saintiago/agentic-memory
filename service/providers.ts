@@ -10,8 +10,8 @@
  */
 import {
   AgenticMemory,
+  MemoryError,
   openQdrantNoteStore,
-  openReferenceEmbedder,
   type Cursor,
   type EmbeddedPage,
   type Embedder,
@@ -26,11 +26,12 @@ import {
   type SearchOptions,
   type SearchResult,
 } from "../src/index.js";
+import { openWorkerEmbedder } from "./encoder-host.js";
 import {
   createHostModelTransport,
   type HostModelTransportOptions,
 } from "./model-transport.js";
-import { FairScheduler } from "./scheduler.js";
+import { FairScheduler, InferenceOverloadedError } from "./scheduler.js";
 import type { ServiceSettings } from "./settings.js";
 
 /** The ready provider operations the service exposes. */
@@ -57,6 +58,11 @@ export interface ProviderFactories {
     readonly space: EmbeddingSpace;
   }): Promise<NoteStore>;
   createModel(options: HostModelTransportOptions): LanguageModel;
+  /**
+   * Release a loaded encoder on clean shutdown; the worker-backed default terminates its thread.
+   * Controlled substitutes without a release step keep the default no-op.
+   */
+  closeEmbedder?(embedder: Embedder): Promise<void>;
 }
 
 /** The provider settings subset of the service settings this runtime consumes. */
@@ -90,10 +96,21 @@ export class ProviderUnavailableError extends Error {
   }
 }
 
+/** Whether a loaded encoder owns a thread or another resource the host must release. */
+const isClosableEmbedder = (
+  embedder: Embedder,
+): embedder is Embedder & { close(): Promise<void> } =>
+  typeof (embedder as { close?: unknown }).close === "function";
+
 const defaultFactories: ProviderFactories = {
-  openEmbedder: (options) => openReferenceEmbedder(options),
+  openEmbedder: (options) => openWorkerEmbedder(options),
   openStore: (options) => openQdrantNoteStore(options),
   createModel: (options) => createHostModelTransport(options),
+  closeEmbedder: async (embedder) => {
+    if (isClosableEmbedder(embedder)) {
+      await embedder.close();
+    }
+  },
 };
 
 const sameSpace = (left: EmbeddingSpace, right: EmbeddingSpace): boolean =>
@@ -101,11 +118,37 @@ const sameSpace = (left: EmbeddingSpace, right: EmbeddingSpace): boolean =>
   left.dimensions === right.dimensions &&
   left.distance === right.distance;
 
+/** The provider operations whose failures the status report publishes as capability outages. */
+export type ServiceCapability = "retrieval" | "ingestion";
+
+/** The safe diagnostic a status report carries while a capability is known to be failing. */
+const outageReason: Record<ServiceCapability, string> = {
+  retrieval: "The memory retrieval capability is failing.",
+  ingestion: "The memory ingestion capability is failing.",
+};
+
+/**
+ * Whether a provider operation failure means the capability itself is failing. Invalid input is a
+ * client error and temporary admission overload is scheduling pressure; neither is an outage.
+ */
+const isProviderFailure = (cause: unknown): boolean => {
+  if (cause instanceof ProviderUnavailableError) {
+    return true;
+  }
+  if (cause instanceof InferenceOverloadedError) {
+    return false;
+  }
+  if (cause instanceof MemoryError) {
+    return cause.stage !== "input";
+  }
+  return true;
+};
+
 /**
  * One service instance's provider stack. Initialization starts when the host asks and keeps
  * retrying with bounded exponential backoff until it succeeds or the service stops; a loaded
- * encoder is never discarded between attempts. Availability is reported per capability and the
- * failure detail stays on the host's stderr.
+ * encoder is never discarded between attempts. Availability is reported per capability from both
+ * initialization and the last provider outcome, and the failure detail stays on the host's stderr.
  */
 export class ProviderRuntime {
   readonly #space: EmbeddingSpace;
@@ -120,6 +163,8 @@ export class ProviderRuntime {
   #store: NoteStore | undefined;
   #engine: ServiceEngine | undefined;
   #error: string | undefined;
+  /** Capabilities a ready stack failed to serve, cleared when the capability serves again. */
+  readonly #outages = new Map<ServiceCapability, string>();
   #running = false;
   #stopped = false;
   #initialization: Promise<void> | undefined;
@@ -143,9 +188,21 @@ export class ProviderRuntime {
     return this.#engine !== undefined;
   }
 
-  /** The safe diagnostic of the condition that holds initialization, if any. */
+  /**
+   * The current availability of each capability the provider stack serves. An observed outage
+   * keeps the capability unavailable until it serves again; initialization alone never clears it.
+   */
+  availability(): Record<ServiceCapability, boolean> {
+    const ready = this.ready && !this.#stopped;
+    return {
+      retrieval: ready && !this.#outages.has("retrieval"),
+      ingestion: ready && !this.#outages.has("ingestion"),
+    };
+  }
+
+  /** The safe diagnostic of the condition that holds initialization or a capability, if any. */
   error(): string | undefined {
-    return this.#error;
+    return this.#error ?? this.#outages.values().next().value;
   }
 
   /** Begin loading providers in the background; repeated calls join the same attempt loop. */
@@ -156,12 +213,26 @@ export class ProviderRuntime {
     }
   }
 
-  /** Stop retrying and let an in-flight attempt settle. */
+  /** Stop retrying, let an in-flight attempt settle and release the loaded encoder. */
   async stop(): Promise<void> {
     this.#stopped = true;
     this.#running = false;
     this.#wake?.();
     await this.#initialization?.catch(() => undefined);
+    const embedder = this.#embedder;
+    this.#embedder = undefined;
+    this.#store = undefined;
+    this.#engine = undefined;
+    if (embedder !== undefined) {
+      try {
+        await this.#factories.closeEmbedder?.(embedder);
+      } catch (cause) {
+        console.error(
+          "[service] the shared encoder could not be released:",
+          cause,
+        );
+      }
+    }
   }
 
   /** The ready engine, or an explicit capability failure while providers are unavailable. */
@@ -292,14 +363,42 @@ export class ProviderRuntime {
     const memory = new AgenticMemory(store, embedder, model);
     const scheduler = this.#scheduler;
     return {
-      get: (id) => memory.get(id),
-      page: (limit, cursor) => memory.page(limit, cursor),
-      pageEmbedded: (limit, cursor) => store.pageEmbedded(limit, cursor),
+      get: (id) => this.#serve("retrieval", () => memory.get(id)),
+      page: (limit, cursor) =>
+        this.#serve("retrieval", () => memory.page(limit, cursor)),
+      pageEmbedded: (limit, cursor) =>
+        this.#serve("retrieval", () => store.pageEmbedded(limit, cursor)),
       search: (query, options) =>
-        scheduler.run(() => memory.search(query, options)),
-      prepare: (input) => scheduler.run(() => memory.prepare(input)),
-      apply: (plan) => memory.apply(plan),
+        this.#serve("retrieval", () =>
+          scheduler.run(() => memory.search(query, options)),
+        ),
+      prepare: (input) =>
+        this.#serve("ingestion", () =>
+          scheduler.run(() => memory.prepare(input)),
+        ),
+      apply: (plan) => this.#serve("ingestion", () => memory.apply(plan)),
     };
+  }
+
+  /**
+   * Run one provider operation, recording whether the capability served it. A provider failure of
+   * a ready stack marks the capability as failing until a later operation succeeds; invalid input
+   * and scheduler overload leave availability alone.
+   */
+  async #serve<Value>(
+    capability: ServiceCapability,
+    run: () => Promise<Value>,
+  ): Promise<Value> {
+    try {
+      const value = await run();
+      this.#outages.delete(capability);
+      return value;
+    } catch (cause) {
+      if (this.ready && isProviderFailure(cause)) {
+        this.#outages.set(capability, outageReason[capability]);
+      }
+      throw cause;
+    }
   }
 
   /** Wait for the next attempt, or return at once when the service stops. */

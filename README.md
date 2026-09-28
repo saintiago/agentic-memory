@@ -65,10 +65,11 @@ self-contained HTML report and the JSON evidence it shows, with no server or dat
 
 `npm run service` starts the separate local memory service documented in
 [docs/service.md](docs/service.md): it owns one configured collection, one durable ingestion queue
-and one shared pinned encoder, accepts observations durably over the versioned `/v1` HTTP API
-(published as [service/openapi.json](service/openapi.json)), and reports submission, retrieval and
-ingestion availability while providers load. [service/README.md](service/README.md) lists its
-settings, supervision example and the client boundary.
+and one shared pinned encoder hosted in its own worker thread, accepts observations durably over
+the versioned `/v1` HTTP API (published as [service/openapi.json](service/openapi.json)), and
+reports submission, retrieval and ingestion availability while providers load or fail.
+[service/README.md](service/README.md) lists its settings, supervision example and the client
+boundary.
 
 `npm run inspector` starts the local memory inspection host, which consumes that service API — it
 opens no database and loads no encoder — projects the stored vectors in a worker thread and serves

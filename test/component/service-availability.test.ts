@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { referenceEmbeddingSpace } from "../../src/index.js";
+import { openWorkerEmbedder } from "../../service/encoder-host.js";
 import {
   ControlledProviders,
   postJson,
@@ -192,5 +193,102 @@ describe("provider startup", () => {
     expect(providers.storeOpens).toBe(0);
     expect(providers.embedderOpens).toBe(0);
     expect(referenceEmbeddingSpace.dimensions).toBe(1_024);
+  });
+
+  it("loads the pinned encoder through its own worker and reports a missing cache safely", async () => {
+    const providers = new ControlledProviders();
+    const harness = await openService({
+      providers,
+      waitForProviders: false,
+      factories: {
+        ...providers.factories,
+        // The default host path: the real worker entry loads the pinned encoder in its thread.
+        openEmbedder: (options) => openWorkerEmbedder(options),
+      },
+    });
+
+    // The test cache is empty and downloads are disabled, so the pinned load fails inside the
+    // worker; the service publishes its fixed diagnostic while the detail stays on stderr.
+    await waitFor(
+      async () => (await statusOf(harness)).error !== undefined,
+      "the worker's encoder load failure to be reported",
+    );
+    const status = await statusOf(harness);
+    expect(status.error).toBe("The pinned encoder could not be loaded.");
+    expect(status.availability).toEqual({
+      submission: true,
+      retrieval: false,
+      ingestion: false,
+    });
+  }, 30_000);
+});
+
+describe("operational availability", () => {
+  it("reports a failing retrieval capability and clears it when a read succeeds", async () => {
+    const providers = new ControlledProviders();
+    const harness = await openService({ providers });
+
+    providers.store.nearestError = new Error("qdrant refused the search");
+    const failed = await postJson(harness.url("/v1/search"), {
+      query: "a query",
+    });
+    expect(failed.status).toBe(503);
+    const down = await statusOf(harness);
+    expect(down.availability.retrieval).toBe(false);
+    expect(down.availability.ingestion).toBe(true);
+    expect(down.error).toBe("The memory retrieval capability is failing.");
+
+    // The next read that the provider serves restores the capability and clears the diagnostic.
+    providers.store.nearestError = undefined;
+    const served = await postJson(harness.url("/v1/search"), {
+      query: "a query",
+    });
+    expect(served.status).toBe(200);
+    const recovered = await statusOf(harness);
+    expect(recovered.availability.retrieval).toBe(true);
+    expect(recovered.error).toBeUndefined();
+  });
+
+  it("reports a failing ingestion capability while the model provider is down", async () => {
+    const providers = new ControlledProviders();
+    const harness = await openService({ providers });
+
+    providers.model.failAll = new Error("the model provider is down");
+    const accepted = await postJson(harness.url("/v1/observations"), {
+      sourceKey: "model-outage",
+      content: "An observation accepted while the model is down.",
+    });
+    expect(accepted.status).toBe(202);
+    await waitFor(async () => {
+      const status = await statusOf(harness);
+      return !status.availability.ingestion && status.availability.retrieval;
+    }, "the model outage to be reported while reads stay available");
+    expect((await statusOf(harness)).error).toBe(
+      "The memory ingestion capability is failing.",
+    );
+
+    providers.model.failAll = undefined;
+    await waitFor(async () => {
+      const status = await statusOf(harness);
+      return status.availability.ingestion;
+    }, "the next served insertion to restore ingestion");
+    expect((await statusOf(harness)).error).toBeUndefined();
+  }, 30_000);
+
+  it("does not report invalid input as a capability outage", async () => {
+    const providers = new ControlledProviders();
+    const harness = await openService({ providers });
+
+    const invalid = await postJson(harness.url("/v1/search"), {
+      query: "   ",
+    });
+    expect(invalid.status).toBe(400);
+    const status = await statusOf(harness);
+    expect(status.availability).toEqual({
+      submission: true,
+      retrieval: true,
+      ingestion: true,
+    });
+    expect(status.error).toBeUndefined();
   });
 });

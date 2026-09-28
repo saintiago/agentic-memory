@@ -1,8 +1,9 @@
 /**
  * Composition and supervised lifecycle of the local memory service: the durable queue and its
  * writer ownership exist before providers load, providers initialize and retry in the background,
- * the HTTP listener starts independently of them, and shutdown stops admission, settles in-flight
- * requests, stops claiming work, finishes the active operation and releases the journal.
+ * the HTTP listener starts independently of them, and shutdown stops admission, stops claiming
+ * work, settles in-flight requests and the active operation, then releases providers and the
+ * journal.
  *
  * See docs/service.md#availability-restart-and-shutdown and
  * docs/ingestion-queue.md#writer-lifecycle-and-retries.
@@ -20,7 +21,7 @@ import {
   type MemoryServiceServer,
 } from "./server.js";
 import { MemoryService } from "./service.js";
-import type { ServiceSettings } from "./settings.js";
+import { validateProviderSettings, type ServiceSettings } from "./settings.js";
 import { WorkerSupervisor } from "./supervisor.js";
 
 export interface StartMemoryServiceOptions {
@@ -57,6 +58,9 @@ export const startMemoryService = async (
 ): Promise<MemoryServiceRuntime> => {
   const settings = options.settings;
   const scheduler = options.scheduler ?? new FairScheduler();
+  // Provider-owned validation runs before the journal exists, so a malformed endpoint or
+  // credential cannot permanently bind a durable queue to a configuration the providers reject.
+  validateProviderSettings(settings);
   const providers = new ProviderRuntime({
     space: referenceEmbeddingSpace,
     settings: {
@@ -128,13 +132,15 @@ export const startMemoryService = async (
     queue,
     stop: () => {
       stopping ??= (async () => {
-        // Stop admitting requests, then let accepted requests and the active operation settle.
+        // Stop admitting requests, stop claiming new durable work, then let accepted requests and
+        // the active operation settle before the providers and the journal are released.
         service.beginShutdown();
         await supervisor.stop();
+        const stoppingQueue = queue.stop();
         const closing = server.close();
         await server.settled();
         await closing;
-        await queue.stop();
+        await stoppingQueue;
         await providers.stop();
         await queue.close();
       })();

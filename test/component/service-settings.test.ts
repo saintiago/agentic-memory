@@ -120,4 +120,46 @@ describe("memory service settings", () => {
       }),
     ).toThrow('AMEM_ALLOW_EMBEDDING_DOWNLOADS must be "true" or "false".');
   });
+
+  it("rejects the provider endpoints and credentials the providers would refuse", () => {
+    // The store and the model transport own these rules; reading the settings runs them, so a
+    // malformed configuration never reaches the journal or a provider.
+    expect(() =>
+      readServiceSettings({ ...required, AMEM_QDRANT_URL: "not-a-url" }),
+    ).toThrow(
+      /Qdrant provider settings are not valid: A Qdrant URL must start with http:\/\/ or https:\/\//,
+    );
+    const embedded = (() => {
+      try {
+        readServiceSettings({
+          ...required,
+          AMEM_QDRANT_URL: "http://user:secret@127.0.0.1:6333",
+        });
+        return undefined;
+      } catch (cause) {
+        return cause as Error;
+      }
+    })();
+    expect(embedded?.message).toMatch(/Qdrant provider settings are not valid/);
+    // The rejected credential never appears in the diagnostic.
+    expect(embedded?.message).not.toContain("secret");
+
+    expect(() =>
+      readServiceSettings({ ...required, AMEM_MODEL_ENDPOINT: "not-a-url" }),
+    ).toThrow(/model provider settings are not valid/);
+    const credential = "sk-live-SECRET";
+    const refused = (() => {
+      try {
+        readServiceSettings({
+          ...required,
+          AMEM_MODEL_API_KEY: `unusable\n${credential}`,
+        });
+        return undefined;
+      } catch (cause) {
+        return cause as Error;
+      }
+    })();
+    expect(refused?.message).toMatch(/model provider settings are not valid/);
+    expect(refused?.message).not.toContain(credential);
+  });
 });

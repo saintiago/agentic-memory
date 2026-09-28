@@ -1,11 +1,19 @@
 /**
  * Explicit host settings of the local memory service. Every value comes from an environment
  * variable supplied by the supervising host; an incomplete or malformed configuration fails
- * before the journal, the HTTP listener or any provider is opened.
+ * before the journal, the HTTP listener or any provider is opened. Provider-owned endpoint and
+ * credential rules run here as well, so a typo cannot bind durable state to a configuration the
+ * providers would reject later.
  *
  * See docs/service.md#configuration-and-local-access and service/README.md.
  */
 import { z } from "zod";
+
+import {
+  parseQdrantNoteStoreOptions,
+  referenceEmbeddingSpace,
+} from "../src/index.js";
+import { parseHostModelTransportOptions } from "./model-transport.js";
 
 /** The loopback port the service binds by default. */
 export const defaultServicePort = 4748;
@@ -118,6 +126,64 @@ const settingsSchema = z.strictObject({
 /** Everything the service needs to own its collection, queue, providers and HTTP surface. */
 export type ServiceSettings = z.infer<typeof settingsSchema>;
 
+/** The message of one initialization or validation failure, without a provider's own values. */
+const describeCause = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
+/** Join one zod or ordinary failure into the single diagnostic a settings failure publishes. */
+const describeIssues = (cause: unknown): string => {
+  const issues = (cause as { issues?: unknown }).issues;
+  if (Array.isArray(issues)) {
+    const messages = issues.flatMap((issue: unknown) =>
+      typeof issue === "object" &&
+      issue !== null &&
+      typeof (issue as { message?: unknown }).message === "string"
+        ? [(issue as { message: string }).message]
+        : [],
+    );
+    if (messages.length > 0) {
+      return messages.join(" ");
+    }
+  }
+  return describeCause(cause);
+};
+
+/**
+ * Validate the provider-owned configuration rules before the durable journal or a provider is
+ * touched. The store and the model transport own these rules; this module only runs them, so no
+ * provider value (including a rejected credential) is echoed into the failure.
+ */
+export const validateProviderSettings = (
+  settings: Pick<ServiceSettings, "qdrant" | "model">,
+): void => {
+  const steps: readonly [string, () => void][] = [
+    [
+      "The Qdrant provider settings",
+      () => {
+        parseQdrantNoteStoreOptions({
+          ...settings.qdrant,
+          space: referenceEmbeddingSpace,
+        });
+      },
+    ],
+    [
+      "The model provider settings",
+      () => {
+        parseHostModelTransportOptions({ ...settings.model });
+      },
+    ],
+  ];
+  for (const [name, validate] of steps) {
+    try {
+      validate();
+    } catch (cause) {
+      throw new Error(`${name} are not valid: ${describeIssues(cause)}.`, {
+        cause,
+      });
+    }
+  }
+};
+
 /**
  * Read and validate every service setting. A missing or malformed value fails here, before the
  * durable journal, the listener or any provider is touched.
@@ -175,5 +241,6 @@ export const readServiceSettings = (
       .join("; ");
     throw new Error(`The memory service settings are not valid (${issues}).`);
   }
+  validateProviderSettings(parsed.data);
   return parsed.data;
 };

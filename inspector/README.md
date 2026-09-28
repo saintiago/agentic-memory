@@ -115,7 +115,11 @@ projection ID, algorithm and parameters, build time, fit inputs and current coor
 vector identity each coordinate came from. On startup the host still obtains a fresh export before
 presenting anything as current: a stored projection is reused only when it belongs to the service's
 collection and embedding space and covers exactly that export, and an incompatible or malformed
-artifact is discarded. No stored vector or note text is written to the artifact directory.
+artifact is discarded. A service whose collection or embedding space changed is equally another
+identity for the live state: the fitted model, coordinates and artifact of the previous identity
+are discarded, so the next export is fitted for the new identity instead of being reused or
+transformed through the old model. No stored vector or note text is written to the artifact
+directory.
 
 A comparison always describes the completed export that holds its vectors: it waits for a refresh
 in flight instead of mixing similarity, membership and capture time from two exports.
@@ -144,7 +148,8 @@ the build, including the host's component tests:
   after failures, cancelled work on shutdown and the stored projection offered to a restarted host;
 - the real UMAP fit, transforms that keep the fitted anchors, removal-only refreshes, repeated
   equivalent vectors, the non-semantic fallback, comparisons of one completed export and
-  worker-thread execution;
+  worker-thread execution, and a changed collection or embedding space discarding the live
+  projection instead of reusing or transforming the previous identity's state;
 - responsiveness: while a CPU-bound projection occupies its worker thread, the graph route keeps
   answering and the view is published once the worker finishes;
 - shutdown: stalled service reads are abandoned when the host exits instead of waiting for their

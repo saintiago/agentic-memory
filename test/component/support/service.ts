@@ -116,12 +116,22 @@ export class PagedStore implements NoteStore {
   pageEmbeddedError: Error | undefined;
   /** Hold the next put until the gate resolves, to observe an in-flight operation. */
   #putGate: Deferred<void> | undefined;
+  /** Hold the next page read until the gate resolves, to observe an in-flight HTTP read. */
+  #pageGate: Deferred<void> | undefined;
   /** How many write attempts started, including attempts that are still held or failing. */
   putStarted = 0;
+  /** How many page reads started, including a read that is still held. */
+  pageStarted = 0;
 
   holdWrites(): Deferred<void> {
     const gate = deferred<void>();
     this.#putGate = gate;
+    return gate;
+  }
+
+  holdPages(): Deferred<void> {
+    const gate = deferred<void>();
+    this.#pageGate = gate;
     return gate;
   }
 
@@ -178,6 +188,12 @@ export class PagedStore implements NoteStore {
   }
 
   async page(limit: number, cursor?: Cursor): Promise<Page> {
+    this.pageStarted += 1;
+    const gate = this.#pageGate;
+    if (gate !== undefined) {
+      this.#pageGate = undefined;
+      await gate.promise;
+    }
     const exported = this.#slice(limit, cursor);
     return {
       notes: exported.records.map((entry) => structuredClone(entry.note)),

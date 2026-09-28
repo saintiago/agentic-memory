@@ -1,7 +1,8 @@
 /**
  * The HTTP surface of the local memory service: the documented `/v1` JSON routes on loopback.
- * Requests and responses are validated against the owned schemas, browser origins must match the
- * bound host, state-changing requests must be JSON, and failures become one sanitized error body.
+ * Requests and responses are validated against the owned schemas, browser origins and hosts must
+ * match the bound service authority, state-changing requests must be JSON, and failures become
+ * one sanitized error body.
  *
  * See docs/service.md#api and docs/service.md#configuration-and-local-access.
  */
@@ -62,6 +63,14 @@ export interface MemoryServiceServer {
   settled(): Promise<void>;
 }
 
+/** The bound authority requests are resolved with and validated against. */
+interface BoundAuthority {
+  /** The lowercase `host:port` the listener owns. */
+  readonly authority: string;
+  /** Every authority trusted as this service. */
+  readonly trusted: ReadonlySet<string>;
+}
+
 const uuidSchema = z.uuid();
 
 const methodNotAllowed = (response: ServerResponse, allowed: string): never => {
@@ -118,8 +127,40 @@ const sendFailure = (
   sendJson(response, failure.status, serviceErrorSchema, body, headers);
 };
 
-/** Reject browser requests whose Origin is not the same origin as the requested host. */
-const assertTrustedOrigin = (request: IncomingMessage): void => {
+/** Loopback host spellings a local browser may legitimately use to reach the service. */
+const loopbackHosts = ["127.0.0.1", "::1", "localhost"] as const;
+
+/** One lowercase `host:port` authority key; IPv6 hosts stay bracketed as URLs spell them. */
+const authorityKey = (host: string, port: number): string =>
+  `${host.includes(":") ? `[${host}]` : host}:${String(port)}`.toLowerCase();
+
+/** The authorities trusted as this service: the bound host and, on loopback, its aliases. */
+const trustedAuthorities = (
+  host: string,
+  port: number,
+): ReadonlySet<string> => {
+  const trusted = new Set([authorityKey(host, port)]);
+  if ((loopbackHosts as readonly string[]).includes(host)) {
+    for (const alias of loopbackHosts) {
+      trusted.add(authorityKey(alias, port));
+    }
+  }
+  return trusted;
+};
+
+/**
+ * Refuse a request that does not name this service. The Host header must be the bound loopback
+ * authority, so a hostname rebound to the loopback address never matches; a browser Origin must
+ * name a trusted authority as well, instead of whatever Host the request itself supplied.
+ */
+const assertTrustedAuthority = (
+  request: IncomingMessage,
+  trusted: ReadonlySet<string>,
+): void => {
+  const host = request.headers.host;
+  if (host === undefined || !trusted.has(host.toLowerCase())) {
+    throw invalidRequest("The request host is not the local memory service.");
+  }
   const origin = request.headers.origin;
   if (origin === undefined) {
     return;
@@ -130,12 +171,7 @@ const assertTrustedOrigin = (request: IncomingMessage): void => {
   } catch {
     throw invalidRequest("The request Origin is not trusted.");
   }
-  const requestedHost = request.headers.host;
-  if (
-    parsed.protocol !== "http:" ||
-    requestedHost === undefined ||
-    parsed.host !== requestedHost
-  ) {
+  if (parsed.protocol !== "http:" || !trusted.has(parsed.host.toLowerCase())) {
     throw invalidRequest("The request Origin is not trusted.");
   }
 };
@@ -270,12 +306,12 @@ const handleRequest = async (
   request: IncomingMessage,
   response: ServerResponse,
   options: MemoryServiceServerOptions,
-  boundHost: string,
+  bound: BoundAuthority,
 ): Promise<void> => {
   const method = request.method ?? "GET";
-  const url = new URL(request.url ?? "/", `http://${boundHost}`);
+  const url = new URL(request.url ?? "/", `http://${bound.authority}`);
   const pathname = url.pathname;
-  assertTrustedOrigin(request);
+  assertTrustedAuthority(request, bound.trusted);
 
   if (pathname === "/v1/observations") {
     if (method !== "POST") {
@@ -382,7 +418,7 @@ export const startMemoryServiceServer = async (
   const boundHost = options.host ?? "127.0.0.1";
   const inflight = new Set<Promise<void>>();
   const server = createServer((request, response) => {
-    const handled = handleRequest(request, response, options, boundHost).catch(
+    const handled = handleRequest(request, response, options, bound).catch(
       (cause: unknown) => {
         const failure =
           cause instanceof ServiceFailure
@@ -422,6 +458,10 @@ export const startMemoryServiceServer = async (
     typeof address === "object" && address !== null
       ? address.port
       : options.port;
+  const bound = {
+    authority: authorityKey(boundHost, port),
+    trusted: trustedAuthorities(boundHost, port),
+  } satisfies BoundAuthority;
   return {
     port,
     close: async () => {

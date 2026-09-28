@@ -84,6 +84,15 @@ const optionsSchema = z.strictObject({
 export type HostModelTransportOptions = z.infer<typeof optionsSchema>;
 
 /**
+ * Validate the transport's own configuration without sending a request or reading a credential.
+ * The service runs this before it creates the durable journal, so a malformed endpoint or an
+ * unusable credential fails before any observation can be accepted for that configuration.
+ */
+export const parseHostModelTransportOptions = (
+  options: HostModelTransportOptions,
+): HostModelTransportOptions => optionsSchema.parse(options);
+
+/**
  * A transport failure carrying the memory stage, the machine-readable failure category and a safe
  * diagnostic. Provider and fetch failures are untrusted text that may echo request headers, so
  * every diagnostic is redacted and no raw provider or fetch cause is attached.
@@ -236,7 +245,7 @@ export const createHostModelTransport = (
   options: HostModelTransportOptions,
 ): LanguageModel => {
   const { endpoint, model, apiKey, timeoutMs, maxOutputTokens, signal, fetch } =
-    optionsSchema.parse(options);
+    parseHostModelTransportOptions(options);
   const send = fetch ?? globalThis.fetch;
 
   return {

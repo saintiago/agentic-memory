@@ -8,19 +8,22 @@ contract. Clients never open the queue files, load an encoder or write the colle
 
 The implementation lives here:
 
-| Module               | Responsibility                                                                         |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| `main.ts`            | Entry point: settings, startup, signal handling                                        |
-| `settings.ts`        | Every `AMEM_*` host setting, validated before the journal or a provider is opened      |
-| `lifecycle.ts`       | Composition: journal and worker ownership first, provider initialization in background |
-| `providers.ts`       | Lazy provider stack with bounded retries and per-capability availability               |
-| `scheduler.ts`       | Bounded, fair admission of inference shared by ingestion and search                    |
-| `service.ts`         | Submission, retrieval, inspection and availability behavior behind the HTTP layer      |
-| `server.ts`          | The `/v1` routes, request/response validation, origin and body rules, error mapping    |
-| `client.ts`          | The typed, validating client boundary consumers and the dashboard host use             |
-| `supervisor.ts`      | Restarts a stopped ingestion worker inside the service process                         |
-| `openapi.json`       | The published OpenAPI 3.1 definition of exactly the implemented routes                 |
-| `model-transport.ts` | The OpenAI-compatible LanguageModel transport the service composes                     |
+| Module                | Responsibility                                                                         |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `main.ts`             | Entry point: settings, startup, signal handling                                        |
+| `settings.ts`         | Every `AMEM_*` host setting, validated before the journal or a provider is opened      |
+| `lifecycle.ts`        | Composition: journal and worker ownership first, provider initialization in background |
+| `providers.ts`        | Lazy provider stack with bounded retries and per-capability availability               |
+| `scheduler.ts`        | Bounded, fair admission of inference shared by ingestion and search                    |
+| `encoder-host.ts`     | Host side of the shared encoder thread: load, inference requests and release           |
+| `encoder-worker.ts`   | Worker entry that loads the pinned encoder and serves inference off the HTTP loop      |
+| `encoder-protocol.ts` | The inference message protocol and its pure handler                                    |
+| `service.ts`          | Submission, retrieval, inspection and availability behavior behind the HTTP layer      |
+| `server.ts`           | The `/v1` routes, request/response validation, origin and body rules, error mapping    |
+| `client.ts`           | The typed, validating client boundary consumers and the dashboard host use             |
+| `supervisor.ts`       | Restarts a stopped ingestion worker inside the service process                         |
+| `openapi.json`        | The published OpenAPI 3.1 definition of exactly the implemented routes                 |
+| `model-transport.ts`  | The OpenAI-compatible LanguageModel transport the service composes                     |
 
 ## Launching
 
@@ -42,6 +45,12 @@ opens the collection and builds the model transport in the background. The liste
 those providers are unavailable: submissions remain durable and `GET /v1/status` reports retrieval
 and ingestion as unavailable with a safe diagnostic. A second service naming the same queue is
 refused instead of starting a competing writer.
+
+The pinned encoder loads and runs in its own worker thread. Its blocking tokenization and native
+inference therefore never stall HTTP requests, durable submission acknowledgements, status reports
+or shutdown timers, and one loaded encoder still serves both ingestion and search. The bounded
+scheduler serializes inference; `GET /v1/status` reports a capability as unavailable from the
+moment a provider failure is observed until that capability serves again.
 
 `npm run service` runs `service/main.ts` through the pinned `tsx` loader. The process stops on
 `SIGINT` or `SIGTERM`: it stops admitting requests, settles accepted requests and the active
@@ -79,7 +88,11 @@ inside the process.
 ## Settings
 
 Every setting comes from the host environment; nothing is discovered from Nexus. A missing or
-malformed value fails before the journal, the listener or a provider is touched.
+malformed value fails before the journal, the listener or a provider is touched. That includes the
+provider-owned rules: the Qdrant URL, credential, collection and timeout and the model endpoint,
+model ID, credential and request bounds are validated before the durable journal is created or
+bound, so a corrected configuration starts a fresh queue instead of a journal already owned by an
+unusable endpoint.
 
 | Setting                          | Default            | Meaning                                                                 |
 | -------------------------------- | ------------------ | ----------------------------------------------------------------------- |
@@ -125,6 +138,11 @@ resubmit the identical source key and payload and find the same receipt. The cli
 served body, keeps cursors opaque, maps a missing note or receipt to `undefined` and reports every
 other failure as a `ServiceClientError` with its status, code and retryability.
 
+Consumers reach the service through the loopback authority it serves (`127.0.0.1:port`, or
+`localhost:port` for the same machine). A request whose `Host` names anything else is refused
+before routing, and a browser `Origin` must name a trusted loopback authority; this is the
+deployment's DNS-rebinding guard, not a general remote-access boundary.
+
 ## Checks
 
 `npm run validate` covers the service component tests:
@@ -133,11 +151,19 @@ other failure as a `ServiceClientError` with its status, code and retryability.
   body-size overflow, untrusted origins, missing records, method and route failures;
 - opaque cursor round-trips through the note and inspection pages;
 - availability: submission while the providers are unavailable, retrieval `503`, status reporting,
-  and recovery once initialization succeeds;
+  recovery once initialization succeeds, and capability outages reported until the capability
+  serves again (invalid input is never an outage);
+- a blocking encoder hosted in its own worker thread: HTTP requests, receipts and status keep
+  answering while inference occupies the thread, and the real worker entry reports a failed pinned
+  load as a safe diagnostic;
 - bounded fair scheduling: ingestion does not starve a waiting search, and overload is an explicit
   `429` with `Retry-After`;
-- supervised lifecycle: worker restart after a stopped worker, graceful shutdown that settles the
-  active operation, and a second service refusing the same queue;
+- supervised lifecycle: worker restart after a stopped worker, graceful shutdown that stops
+  claiming queued work before it waits for in-flight requests and settles the active operation, and
+  a second service refusing the same queue;
+- transport and configuration guards: a rebound hostname with a matching Origin is refused without
+  reaching the queue, and malformed provider endpoints or credentials are refused before the
+  journal is created;
 - restart recovery through the service: accepted observations and partially applied plans are
   replayed by a new process over the same queue directory.
 
