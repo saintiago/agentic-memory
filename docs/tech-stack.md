@@ -8,10 +8,12 @@ local HTTP JSON service described in [service](service.md). It is not an agent w
 
 ## Infrastructure
 
-The optional durable ingestion queue uses a local SQLite journal and a Linux process-scoped advisory
-lock for worker ownership. Its independent worker is supervised by the host. The queue boundary
-exposes asynchronous operations; journal work must not block a producer's event loop. It needs no
-Redis or an external message broker. The local HTTP service owns the queue and shared encoder.
+The optional durable ingestion queue uses a local SQLite journal through Node's built-in synchronous
+binding and a Linux process-scoped lock for worker ownership. Its independent worker is supervised by
+the host. The queue boundary is asynchronous and its transactions are local and short: a submission
+waits only for its own durable commit, never for model, embedding or database work, and a host that
+must keep journal writes off its event loop runs the queue in its own process. It needs no Redis or
+an external message broker. The local HTTP service owns the queue and shared encoder.
 
 | Boundary                           | Initial technology                                                                              | Selection ownership                                                                    |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |

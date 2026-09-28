@@ -14,6 +14,40 @@ provenance. Submission resolves only after durable local acceptance and returns 
 and current status. It does not require the model, encoder or database to be available. A storage
 failure returns an explicit rejection; an unacknowledged submission may safely be submitted again.
 
+```ts
+interface QueueBinding {
+  endpoint: string;
+  collection: string;
+  embeddingSpace: EmbeddingSpace;
+}
+interface QueueObservation {
+  sourceKey: string;
+  content: string;
+  timestamp?: string;
+  provenance?: Record<string, JsonValue>;
+}
+interface IngestionQueue {
+  readonly binding: QueueBinding;
+  readonly journalPath: string;
+  submit(observation: QueueObservation): Promise<QueueReceipt>;
+  receipt(id: string): Promise<QueueReceipt | undefined>;
+  status(): Promise<QueueStatus>;
+  importLegacyReceipts(
+    records: readonly LegacyReceipt[],
+  ): Promise<LegacyImportResult>;
+  reconcile(id: string, outcome: ReconcileOutcome): Promise<QueueReceipt>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  close(): Promise<void>;
+}
+```
+
+`openIngestionQueue` opens or creates one journal in the host's durable directory, records the
+binding it was first opened with, and refuses another endpoint, collection, embedding space or
+representation. Receipt objects, statuses, status counts and migration records are the exported
+schemas of this component; `EmbeddingSpace`, `JsonValue` and `EmbeddedNote` come from the
+Embeddings and NoteStore public interfaces.
+
 Receipt lookup returns status, attempt count, safe last error, next retry time when applicable,
 and note identity once stored. Statuses are `queued`, `processing`, `retrying`, `stored`, `failed`
 and `blocked`. Acceptance is not a promise that the note is already searchable.
@@ -53,7 +87,9 @@ pending work. Disk exhaustion rejects new submissions without deleting accepted 
 Acquire one process-scoped OS advisory lock per queue for the worker lifetime. A second worker
 must not drain it. Release ownership on process exit, not through a time-based lease or stale-lock
 stealing. Queue submission uses short database transactions and never waits for a model call or
-holds a transaction across external work. Closing a producer settles submissions, not the backlog.
+holds a transaction across external work. Journal transactions are local writes on the submitting
+process, so a host that must keep them off its event loop runs the queue in its own process, as the
+[local memory service](service.md) does. Closing a producer settles submissions, not the backlog.
 
 The worker starts independently of producer lifetimes and polls for durable pending work, including
 work submitted while it was stopped. A supervised worker restarts after failure. On graceful stop,
@@ -64,6 +100,12 @@ across restarts. Transport failures, rate limits and temporary provider unavaila
 invalid input or model output fails explicitly. Invalid credentials or incompatible storage block
 processing with an actionable diagnostic until corrected. No tight retry loop or retry count that
 silently drops accepted work is allowed.
+
+A provider failure that reports an unauthorized, forbidden or missing resource (an HTTP status of
+401, 403 or 404 on the failure or one of its causes) is that credential or storage condition: the
+receipt stays blocked with its safe diagnostic and is retried only at the retry limit until the host
+corrects the configuration. Reconciliation, not automatic retry, clears a plan the queue cannot
+read or apply.
 
 ## Crash recovery
 
@@ -96,6 +138,10 @@ stored receipts preserve their completed identity. Legacy in-flight or uncertain
 durable plan require reconciliation before further collection writes; the new recovery guarantee
 cannot reconstruct a plan that was never saved. Stop old writers during migration and remove their
 competing ingestion path before starting the queue worker.
+
+One blocked receipt is reconciled explicitly: `stored` records the completed note identity, and
+`not-written` clears the unusable plan so preparation restarts with the accepted note identity and
+observation. Until then the blocked receipt keeps its place, so no later observation is written.
 
 ## Visibility and verification
 

@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import * as packageExports from "../../src/index.js";
 import * as embeddings from "../../src/embeddings/index.js";
+import * as ingestionQueue from "../../src/ingestion-queue/index.js";
 import * as memory from "../../src/memory/index.js";
 import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
@@ -17,17 +18,27 @@ import type {
   EvolutionResponse,
   EvolutionSource,
   EvolutionUpdate,
+  IngestionQueue,
+  InsertionPlan,
   JsonValue,
   LanguageModel,
+  LegacyReceipt,
   MemoryError,
-  MemoryPrompts,
-  MemoryOptions,
   MemoryOperation,
+  MemoryOptions,
+  MemoryPreparer,
+  MemoryPrompts,
   MemoryStage,
   ModelRequest,
   Note,
   NoteStore,
   Page,
+  PrepareInput,
+  QueueObservation,
+  QueueReceipt,
+  QueueReceiptStatus,
+  QueueStatus,
+  ReconcileOutcome,
   ReferenceEmbedder,
   ReferenceEmbedderOptions,
   ReferenceEncoderSettings,
@@ -162,6 +173,100 @@ describe("package root exports", () => {
     expectTypeOf<
       ReturnType<typeof packageExports.embeddingText>
     >().toEqualTypeOf<string>();
+    expectTypeOf<MemoryError["reason"]>().toEqualTypeOf<string>();
+    expectTypeOf<MemoryOperation>().toEqualTypeOf<
+      "add" | "get" | "page" | "search" | "prepare" | "apply"
+    >();
+  });
+
+  it("keeps the durable insertion contracts usable through the package root", () => {
+    expect(packageExports.representationVersion).toBe("amem-note-v1");
+    expect(packageExports.insertionPlanVersion).toBe(1);
+    expectTypeOf<AgenticMemory["prepare"]>()
+      .parameter(0)
+      .toEqualTypeOf<PrepareInput>();
+    expectTypeOf<AgenticMemory["prepare"]>().returns.toEqualTypeOf<
+      Promise<InsertionPlan>
+    >();
+    expectTypeOf<AgenticMemory["apply"]>()
+      .parameter(0)
+      .toEqualTypeOf<InsertionPlan>();
+    expectTypeOf<AgenticMemory["apply"]>().returns.toEqualTypeOf<
+      Promise<Note>
+    >();
+    expectTypeOf<PrepareInput["noteId"]>().toEqualTypeOf<string>();
+    expectTypeOf<PrepareInput["timestamp"]>().toEqualTypeOf<string>();
+    expectTypeOf<InsertionPlan["version"]>().toEqualTypeOf<1>();
+    expectTypeOf<
+      InsertionPlan["representation"]
+    >().toEqualTypeOf<"amem-note-v1">();
+    expectTypeOf<
+      InsertionPlan["embeddingSpace"]
+    >().toEqualTypeOf<EmbeddingSpace>();
+    expectTypeOf<InsertionPlan["records"]>().toEqualTypeOf<EmbeddedNote[]>();
+  });
+
+  it("re-exports the ingestion queue through the same modules as its component index", () => {
+    const exportedNames = [
+      "QueueBindingError",
+      "QueueClosedError",
+      "QueueConflictError",
+      "QueueRequestError",
+      "QueueWorkerLockedError",
+      "legacyImportResultSchema",
+      "legacyReceiptSchema",
+      "openIngestionQueue",
+      "queueBindingSchema",
+      "queueObservationSchema",
+      "queueReceiptSchema",
+      "queueReceiptStatuses",
+      "queueStatusSchema",
+      "reconcileOutcomeSchema",
+    ] as const;
+
+    for (const name of exportedNames) {
+      expect(packageExports[name]).toBe(ingestionQueue[name]);
+    }
+  });
+
+  it("keeps the ingestion queue contract types usable through the package root", () => {
+    expectTypeOf<QueueReceiptStatus>().toEqualTypeOf<
+      "queued" | "processing" | "retrying" | "stored" | "failed" | "blocked"
+    >();
+    expectTypeOf<QueueObservation["sourceKey"]>().toEqualTypeOf<string>();
+    expectTypeOf<QueueObservation["timestamp"]>().toEqualTypeOf<
+      string | undefined
+    >();
+    expectTypeOf<QueueReceipt["attemptCount"]>().toEqualTypeOf<number>();
+    expectTypeOf<QueueReceipt["noteId"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<QueueStatus["counts"]["blocked"]>().toEqualTypeOf<number>();
+    expectTypeOf<LegacyReceipt["status"]>().toEqualTypeOf<
+      "pending" | "stored" | "uncertain"
+    >();
+    expectTypeOf<ReconcileOutcome>().toMatchTypeOf<
+      { outcome: "stored"; noteId: string } | { outcome: "not-written" }
+    >();
+    expectTypeOf<MemoryPreparer["prepare"]>().returns.toEqualTypeOf<
+      Promise<InsertionPlan>
+    >();
+    expectTypeOf<MemoryPreparer["apply"]>()
+      .parameter(0)
+      .toEqualTypeOf<InsertionPlan>();
+    expectTypeOf<IngestionQueue["submit"]>()
+      .parameter(0)
+      .toEqualTypeOf<QueueObservation>();
+    expectTypeOf<IngestionQueue["submit"]>().returns.toEqualTypeOf<
+      Promise<QueueReceipt>
+    >();
+    expectTypeOf<IngestionQueue["receipt"]>().returns.toEqualTypeOf<
+      Promise<QueueReceipt | undefined>
+    >();
+    expectTypeOf<IngestionQueue["status"]>().returns.toEqualTypeOf<
+      Promise<QueueStatus>
+    >();
+    expectTypeOf<IngestionQueue["reconcile"]>()
+      .parameter(1)
+      .toEqualTypeOf<ReconcileOutcome>();
   });
 
   it("keeps the documented prompt and response types usable through the package root", () => {

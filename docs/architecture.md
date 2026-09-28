@@ -54,18 +54,20 @@ matching method names. A Qdrant client parameter alone is not a replaceable stor
 
 ## Public contracts
 
-| Provider      | Capability                                                     | Observable promise                                                                                                                                                      |
-| ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Memory        | Add source content with optional timestamp and provenance      | Assign a new note identity, construct semantic attributes, consider related stored notes and persist the resulting note and accepted evolution before reporting success |
-| Memory        | Search text with direct-match and linked-expansion limits      | Return ranked similarity matches followed by bounded, distinct linked additions; include complete notes and identify how each was retrieved                             |
-| Memory        | Read a note or inspect a page                                  | Expose current stored notes without model interpretation or generation                                                                                                  |
-| NoteStore     | Write note/vector records                                      | Preserve supplied identities and values and report completion or failure; do not infer relationships or regenerate semantic fields                                      |
-| NoteStore     | Read identities, search vectors, inspect pages                 | Return current records, ranked similarity scores and bounded pages without requiring a collection scan in normal insertion or search                                    |
-| Embeddings    | Embed text                                                     | Return a vector in the configured embedding space or an explicit failure; document its model and encoding configuration                                                 |
-| LanguageModel | Invoke a model with assembled instructions and source material | Return model output or an explicit invocation failure; provider settings do not change the memory response contract                                                     |
+| Provider        | Capability                                                     | Observable promise                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Memory          | Add source content with optional timestamp and provenance      | Assign a new note identity, construct semantic attributes, consider related stored notes and persist the resulting note and accepted evolution before reporting success |
+| Memory          | Search text with direct-match and linked-expansion limits      | Return ranked similarity matches followed by bounded, distinct linked additions; include complete notes and identify how each was retrieved                             |
+| Memory          | Read a note or inspect a page                                  | Expose current stored notes without model interpretation or generation                                                                                                  |
+| NoteStore       | Write note/vector records                                      | Preserve supplied identities and values and report completion or failure; do not infer relationships or regenerate semantic fields                                      |
+| NoteStore       | Read identities, search vectors, inspect pages                 | Return current records, ranked similarity scores and bounded pages without requiring a collection scan in normal insertion or search                                    |
+| Embeddings      | Embed text                                                     | Return a vector in the configured embedding space or an explicit failure; document its model and encoding configuration                                                 |
+| LanguageModel   | Invoke a model with assembled instructions and source material | Return model output or an explicit invocation failure; provider settings do not change the memory response contract                                                     |
+| Ingestion queue | Submit observations and read receipt status                    | Accept durably after the local commit, deduplicate by source key, drain in acceptance order through one writer and replay persisted insertion plans after a restart     |
 
 Detailed contracts belong to [Memory](memory.md), [NoteStore](note-store.md),
-[Embeddings](embeddings.md), [LanguageModel](language-model.md) and [prompts](prompts.md).
+[Embeddings](embeddings.md), [LanguageModel](language-model.md),
+[ingestion queue](ingestion-queue.md) and [prompts](prompts.md).
 The [paper alignment audit](paper-alignment.md) distinguishes the research mechanism from our
 engineering and experimental choices.
 

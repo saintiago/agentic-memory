@@ -5,7 +5,13 @@
  * docs/architecture.md#relationships-and-replacement.
  */
 
-const COMPONENTS = ["memory", "note-store", "embeddings", "language-model"];
+const COMPONENTS = [
+  "memory",
+  "note-store",
+  "embeddings",
+  "language-model",
+  "ingestion-queue",
+];
 const PROVIDERS = ["note-store", "embeddings", "language-model"];
 
 const componentDirectory = (name) => `^src/${name}/`;
@@ -31,6 +37,15 @@ const directionRules = [
     comment: "Provider contracts do not depend on Memory orchestration.",
     from: { path: anyComponentDirectory(PROVIDERS) },
     to: { path: componentDirectory("memory") },
+  },
+  {
+    name: "no-upstream-imports-ingestion-queue",
+    severity: "error",
+    comment:
+      "The durable queue consumes Memory and the provider contracts; Memory and the providers " +
+      "do not depend on it.",
+    from: { path: anyComponentDirectory([...PROVIDERS, "memory"]) },
+    to: { path: componentDirectory("ingestion-queue") },
   },
   ...PROVIDERS.map((name) => ({
     name: `no-${name}-imports-other-providers`,

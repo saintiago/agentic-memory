@@ -6,8 +6,12 @@
  * See docs/memory.md#failures.
  */
 
-/** The memory operations a host can invoke. */
-export type MemoryOperation = "add" | "get" | "page" | "search";
+/**
+ * The memory operations a host can invoke. `prepare` and `apply` are the durable insertion path
+ * the ingestion queue consumes; `add` is the same insertion performed in one call.
+ */
+export type MemoryOperation =
+  "add" | "get" | "page" | "search" | "prepare" | "apply";
 
 /**
  * The stage an operation reached: input validation, construction or evolution generation, an
@@ -48,6 +52,8 @@ export class MemoryError extends Error {
   declare readonly operation: MemoryOperation;
   declare readonly stage: MemoryStage;
   declare readonly persistence: MemoryPersistence;
+  /** The safe failure description, without credentials, prompts or source text. */
+  declare readonly reason: string;
   declare readonly noteId?: string;
   declare readonly affectedNoteIds?: readonly string[];
 
@@ -63,6 +69,7 @@ export class MemoryError extends Error {
     this.operation = details.operation;
     this.stage = details.stage;
     this.persistence = details.persistence;
+    this.reason = details.reason;
     if (details.noteId !== undefined) {
       this.noteId = details.noteId;
     }
