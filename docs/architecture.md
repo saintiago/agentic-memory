@@ -170,8 +170,8 @@ bounded note count is not a token or latency guarantee. Production scale require
 
 ## Local inspection tool
 
-The [Sigma dashboard](dashboard.md) is a separate local consumer process. It composes public Memory
-reads/search with NoteStore's paginated embedded-record export and a matching query embedder. The
-host projects stored vectors, serves display data and runs searches; the browser renders positions
+The [Sigma dashboard](dashboard.md) is a separate local consumer of the [service API](service.md).
+It requests note details, search results and paginated vectors without its own query encoder or
+database client. The host projects vectors and serves display data; the browser renders positions
 and real directed links. The tool never writes memories or becomes a Nexus/runtime dependency.
 Update-time storage and assignment remain owned by NoteStore and Memory respectively.

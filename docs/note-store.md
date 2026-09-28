@@ -68,7 +68,7 @@ be continued with the operation that produced them. An empty page may still have
 consumers stop only when the cursor is omitted. Missing or invalid vectors fail the operation,
 not silently skip a record or trigger re-embedding. It performs no writes, embeddings or generation.
 Ordinary `page`, `get` and `nearest` remain vector-free in their responses. Export `EmbeddedPage`
-through the public package boundary; the inspection host calls the supplied store directly.
+through the public package boundary; the service exposes it to inspection clients through its API.
 
 `put` replaces complete supplied records at their IDs. Empty input is a no-op. Validate the entire
 batch before dispatch; duplicate record IDs in one batch are invalid. Return only after acknowledged
