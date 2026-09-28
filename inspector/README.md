@@ -189,16 +189,16 @@ the trajectory with identical input without a refresh, and verify that **Fit all
 added outlier. Mixed-case UUID component cases cover refresh reconciliation, result highlighting,
 link navigation and comparison selection while preserving returned evidence.
 
-Recorded run on the development machine (13th Gen Intel Core i7-13700KF, 24 cores, 16 GiB, WSL2;
-Chromium 153 with software WebGL through SwiftShader):
+Recorded run through the service-backed host on the development machine (13th Gen Intel Core
+i7-13700KF, 24 cores, 16 GiB, WSL2; Chromium 153 with software WebGL through SwiftShader):
 
 | Measurement                       | Value                                                                                                            |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                            |
-| Initial load                      | 2943 ms from navigation to the displayed view; 222 ms to apply it in 12 batches                                  |
-| Refresh, request to applied view  | 27765 ms wall clock including the held interaction window; 10 ms to apply the diff in 1 batch                    |
-| Interaction during the update     | search → results panel 3656 ms, click → panels 56 ms, wheel → camera 47 ms, drag → camera 4426 ms                |
-| Main thread                       | 46 long tasks, longest 1842 ms; frame gaps p95 1306 ms over 192 samples                                          |
+| Initial load                      | 2298 ms from navigation to the displayed view; 167 ms to apply it in 12 batches                                  |
+| Refresh, request to applied view  | 21177 ms wall clock including the held interaction window; 9 ms to apply the diff in 1 batch                     |
+| Interaction during the update     | search → results panel 2642 ms, click → panels 43 ms, wheel → camera 1260 ms, drag → camera 2833 ms              |
+| Main thread                       | 29 long tasks, longest 1370 ms; frame gaps p95 1321 ms over 94 samples                                           |
 | Preservation and failure handling | interaction ran while pending, viewport drift 0 px, camera and selection preserved, failed refresh kept the view |
 
 The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link
