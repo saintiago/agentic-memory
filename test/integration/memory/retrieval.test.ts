@@ -189,6 +189,7 @@ describe("memory retrieval journeys", () => {
       context: "The alpha procedure now supports the beta account.",
       keywords: ["alpha", "support"],
       tags: ["history"],
+      updatedAt: beta.updatedAt,
     });
     expect(searchModel.requests).toEqual([]);
 

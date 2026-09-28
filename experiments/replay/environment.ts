@@ -13,6 +13,7 @@ import {
   vectorSchema,
   type Embedder,
   type EmbeddedNote,
+  type EmbeddedPage,
   type JsonValue,
   type LanguageModel,
   type Match,
@@ -209,6 +210,26 @@ export class InMemoryNoteStore implements NoteStore {
       .map((record) => structuredClone(record.note));
     const next = start + count;
     return next < records.length ? { notes, cursor: next } : { notes };
+  }
+
+  async pageEmbedded(
+    limit: number,
+    cursor?: string | number,
+  ): Promise<EmbeddedPage> {
+    const count = positiveInteger(limit, "A page limit");
+    const start = cursor === undefined ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(start) || start < 0) {
+      throw new Error("A cursor must be a nonnegative integer.");
+    }
+    const records = [...this.#records.values()];
+    const page = records.slice(start, start + count).map((record) => ({
+      note: structuredClone(record.note),
+      vector: [...record.vector],
+    }));
+    const next = start + count;
+    return next < records.length
+      ? { records: page, cursor: next }
+      : { records: page };
   }
 }
 

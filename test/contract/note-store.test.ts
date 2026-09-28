@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   embeddedNoteSchema,
+  embeddedPageSchema,
   jsonValueSchema,
   matchSchema,
   noteIdSchema,
@@ -49,6 +50,15 @@ describe("note records", () => {
     expect(noteSchema.safeParse({ ...validNote, links: [] }).success).toBe(
       true,
     );
+  });
+
+  it("accepts a persisted update time and leaves an unknown one absent", () => {
+    const updatedAt = "2026-09-28T09:15:30.500+02:00";
+
+    const parsed = noteSchema.parse({ ...validNote, updatedAt });
+
+    expect(parsed.updatedAt).toBe(updatedAt);
+    expect("updatedAt" in noteSchema.parse(validNote)).toBe(false);
   });
 
   it("accepts JSON metadata including nested objects, arrays and null", () => {
@@ -142,6 +152,18 @@ describe("note records", () => {
     {
       description: "a non-ISO timestamp",
       value: { ...validNote, timestamp: "27/09/2026 15:44" },
+    },
+    {
+      description: "a null update time",
+      value: { ...validNote, updatedAt: null },
+    },
+    {
+      description: "an update time without a timezone",
+      value: { ...validNote, updatedAt: "2026-09-28T09:15:30" },
+    },
+    {
+      description: "a non-ISO update time",
+      value: { ...validNote, updatedAt: "yesterday" },
     },
     {
       description: "an array metadata value",
@@ -293,6 +315,51 @@ describe("pages", () => {
   });
 });
 
+describe("embedded pages", () => {
+  const record = { note: validNote, vector: [1, -0.5, 0] };
+
+  it("accepts records with and without a cursor", () => {
+    expect(
+      embeddedPageSchema.parse({ records: [record], cursor: "next-page" }),
+    ).toEqual({ records: [record], cursor: "next-page" });
+    expect(embeddedPageSchema.parse({ records: [] })).toEqual({ records: [] });
+  });
+
+  it("preserves a record's persisted update time", () => {
+    const updatedAt = "2026-09-28T09:15:30.500Z";
+
+    const parsed = embeddedPageSchema.parse({
+      records: [{ note: { ...validNote, updatedAt }, vector: [1] }],
+    });
+
+    expect(parsed.records[0]?.note.updatedAt).toBe(updatedAt);
+  });
+
+  it("rejects invalid vectors, malformed records, a null cursor and unknown fields", () => {
+    expect(
+      embeddedPageSchema.safeParse({ records: [{ note: validNote }] }).success,
+    ).toBe(false);
+    expect(
+      embeddedPageSchema.safeParse({
+        records: [{ ...record, vector: [0, 0] }],
+      }).success,
+    ).toBe(false);
+    expect(
+      embeddedPageSchema.safeParse({
+        records: [
+          { note: { ...validNote, updatedAt: "yesterday" }, vector: [1] },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      embeddedPageSchema.safeParse({ records: [], cursor: null }).success,
+    ).toBe(false);
+    expect(
+      embeddedPageSchema.safeParse({ records: [], notes: [] }).success,
+    ).toBe(false);
+  });
+});
+
 describe("JSON values", () => {
   it("accepts nested JSON and rejects values JSON cannot carry", () => {
     expect(
@@ -333,6 +400,10 @@ describe("note-bearing records", () => {
       expect(embeddedNoteSchema.safeParse({ note, vector: [1] }).success).toBe(
         false,
       );
+      expect(
+        embeddedPageSchema.safeParse({ records: [{ note, vector: [1] }] })
+          .success,
+      ).toBe(false);
       expect(matchSchema.safeParse({ note, score: 0.9 }).success).toBe(false);
       expect(pageSchema.safeParse({ notes: [note] }).success).toBe(false);
     }

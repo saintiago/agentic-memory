@@ -37,6 +37,12 @@ const proxyFor = async (
   return proxy;
 };
 
+/** The `with_vector` flag of a recorded request body, when the body is a request object. */
+const withVector = (body: unknown): unknown =>
+  typeof body === "object" && body !== null
+    ? (body as { with_vector?: unknown }).with_vector
+    : undefined;
+
 afterAll(async () => {
   for (const proxy of proxies) {
     await proxy.close();
@@ -68,6 +74,7 @@ describe("Qdrant note store transport behavior", () => {
       record.note,
     );
     expect((await reopened.page(1)).notes).toEqual([record.note]);
+    expect((await reopened.pageEmbedded(1)).records).toEqual([record]);
     expect(
       endpoint.requests.every((request) =>
         request.pathname.startsWith("/tenant/memory/"),
@@ -88,7 +95,7 @@ describe("Qdrant note store transport behavior", () => {
     expect(proxy.requests).toHaveLength(before);
   });
 
-  it("requests payloads without vectors and waits for upserts", async () => {
+  it("requests payloads without vectors except the explicit embedded export, and waits for upserts", async () => {
     const proxy = await proxyFor();
     const name = collection("shapes");
     const store = await openStoreAt(proxy.url, name);
@@ -98,6 +105,7 @@ describe("Qdrant note store transport behavior", () => {
     await store.get([record.note.id]);
     await store.nearest([1, 0, 0, 0], 1);
     await store.page(1);
+    await store.pageEmbedded(1);
 
     const pointRequests = proxy.requests.filter((request) =>
       request.path.includes("/points"),
@@ -109,7 +117,7 @@ describe("Qdrant note store transport behavior", () => {
       points: [{ id: record.note.id }],
     });
     const reads = pointRequests.filter((request) => request.method === "POST");
-    expect(reads.length).toBeGreaterThanOrEqual(3);
+    expect(reads.length).toBeGreaterThanOrEqual(4);
     expect(reads.map((read) => read.pathname)).toEqual(
       expect.arrayContaining([
         `/collections/${name}/points`,
@@ -118,6 +126,17 @@ describe("Qdrant note store transport behavior", () => {
       ]),
     );
     for (const read of reads) {
+      expect(read.body).toMatchObject({ with_payload: true });
+    }
+    // Only the explicit vector-inspection export requests stored vectors.
+    const vectorReads = reads.filter((read) => withVector(read.body) === true);
+    expect(vectorReads).toHaveLength(1);
+    expect(vectorReads[0]?.pathname).toBe(`/collections/${name}/points/scroll`);
+    expect(vectorReads[0]?.body).toMatchObject({
+      with_payload: true,
+      with_vector: true,
+    });
+    for (const read of reads.filter((entry) => !vectorReads.includes(entry))) {
       expect(read.body).toMatchObject({
         with_payload: true,
         with_vector: false,
@@ -191,5 +210,6 @@ describe("Qdrant note store transport behavior", () => {
     await expect(store.get([record.note.id])).rejects.toThrow();
     await expect(store.nearest([1, 0, 0, 0], 1)).rejects.toThrow();
     await expect(store.page(1)).rejects.toThrow();
+    await expect(store.pageEmbedded(1)).rejects.toThrow();
   });
 });

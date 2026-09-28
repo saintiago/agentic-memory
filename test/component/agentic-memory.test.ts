@@ -7,8 +7,10 @@ import {
   MemoryError,
   ModelResponseError,
   type AddInput,
+  type Cursor,
   type Embedder,
   type EmbeddedNote,
+  type EmbeddedPage,
   type JsonValue,
   type LanguageModel,
   type Match,
@@ -162,6 +164,16 @@ class RecordingStore implements NoteStore {
         .map((record) => structuredClone(record.note)),
     };
   }
+
+  async pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage> {
+    this.calls.push(`pageEmbedded:${limit}:${String(cursor)}`);
+    return {
+      records: [...this.records.values()].slice(0, limit).map((record) => ({
+        note: structuredClone(record.note),
+        vector: [...record.vector],
+      })),
+    };
+  }
 }
 
 /** A deterministic embedder whose output a case can replace or fail. */
@@ -258,7 +270,7 @@ describe("canonical representation", () => {
     );
   });
 
-  it("excludes identity, timestamp, links and provenance from the represented text", () => {
+  it("excludes identity, timestamps, links and provenance from the represented text", () => {
     const represented = {
       content: "Keep the source.",
       context: "Records the source.",
@@ -269,6 +281,7 @@ describe("canonical representation", () => {
       ...represented,
       id: CANDIDATE_ID,
       timestamp: NOTE_TIMESTAMP,
+      updatedAt: "2026-09-28T09:15:30.500Z",
       links: [OTHER_ID],
       metadata: { origin: "host" },
     };
@@ -307,6 +320,10 @@ describe("add input validation", () => {
     [
       "a non-JSON metadata value",
       () => ({ content: "Text.", metadata: { when: new Date() } }),
+    ],
+    [
+      "a supplied update time",
+      () => ({ content: "Text.", updatedAt: NOTE_TIMESTAMP }),
     ],
     ["an extra input field", () => ({ content: "Text.", id: CANDIDATE_ID })],
     ["a bare string input", () => "Text."],
@@ -487,6 +504,150 @@ describe("identity and timestamp", () => {
   });
 });
 
+describe("update time", () => {
+  it("records one batch preparation time on the insertion and each changed neighbor", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T09:00:00.000Z"));
+    const { store, model, memory } = createMemory();
+    model.queue("construct", () =>
+      attributes("Records the first source.", ["source"], ["first"]),
+    );
+
+    const first = await memory.add({ content: "The first source." });
+
+    expect(first.updatedAt).toBe("2026-09-28T09:00:00.000Z");
+
+    const changed = store.seed({
+      note: candidate({ content: "A changed neighbor." }),
+      vector: [1, 0, 0, 0],
+    });
+    const untouched = store.seed({
+      note: candidate({
+        id: OTHER_ID,
+        content: "An unchanged neighbor.",
+        updatedAt: "2026-09-20T08:00:00.000Z",
+      }),
+      vector: [0, 1, 0, 0],
+    });
+    expect("updatedAt" in changed).toBe(false);
+    model.queue("construct", CONSTRUCTED);
+    model.queue("evolve", () => {
+      vi.setSystemTime(new Date("2026-09-28T09:05:00.000Z"));
+      return {
+        links: [changed.id],
+        newTags: ["incoming"],
+        updates: [
+          {
+            id: changed.id,
+            context: "The changed neighbor now supports the incoming account.",
+            keywords: ["observation"],
+            tags: ["history"],
+          },
+          {
+            id: untouched.id,
+            context: untouched.context,
+            keywords: untouched.keywords,
+            tags: untouched.tags,
+          },
+        ],
+      };
+    });
+
+    const second = await memory.add({
+      content: "The incoming account.",
+      timestamp: NOTE_TIMESTAMP,
+    });
+
+    // The observation timestamp and the runtime update time stay distinct, and both records of
+    // the batch carry the same preparation time.
+    expect(second.timestamp).toBe(NOTE_TIMESTAMP);
+    expect(second.updatedAt).toBe("2026-09-28T09:05:00.000Z");
+    expect(store.stored(changed.id)).toEqual({
+      ...changed,
+      context: "The changed neighbor now supports the incoming account.",
+      updatedAt: "2026-09-28T09:05:00.000Z",
+    });
+    expect(store.stored(untouched.id)).toEqual(untouched);
+    expect(store.stored(second.id)?.updatedAt).toBe(second.updatedAt);
+  });
+
+  it("never advances the update time through reads and does not invent one for a rejected write", async () => {
+    const { store, model, memory } = createMemory();
+    const storedAt = "2026-09-27T08:00:00.000Z";
+    const current = store.seed({
+      note: candidate({ updatedAt: storedAt }),
+      vector: [1, 0, 0, 0],
+    });
+    model.queue("construct", CONSTRUCTED);
+    model.queue("evolve", () => ({
+      links: [current.id],
+      newTags: ["incoming"],
+      updates: [
+        {
+          id: current.id,
+          context: "A revised context.",
+          keywords: ["observation"],
+          tags: ["history"],
+        },
+      ],
+    }));
+    const failure = new Error("the connection was reset");
+    store.putError = failure;
+
+    const error = expectMemoryError(
+      await rejection(memory.add({ content: "The incoming account." })),
+    );
+
+    expect(error.stage).toBe("persist");
+    expect(error.persistence).toBe("uncertain");
+    expect(store.stored(current.id)).toEqual(current);
+    expect((await memory.get(current.id))?.updatedAt).toBe(storedAt);
+    expect((await memory.page(10)).notes[0]?.updatedAt).toBe(storedAt);
+    const results = await memory.search("a query", { linkedLimit: 0 });
+    expect(results[0]?.note.updatedAt).toBe(storedAt);
+    expect(store.stored(current.id)?.updatedAt).toBe(storedAt);
+    expect(store.calls.some((call) => call.startsWith("pageEmbedded"))).toBe(
+      false,
+    );
+  });
+
+  it("keeps the update time out of the embedded text and the model instructions", async () => {
+    const { store, embedder, model, memory } = createMemory();
+    const storedAt = "2026-09-27T08:00:00.000Z";
+    const current = store.seed({
+      note: candidate({ updatedAt: storedAt }),
+      vector: [1, 0, 0, 0],
+    });
+    model.queue("construct", CONSTRUCTED);
+    model.queue("evolve", () => ({
+      links: [current.id],
+      newTags: ["incoming"],
+      updates: [],
+    }));
+
+    const incoming = await memory.add({
+      content: "The incoming account.",
+      timestamp: NOTE_TIMESTAMP,
+    });
+    const preparedAt = incoming.updatedAt;
+    if (preparedAt === undefined) {
+      throw new Error("an insertion must record an update time.");
+    }
+
+    for (const request of model.requests) {
+      expect(request.prompt).not.toContain(storedAt);
+      expect(request.prompt).not.toContain(preparedAt);
+    }
+    expect(embedder.texts.length).toBeGreaterThan(0);
+    for (const text of embedder.texts) {
+      expect(text).not.toContain(storedAt);
+      expect(text).not.toContain(preparedAt);
+    }
+    // A neighbor without a real change keeps its persisted update time.
+    expect(store.stored(current.id)?.updatedAt).toBe(storedAt);
+  });
+});
+
 describe("insertion decisions", () => {
   it("skips evolution when no candidates exist", async () => {
     const { store, model, memory } = createMemory();
@@ -538,7 +699,12 @@ describe("insertion decisions", () => {
     expect(note.metadata).toEqual({ origin: "host", nested: { count: 1 } });
 
     const storedCurrent = store.stored(current.id);
-    expect(storedCurrent).toEqual({ ...current, ...revised });
+    // Both records of the batch carry the same preparation time.
+    expect(storedCurrent).toEqual({
+      ...current,
+      ...revised,
+      updatedAt: note.updatedAt,
+    });
     expect(store.stored(note.id)).toEqual(note);
 
     expect(store.writes).toHaveLength(1);
@@ -618,7 +784,10 @@ describe("insertion decisions", () => {
       embeddingText(note),
       embeddingText(revised),
     ]);
-    expect(store.stored(current.id)).toEqual(revised);
+    expect(store.stored(current.id)).toEqual({
+      ...revised,
+      updatedAt: note.updatedAt,
+    });
     expect(store.storedVector(current.id)).toEqual(
       vectorFor(embeddingText(revised)),
     );
@@ -762,6 +931,7 @@ describe("returned records", () => {
       tags: ["observation"],
       links: [],
       metadata: { origin: "host" },
+      updatedAt: note.updatedAt,
     });
   });
 

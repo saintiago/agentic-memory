@@ -164,6 +164,9 @@ export const noteSchema = z
     id: noteIdSchema,
     content: nonWhitespaceText("Content"),
     timestamp: z.iso.datetime({ offset: true }),
+    // Absence means the historical update time is unknown; it is never inferred from an
+    // observation time, read time or collection opening. See docs/note-store.md#update-time.
+    updatedAt: z.iso.datetime({ offset: true }).optional(),
     ...attributesSchema.shape,
     links: z.array(noteIdSchema),
     metadata: metadataSchema.optional(),
@@ -234,3 +237,15 @@ export const pageSchema = z.strictObject({
 });
 
 export type Page = z.infer<typeof pageSchema>;
+
+/**
+ * A page of current note/vector records, returned only by the explicit vector-inspection
+ * operation. The note contract is shared; the vector is validated against the collection's
+ * declared embedding space by the provider. See docs/note-store.md#interface.
+ */
+export const embeddedPageSchema = z.strictObject({
+  records: z.array(embeddedNoteSchema),
+  cursor: cursorSchema.optional(),
+});
+
+export type EmbeddedPage = z.infer<typeof embeddedPageSchema>;

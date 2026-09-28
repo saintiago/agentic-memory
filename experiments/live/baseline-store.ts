@@ -16,6 +16,7 @@ import {
   vectorSchema,
   type Cursor,
   type EmbeddedNote,
+  type EmbeddedPage,
   type Match,
   type Note,
   type NoteStore,
@@ -295,6 +296,34 @@ class EvaluationBaselineStore implements NoteStore {
     return next === null || next === undefined
       ? { notes }
       : { notes, cursor: cursorSchema.parse(next) };
+  }
+
+  async pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage> {
+    const offset =
+      cursor === undefined ? undefined : cursorSchema.parse(cursor);
+    const response = await this.#client.scroll(this.#collection, {
+      limit: parseLimit(limit),
+      with_payload: true,
+      with_vector: true,
+      ...(offset === undefined ? {} : { offset }),
+    });
+    const records = response.points.map((point) => {
+      const parsed = vectorSchema.safeParse(point.vector);
+      if (!parsed.success || parsed.data.length !== this.#dimensions) {
+        throw new Error(
+          `Stored vector for point ${String(point.id)} is missing or does not match the ` +
+            `declared ${this.#dimensions}-dimensional embedding space.`,
+        );
+      }
+      return {
+        note: this.#readNote(point.id, point.payload),
+        vector: parsed.data,
+      };
+    });
+    const next = response.next_page_offset;
+    return next === null || next === undefined
+      ? { records }
+      : { records, cursor: cursorSchema.parse(next) };
   }
 
   #readNote(pointId: unknown, payload: unknown): Note {

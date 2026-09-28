@@ -10,6 +10,7 @@ import {
 } from "../../../src/index.js";
 import {
   dropCollection,
+  embedded,
   openStore,
   uniqueCollection,
 } from "../support/note-store.js";
@@ -140,6 +141,8 @@ describe("memory insertion journeys", () => {
     expect(firstModel.requests.map((request) => request.stage)).toEqual([
       "construct",
     ]);
+    expect(first.timestamp).toBe(NOTE_TIMESTAMP);
+    expect(first.updatedAt).toEqual(expect.any(String));
     expect(await store.get([first.id])).toEqual([first]);
 
     const reopened = await openStore(name);
@@ -171,12 +174,100 @@ describe("memory insertion journeys", () => {
     const found = await reopened.get([first.id, second.id]);
     expect(idsOf(found)).toEqual(idsOf([first, second]));
     expect(found.find((note) => note.id === second.id)).toEqual(second);
+    // The incoming note and the actually changed neighbor share the batch preparation time.
     expect(found.find((note) => note.id === first.id)).toEqual({
       ...first,
       context: "The first source now supports the second account.",
       keywords: ["first", "support"],
       tags: ["observation", "history"],
+      updatedAt: second.updatedAt,
     });
+    // Reading again never advances the persisted update time.
+    expect((await reopened.get([first.id]))[0]?.updatedAt).toBe(
+      second.updatedAt,
+    );
+  });
+
+  it("establishes an update time on the first real evolution of a legacy note", async () => {
+    const name = collection("legacy-update");
+    const store = await openStore(name);
+    const legacy = embedded(
+      { content: "A legacy record without an update time." },
+      [1, 0, 0, 0],
+    );
+    await store.put([legacy]);
+    const before = (await store.get([legacy.note.id]))[0];
+    expect(before !== undefined && "updatedAt" in before).toBe(false);
+
+    const model = new ScriptedModel();
+    model.queue("construct", () => ({
+      context: "Records the incoming account.",
+      keywords: ["incoming"],
+      tags: ["observation"],
+    }));
+    model.queue("evolve", () => ({
+      links: [legacy.note.id],
+      newTags: ["observation"],
+      updates: [
+        {
+          id: legacy.note.id,
+          context: "The legacy record now supports the incoming account.",
+          keywords: ["legacy"],
+          tags: ["history"],
+        },
+      ],
+    }));
+
+    const incoming = await new AgenticMemory(
+      store,
+      new FixedEmbedder(),
+      model,
+    ).add({ content: "The incoming account." });
+
+    expect(typeof incoming.updatedAt).toBe("string");
+    const evolved = (await store.get([legacy.note.id]))[0];
+    expect(evolved?.updatedAt).toBe(incoming.updatedAt);
+    expect(evolved).toEqual({
+      ...legacy.note,
+      context: "The legacy record now supports the incoming account.",
+      keywords: ["legacy"],
+      tags: ["history"],
+      updatedAt: incoming.updatedAt,
+    });
+  });
+
+  it("leaves an unknown legacy update time absent through a no-op evolution", async () => {
+    const name = collection("legacy-noop");
+    const store = await openStore(name);
+    const legacy = embedded({ content: "A legacy record." }, [1, 0, 0, 0]);
+    await store.put([legacy]);
+
+    const model = new ScriptedModel();
+    model.queue("construct", () => ({
+      context: "Records the incoming account.",
+      keywords: ["incoming"],
+      tags: ["observation"],
+    }));
+    model.queue("evolve", () => ({
+      links: [],
+      newTags: ["observation"],
+      updates: [
+        {
+          id: legacy.note.id,
+          context: legacy.note.context,
+          keywords: legacy.note.keywords,
+          tags: legacy.note.tags,
+        },
+      ],
+    }));
+
+    await new AgenticMemory(store, new FixedEmbedder(), model).add({
+      content: "The incoming account.",
+    });
+
+    const stored = (await store.get([legacy.note.id]))[0];
+    expect(stored).toEqual(legacy.note);
+    expect(stored !== undefined && "updatedAt" in stored).toBe(false);
   });
 
   it("leaves stored notes unchanged when preparation fails", async () => {

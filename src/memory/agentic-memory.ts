@@ -1,7 +1,8 @@
 /**
  * Memory orchestration for note insertion, retrieval and inspection: construct semantic attributes,
  * consider the nearest stored notes, interpret one evolution decision and persist the incoming note
- * together with the accepted changes as one batch; embed a query, keep the store's ranked direct
+ * together with the accepted changes as one batch, recording the batch preparation time on the
+ * incoming note and each actually changed neighbor; embed a query, keep the store's ranked direct
  * matches and follow one bounded hop of their outgoing links; read notes and pages without
  * generating text or changing a record.
  *
@@ -254,6 +255,15 @@ const selectLinkedTargets = (
 const detachNote = (note: Note): Note => noteSchema.parse(note);
 
 /**
+ * Sample the batch preparation time once, immediately before the write that persists the current
+ * note versions. It records when the version was prepared for persistence; it is not the
+ * observation `timestamp`, a commit acknowledgment or a change cursor.
+ *
+ * See docs/memory.md#update-time.
+ */
+const batchPreparationTime = (): string => new Date().toISOString();
+
+/**
  * The library's memory operations. Insertions on one instance are serialized in invocation order;
  * the host still owns collecting source material, awaiting writes and reconciling uncertain
  * outcomes. This queue is not a durable job system or a distributed writer lock.
@@ -448,11 +458,14 @@ export class AgenticMemory {
     const candidates = await this.#nearest(initialVector, noteId);
 
     if (candidates.length === 0) {
-      await this.#persist(
-        [{ note: constructed, vector: initialVector }],
-        noteId,
-      );
-      return detachNote(constructed);
+      // Insertion always supplies an update time. It is sampled after preparation succeeded and
+      // immediately before the write, and it never replaces the observation timestamp.
+      const inserted: Note = {
+        ...constructed,
+        updatedAt: batchPreparationTime(),
+      };
+      await this.#persist([{ note: inserted, vector: initialVector }], noteId);
+      return detachNote(inserted);
     }
 
     const decision = await this.#evolve(constructed, candidates, noteId);
@@ -470,11 +483,20 @@ export class AgenticMemory {
         ? initialVector
         : await this.#embed(embeddingText(incoming), noteId);
 
-    await this.#persist(
-      [...changed, { note: incoming, vector: incomingVector }],
-      noteId,
-    );
-    return detachNote(incoming);
+    // All interpretation and embedding work succeeded. Sample the batch preparation time once,
+    // immediately before the write, and record it on the incoming note and every actually changed
+    // neighbor. `updatedAt` is excluded from the embedded text, so stamping cannot stale a vector.
+    const updatedAt = batchPreparationTime();
+    const incomingNote: Note = { ...incoming, updatedAt };
+    const batch: EmbeddedNote[] = [
+      ...changed.map((record) => ({
+        note: { ...record.note, updatedAt },
+        vector: record.vector,
+      })),
+      { note: incomingNote, vector: incomingVector },
+    ];
+    await this.#persist(batch, noteId);
+    return detachNote(incomingNote);
   }
 
   async #construct(

@@ -34,11 +34,17 @@ const note = {
   links: [],
 };
 
-for (const name of ["jsonValueSchema", "noteSchema", "embeddedNoteSchema", "matchSchema", "pageSchema"]) {
+for (const name of ["jsonValueSchema", "noteSchema", "embeddedNoteSchema", "matchSchema", "pageSchema", "embeddedPageSchema"]) {
   assert.equal(typeof memory[name]?.safeParse, "function", name + " is exported as a schema");
 }
 assert.equal(memory.noteSchema.safeParse(note).success, true, "noteSchema accepts a valid note");
 assert.equal(memory.noteSchema.safeParse({ ...note, id: "note-1" }).success, false);
+assert.equal(
+  memory.noteSchema.safeParse({ ...note, updatedAt: "2026-09-27T15:45:00.000Z" }).success,
+  true,
+  "noteSchema accepts a persisted update time",
+);
+assert.equal(memory.noteSchema.safeParse({ ...note, updatedAt: "yesterday" }).success, false);
 
 for (const name of ["AgenticMemory", "MemoryError", "embeddingText"]) {
   assert.equal(typeof memory[name], "function", name + " is exported from the package root");
@@ -48,7 +54,7 @@ assert.equal(
   "Source text.\\nKeywords: source\\nTags: \\nContext: Records the source.",
 );
 
-/** A minimal in-consumer NoteStore: current records, ranked matches and a paged traversal. */
+/** A minimal in-consumer NoteStore: current records, ranked matches and paged traversals. */
 class ConsumerStore {
   records = new Map();
 
@@ -83,6 +89,15 @@ class ConsumerStore {
       .map((record) => structuredClone(record.note));
     const next = start + limit;
     return next < this.records.size ? { notes, cursor: next } : { notes };
+  }
+
+  async pageEmbedded(limit, cursor) {
+    const start = typeof cursor === "number" ? cursor : 0;
+    const records = [...this.records.values()]
+      .slice(start, start + limit)
+      .map((record) => structuredClone(record));
+    const next = start + limit;
+    return next < this.records.size ? { records, cursor: next } : { records };
   }
 }
 
@@ -145,6 +160,23 @@ assert.equal(typeof firstPage.cursor, "number");
 const lastPage = await agent.page(1, firstPage.cursor);
 assert.equal(lastPage.notes.length, 1);
 assert.equal(lastPage.cursor, undefined);
+assert.equal("vector" in firstPage, false, "ordinary inspection omits vectors");
+
+// The explicit vector-inspection operation exports the stored records across pages.
+const exported = [];
+let embeddedCursor;
+do {
+  const embeddedPage = await store.pageEmbedded(1, embeddedCursor);
+  exported.push(...embeddedPage.records);
+  embeddedCursor = embeddedPage.cursor;
+} while (embeddedCursor !== undefined);
+assert.deepEqual(
+  exported.map((record) => [record.note.id, record.vector]),
+  [
+    [first.id, [1, 0]],
+    [second.id, [1, 0]],
+  ],
+);
 
 // Invalid input fails as a typed memory error before any provider call.
 await assert.rejects(
@@ -157,9 +189,9 @@ await assert.rejects(
 );
 
 console.log(
-  "packed consumer imported " +
+    "packed consumer imported " +
     Object.keys(memory).length +
-    " runtime exports and exercised add, search, get and page",
+    " runtime exports and exercised add, search, get, page and pageEmbedded",
 );
 `;
 

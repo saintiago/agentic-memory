@@ -29,6 +29,17 @@ const collection = (label: string): string => {
 const idsOf = (notes: readonly Note[]): string[] =>
   notes.map((note) => note.id).sort();
 
+/**
+ * The vector Qdrant actually stores for cosine distance: the prepared vector normalized. The
+ * component comparison keeps float32 and server-side normalization rounding out of the assertion.
+ */
+const storedVector = (vector: readonly number[]): number[] => {
+  const norm = Math.sqrt(
+    vector.reduce((total, component) => total + component * component, 0),
+  );
+  return vector.map((component) => component / norm);
+};
+
 afterAll(async () => {
   for (const name of created) {
     await dropCollection(name);
@@ -161,6 +172,10 @@ describe("Qdrant note store contract", () => {
     await expect(
       store.page(1, { offset: 1 } as unknown as Cursor),
     ).rejects.toThrow();
+    await expect(store.pageEmbedded(0)).rejects.toThrow(/limit/);
+    await expect(
+      store.pageEmbedded(1, true as unknown as Cursor),
+    ).rejects.toThrow();
   });
 
   it("pages an unchanged collection to completion without duplicates", async () => {
@@ -190,6 +205,155 @@ describe("Qdrant note store contract", () => {
     expect(complete.cursor).toBeUndefined();
   });
 
+  it("exports complete records with their actual stored vectors across pages", async () => {
+    const name = collection("embedded");
+    const store = await openStore(name);
+    const stored = [
+      embedded(
+        { content: "The first exported record." },
+        [1, -0.5, 0.25, 0.75],
+      ),
+      embedded({ content: "The second exported record." }, [0.125, 2, -3, 0.5]),
+      embedded({ content: "The third exported record." }, [0, 1, 0, 0]),
+      embedded({ content: "The fourth exported record." }, [-1, -1, 0.5, 0]),
+      embedded({ content: "The fifth exported record." }, [0.5, 0, 0, -0.5]),
+    ];
+    await store.put(stored);
+    const reopened = await openStore(name);
+
+    const seen: EmbeddedNote[] = [];
+    let cursor: Cursor | undefined;
+    let pages = 0;
+    do {
+      const page = await reopened.pageEmbedded(2, cursor);
+      expect(page.records.length).toBeLessThanOrEqual(2);
+      seen.push(...page.records);
+      cursor = page.cursor;
+      pages += 1;
+    } while (cursor !== undefined);
+
+    expect(pages).toBe(3);
+    expect(idsOf(seen.map((record) => record.note))).toEqual(
+      idsOf(stored.map((record) => record.note)),
+    );
+    for (const record of stored) {
+      const exported = seen.find((entry) => entry.note.id === record.note.id);
+      expect(exported?.note).toEqual(record.note);
+      const expected = storedVector(record.vector);
+      expect(exported?.vector).toHaveLength(expected.length);
+      exported?.vector.forEach((component, index) => {
+        expect(component).toBeCloseTo(expected[index] ?? Number.NaN, 6);
+      });
+    }
+
+    const complete = await reopened.pageEmbedded(50);
+    expect(complete.records).toHaveLength(5);
+    expect(complete.cursor).toBeUndefined();
+  });
+
+  it("returns detached embedded records", async () => {
+    const name = collection("embedded_detach");
+    const store = await openStore(name);
+    const record = embedded(
+      { content: "A detached export." },
+      [1, 0.5, -0.5, 0],
+    );
+    await store.put([record]);
+
+    const page = await store.pageEmbedded(1);
+    const exported = page.records[0];
+    if (exported === undefined) {
+      throw new Error("the stored record must be exported");
+    }
+    exported.note.content = "rewritten through the export";
+    exported.note.tags.push("appended");
+    exported.vector[0] = 42;
+
+    const again = await store.pageEmbedded(1);
+    expect(again.records[0]?.note).toEqual(record.note);
+    const expected = storedVector(record.vector);
+    again.records[0]?.vector.forEach((component, index) => {
+      expect(component).toBeCloseTo(expected[index] ?? Number.NaN, 6);
+    });
+  });
+
+  it("round-trips update times and leaves legacy records unbackfilled", async () => {
+    const name = collection("update_time");
+    const store = await openStore(name);
+    const updatedAt = "2026-09-28T09:15:30.500+02:00";
+    const current = embedded(
+      { content: "A record with a known update time.", updatedAt },
+      [1, 0, 0, 0],
+    );
+    const legacy = embedded(
+      { content: "A record with an unknown update time." },
+      [0, 1, 0, 0],
+    );
+    await store.put([current, legacy]);
+
+    const reopened = await openStore(name);
+    const found = await reopened.get([current.note.id, legacy.note.id]);
+    expect(found.find((note) => note.id === current.note.id)).toEqual(
+      current.note,
+    );
+    const legacyFound = found.find((note) => note.id === legacy.note.id);
+    expect(legacyFound).toEqual(legacy.note);
+    expect(legacyFound !== undefined && "updatedAt" in legacyFound).toBe(false);
+
+    const exported = await reopened.pageEmbedded(50);
+    expect(
+      exported.records.find((entry) => entry.note.id === current.note.id)?.note,
+    ).toEqual(current.note);
+    const legacyExported = exported.records.find(
+      (entry) => entry.note.id === legacy.note.id,
+    );
+    expect(legacyExported?.note).toEqual(legacy.note);
+    expect(
+      legacyExported !== undefined && "updatedAt" in legacyExported.note,
+    ).toBe(false);
+
+    // Opening and reading never backfill the legacy payload.
+    const raw = await adminClient().scroll(name, {
+      limit: 10,
+      with_payload: true,
+      with_vector: false,
+    });
+    const rawLegacy = raw.points.find((point) => point.id === legacy.note.id);
+    expect(rawLegacy?.payload).toEqual(legacy.note);
+  });
+
+  it("fails the embedded export for a stored record without a vector", async () => {
+    const name = collection("missing_vector");
+    const store = await openStore(name);
+    const record = embedded({ content: "A record with a missing vector." });
+    await adminClient().upsert(name, {
+      wait: true,
+      points: [{ id: record.note.id, vector: {}, payload: record.note }],
+    });
+
+    // A vector-free read still returns the note; the explicit export must fail instead of
+    // silently skipping the unusable record.
+    expect(await store.get([record.note.id])).toEqual([record.note]);
+    await expect(store.pageEmbedded(5)).rejects.toThrow(/vector/);
+  });
+
+  it("fails the embedded export for a stored zero-norm vector", async () => {
+    const name = collection("zero_vector");
+    const store = await openStore(name);
+    const record = embedded({
+      content: "A record without a usable direction.",
+    });
+    await adminClient().upsert(name, {
+      wait: true,
+      points: [
+        { id: record.note.id, vector: [0, 0, 0, 0], payload: record.note },
+      ],
+    });
+
+    expect((await store.page(5)).notes).toEqual([record.note]);
+    await expect(store.pageEmbedded(5)).rejects.toThrow(/vector/);
+  });
+
   it("rejects malformed stored payloads instead of manufacturing records", async () => {
     const name = collection("malformed");
     const store = await openStore(name);
@@ -197,6 +361,7 @@ describe("Qdrant note store contract", () => {
     const disagreeing = embedded();
     const incomplete = embedded();
     const unknown = embedded();
+    const stale = embedded();
     await adminClient().upsert(name, {
       wait: true,
       points: [
@@ -216,6 +381,11 @@ describe("Qdrant note store contract", () => {
           vector: [0, 0, 0, 1],
           payload: { ...unknown.note, score: 0.5 },
         },
+        {
+          id: stale.note.id,
+          vector: [0.5, 0.5, 0, 0],
+          payload: { ...stale.note, updatedAt: "yesterday" },
+        },
       ],
     });
 
@@ -227,11 +397,13 @@ describe("Qdrant note store contract", () => {
       /complete note/,
     );
     await expect(store.get([unknown.note.id])).rejects.toThrow(/complete note/);
+    await expect(store.get([stale.note.id])).rejects.toThrow(/complete note/);
     const malformedPayload = /complete note|does not agree/;
     await expect(store.nearest([1, 0, 0, 0], 4)).rejects.toThrow(
       malformedPayload,
     );
     await expect(store.page(4)).rejects.toThrow(malformedPayload);
+    await expect(store.pageEmbedded(5)).rejects.toThrow(malformedPayload);
   });
 
   it("validates a whole write batch before dispatching it", async () => {
@@ -321,6 +493,22 @@ describe("Qdrant note store contract", () => {
       expect((await store.nearest([1, 0, 0, 0], 5))[0]?.note.id).toBe(
         SENTINEL_ID,
       );
+
+      // The explicit export also reaches the sentinel, with the actual stored vectors.
+      const vectors = new Map<string, number[]>();
+      let embeddedCursor: Cursor | undefined;
+      do {
+        const page = await store.pageEmbedded(1_000, embeddedCursor);
+        for (const record of page.records) {
+          expect(vectors.has(record.note.id)).toBe(false);
+          vectors.set(record.note.id, record.vector);
+        }
+        embeddedCursor = page.cursor;
+      } while (embeddedCursor !== undefined);
+
+      expect(vectors.size).toBe(total);
+      expect(vectors.get(SENTINEL_ID)).toEqual([1, 0, 0, 0]);
+      expect(vectors.get(orderedNoteId(1))).toEqual([0, 1, 0, 0]);
     },
   );
 });
