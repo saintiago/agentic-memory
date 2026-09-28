@@ -61,8 +61,12 @@ self-contained HTML report and the JSON evidence it shows, with no server or dat
 `npm run inspector` starts the separate local memory inspection host: it reads one explicitly
 configured collection through the public contracts, projects the stored vectors in a worker thread
 and serves the loopback browser API documented in [docs/dashboard.md](docs/dashboard.md). It needs
-no generation credential and never writes a memory. [inspector/README.md](inspector/README.md)
-lists its settings.
+no generation credential and never writes a memory; it builds and serves the Sigma dashboard in
+`inspector/ui`, which shows projected positions with directed links, freshness, real requests and
+their highlighted results. [inspector/README.md](inspector/README.md) lists its settings, the
+dashboard's behavior and the recorded responsive browser checks (`npm run inspector:responsive`):
+the required scale check against a synthetic 10,000-memory graph with about 50,000 directed links
+and the real-renderer check that an added outlier does not move already displayed memories.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

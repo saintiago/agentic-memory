@@ -70,7 +70,7 @@ module.exports = {
     tsConfig: { fileName: "tsconfig.json" },
     doNotFollow: { path: "^(node_modules|dist)/" },
     exclude: {
-      path: "^(node_modules|dist|coverage|\\.turbo|test/boundaries/fixtures)/",
+      path: "^(node_modules|dist|coverage|\\.turbo|inspector/ui/build|test/boundaries/fixtures)/",
     },
   },
 };

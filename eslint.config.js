@@ -4,7 +4,16 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**", ".turbo/**"] },
+  {
+    ignores: [
+      "dist/**",
+      "inspector/ui/build/**",
+      // Disposable tool artifacts: demo runs, embedding caches, inspector state and reports.
+      ".data/**",
+      "coverage/**",
+      ".turbo/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

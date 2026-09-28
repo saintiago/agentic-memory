@@ -20,7 +20,11 @@ Sigma owns rendering and camera interaction; Graphology holds the displayed node
 A small TypeScript inspection host runs locally under Linux/WSL and serves the browser UI on loopback.
 Keep its dependencies and entry point separate from the runtime library; no React requirement.
 In this repository that host lives in `inspector/` and is launched with `npm run inspector`; its
-settings and checks are documented in [inspector/README.md](../inspector/README.md).
+settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
+lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
+served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
+`npm run inspector:build` bundles them for the host to serve. Only those modules import Sigma, so
+the data access, projection and display contracts stay independent of the renderer.
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version
@@ -33,6 +37,8 @@ Use the public [Memory API](memory.md#interface) for note details and search, th
 [NoteStore contract](note-store.md#interface) for storage-owned inspection capabilities, and
 [embedding-space identity](embeddings.md#interface) to identify compatible vectors. The host owns
 configuration and credentials; the browser receives display data, not provider credentials.
+UI identity comparisons follow the NoteStore UUID contract; returned note and link spellings remain
+unchanged in displayed evidence.
 
 Search calls `AgenticMemory.search(query, { limit, linkedLimit })` against the selected collection
 with the same configuration used by its consumer. Show the returned `via` classification and preserve
@@ -160,9 +166,10 @@ export AMEM_QDRANT_COLLECTION=amem-notes
 npm run inspector
 ```
 
-`npm run inspector` runs the TypeScript entry point through the pinned `tsx` loader; the projection
-worker thread uses the same loader. [inspector/README.md](../inspector/README.md) lists every host
-setting, the browser routes and the state the inspection process keeps.
+`npm run inspector` builds the browser bundle of the UI and runs the TypeScript entry point through
+the pinned `tsx` loader; the projection worker thread uses the same loader. [inspector/README.md](../inspector/README.md)
+lists every host setting, the browser routes, the state the inspection process keeps and the
+commands that produce the acceptance-check evidence.
 
 ## Visual behavior
 
@@ -221,7 +228,12 @@ point must not imply that a memory was returned.
 Keep the returned note payload as evidence of that request. Refreshing the graph does not silently
 rerun the request or replace its result text. Show request time and whether the map has since refreshed.
 If a result is not yet mapped, retain it in the list, request a paginated inspection refresh and project it when
-available. Failed requests show an error, not a successful zero-result count. A later submitted
+available. A returned memory the map does not contain yet stays selectable through its returned
+payload, which is shown as its details evidence, and the actions that need a position stay
+unavailable. A completed refresh keeps the selected memory current: returned payloads stay as the
+request's evidence, details read from the host are read again once the displayed view moves, and a
+selection that leaves both the map and the results is cleared together with any answer still in
+flight for it. Failed requests show an error, not a successful zero-result count. A later submitted
 request takes precedence over an older request that finishes afterward.
 
 ## Live updates with Sigma
@@ -237,8 +249,12 @@ No runtime event bus or durable update stream is required for this first inspect
   coordinates. Show pending projection explicitly instead of presenting stale coordinates as current.
 - Provide an explicit **Rebuild projection** action when the corpus has changed substantially.
   A full refit may rearrange the map; it is not evidence that all memories changed.
-- Preserve selection and camera state. Use Sigma's `setCustomBBox()` to keep normalization bounds stable between full
-  projection rebuilds so an added outlier does not rescale the existing view unexpectedly.
+- Preserve selection and camera state, including active wheel zoom and drag inertia. Use Sigma's
+  `setCustomBBox()` to keep normalization fixed for the renderer's lifetime, so refreshes leave
+  both the viewport transformation and active gesture/animation targets unchanged. Track the
+  growing graph extent separately for explicit **Fit all**. An added outlier must not rescale or
+  move memories that were already displayed. Apply the coordinates of a completed full refit in
+  one commit, so no frame draws a mixture of the old and new projections.
 
 Sigma subscribes to Graphology changes and refreshes automatically. Use v3 `nodeReducer` and
 `edgeReducer` for temporary result/selection styling, retaining underlying note data. When external
@@ -292,11 +308,15 @@ visible in the list, including those absent from the map.
 3. A real search displays and highlights exactly its returned IDs, order, direct scores and linked
    classifications, including zero results and results not yet mapped.
 4. Refresh adds and changes memories without resetting zoom or selection; failed/incomplete refreshes
-   preserve existing data and do not invent deletions.
+   preserve existing data and do not invent deletions; an added outlier leaves already displayed
+   memories at their screen positions.
 5. New vectors use the existing projection; full refitting is explicit. The UI distinguishes
    projected proximity from original-vector similarity.
 6. Representative scale checks report corpus size, link count and hardware alongside measurements;
    all displayed source text is inert.
+
+The evidence for these checks is recorded with the dashboard's tests and its responsive scale check
+in [inspector/README.md](../inspector/README.md#acceptance-checks).
 
 ## References
 
