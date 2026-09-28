@@ -15,6 +15,7 @@ import {
   vectorSchema,
   type Cursor,
   type EmbeddedNote,
+  type EmbeddedPage,
   type Match,
   type Note,
   type Page,
@@ -276,6 +277,25 @@ const parseVector = (vector: unknown, dimensions: number): number[] => {
   return parsed;
 };
 
+/**
+ * Validate one vector as the collection's stored embedding. The explicit export fails the whole
+ * operation for a missing or unusable vector rather than skipping the record or re-embedding it.
+ */
+const parseStoredVector = (
+  pointId: unknown,
+  vector: unknown,
+  dimensions: number,
+): number[] => {
+  const parsed = vectorSchema.safeParse(vector);
+  if (!parsed.success || parsed.data.length !== dimensions) {
+    throw new Error(
+      `Stored vector for point ${String(pointId)} is missing or invalid for the declared ` +
+        `${dimensions}-dimensional embedding space.`,
+    );
+  }
+  return parsed.data;
+};
+
 const parseNoteId = (id: unknown): string => {
   const parsed = noteIdSchema.safeParse(id);
   if (!parsed.success) {
@@ -392,6 +412,27 @@ class QdrantNoteStore implements NoteStore {
       return { notes };
     }
     return { notes, cursor: cursorSchema.parse(next) };
+  }
+
+  async pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage> {
+    const count = parseLimit(limit);
+    const offset =
+      cursor === undefined ? undefined : cursorSchema.parse(cursor);
+    const response = await this.#client.scroll(this.#collection, {
+      limit: count,
+      with_payload: true,
+      with_vector: true,
+      ...(offset === undefined ? {} : { offset }),
+    });
+    const records = response.points.map((point) => ({
+      note: this.#readNote(point.id, point.payload),
+      vector: parseStoredVector(point.id, point.vector, this.#dimensions),
+    }));
+    const next = response.next_page_offset;
+    if (next === null || next === undefined) {
+      return { records };
+    }
+    return { records, cursor: cursorSchema.parse(next) };
   }
 
   /**

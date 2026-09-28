@@ -72,7 +72,8 @@ export interface EvolutionSource {
 
 /**
  * The evolution envelope shows only semantic note fields, in this order. Metadata and similarity
- * scores are omitted; candidate order is the nearest-first order as received.
+ * scores are omitted, and the persisted update time stays out of the model instructions;
+ * candidate order is the nearest-first order as received.
  */
 const semanticNote = (note: Note) => ({
   id: note.id,

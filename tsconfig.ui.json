@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // The dashboard imports library types for its contracts, and those modules declare Node
+    // streams; the browser bundle itself is guarded by esbuild's browser platform instead.
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["inspector/ui"],
+  "exclude": ["inspector/ui/build"]
+}

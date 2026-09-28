@@ -6,16 +6,24 @@ import * as noteStore from "../../src/note-store/index.js";
 import { noteSchema } from "../../src/note-store/index.js";
 import type {
   AddInput,
+  AgenticMemory,
   ConstructionResponse,
   ConstructionSource,
+  Cursor,
   Embedder,
   EmbeddingSpace,
+  EmbeddedNote,
+  EmbeddedPage,
   EvolutionResponse,
   EvolutionSource,
   EvolutionUpdate,
+  JsonValue,
   LanguageModel,
+  MemoryError,
   MemoryPrompts,
   MemoryOptions,
+  MemoryOperation,
+  MemoryStage,
   ModelRequest,
   Note,
   NoteStore,
@@ -35,6 +43,7 @@ describe("package root exports", () => {
       "attributesSchema",
       "cursorSchema",
       "embeddedNoteSchema",
+      "embeddedPageSchema",
       "jsonValueSchema",
       "matchSchema",
       "noteIdSchema",
@@ -68,6 +77,14 @@ describe("package root exports", () => {
     >();
     expectTypeOf<NoteStore["nearest"]>().parameter(1).toEqualTypeOf<number>();
     expectTypeOf<NoteStore["page"]>().returns.toEqualTypeOf<Promise<Page>>();
+    expectTypeOf<NoteStore["pageEmbedded"]>().returns.toEqualTypeOf<
+      Promise<EmbeddedPage>
+    >();
+    expectTypeOf<NoteStore["pageEmbedded"]>()
+      .parameter(1)
+      .toEqualTypeOf<Cursor | undefined>();
+    expectTypeOf<EmbeddedPage["records"]>().toEqualTypeOf<EmbeddedNote[]>();
+    expectTypeOf<Note["updatedAt"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<AddInput["timestamp"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<MemoryOptions["neighbors"]>().toEqualTypeOf<
       number | undefined
@@ -78,6 +95,25 @@ describe("package root exports", () => {
     expectTypeOf<SearchResult>().toMatchTypeOf<
       { note: Note; via: "match"; score: number } | { note: Note; via: "link" }
     >();
+  });
+
+  it("keeps the documented memory operations usable through the package root", () => {
+    expectTypeOf<AgenticMemory["add"]>().returns.toEqualTypeOf<Promise<Note>>();
+    expectTypeOf<AgenticMemory["get"]>().returns.toEqualTypeOf<
+      Promise<Note | undefined>
+    >();
+    expectTypeOf<AgenticMemory["page"]>().returns.toEqualTypeOf<
+      Promise<Page>
+    >();
+    expectTypeOf<AgenticMemory["page"]>()
+      .parameter(1)
+      .toEqualTypeOf<Cursor | undefined>();
+    expectTypeOf<AgenticMemory["search"]>().returns.toEqualTypeOf<
+      Promise<SearchResult[]>
+    >();
+    expectTypeOf<AgenticMemory["search"]>()
+      .parameter(1)
+      .toEqualTypeOf<SearchOptions | undefined>();
   });
 
   it("re-exports the prompt and response contracts through the memory component index", () => {
@@ -96,6 +132,36 @@ describe("package root exports", () => {
     for (const name of exportedNames) {
       expect(packageExports[name]).toBe(memory[name]);
     }
+  });
+
+  it("re-exports the memory implementation through the memory component index", () => {
+    const exportedNames = [
+      "AgenticMemory",
+      "MemoryError",
+      "embeddingText",
+    ] as const;
+
+    for (const name of exportedNames) {
+      expect(packageExports[name]).toBe(memory[name]);
+    }
+  });
+
+  it("keeps the documented memory failure fields usable through the package root", () => {
+    expectTypeOf<MemoryError["operation"]>().toEqualTypeOf<MemoryOperation>();
+    expectTypeOf<MemoryError["stage"]>().toEqualTypeOf<MemoryStage>();
+    expectTypeOf<MemoryError["persistence"]>().toEqualTypeOf<
+      "unchanged" | "uncertain"
+    >();
+    expectTypeOf<MemoryError["noteId"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<MemoryError["affectedNoteIds"]>().toEqualTypeOf<
+      readonly string[] | undefined
+    >();
+    expectTypeOf<AddInput["metadata"]>().toEqualTypeOf<
+      Record<string, JsonValue> | undefined
+    >();
+    expectTypeOf<
+      ReturnType<typeof packageExports.embeddingText>
+    >().toEqualTypeOf<string>();
   });
 
   it("keeps the documented prompt and response types usable through the package root", () => {
@@ -150,6 +216,7 @@ describe("package root exports", () => {
       keywords: ["result"],
       tags: ["observation"],
       links: [],
+      updatedAt: "2026-09-27T15:45:00.000Z",
       metadata: { origin: "host", nested: { count: 1 } },
     } satisfies Note;
     const results: SearchResult[] = [
@@ -158,6 +225,9 @@ describe("package root exports", () => {
     ];
 
     expect(noteSchema.safeParse(note).success).toBe(true);
+    expect(
+      noteSchema.safeParse({ ...note, updatedAt: undefined }).success,
+    ).toBe(true);
     expect(results.map((result) => result.via)).toEqual(["match", "link"]);
   });
 });

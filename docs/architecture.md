@@ -2,15 +2,18 @@
 
 ## Components
 
-The library has four logical components. These boundaries do not require separate packages,
-processes or deployments.
+The system provides a reusable library and a separate local memory service. The service owns API
+access and shared resources; the five underlying components remain independently usable through
+their public contracts.
 
-| Component     | Owns                                                                                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Memory        | Public memory operations, note construction and evolution decisions, prompt assembly, model-output interpretation and retrieval composition |
-| NoteStore     | Durable note and vector records, identity lookup, similarity search and paginated inspection                                                |
-| Embeddings    | Text-to-vector conversion and the identity and configuration of the embedding space                                                         |
-| LanguageModel | Model invocation, provider protocol and operational settings, returned output and invocation failure                                        |
+| Component       | Owns                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Service         | HTTP API, provider lifecycle, shared encoder and availability reporting                                                                     |
+| Ingestion queue | Durable acceptance, source-key deduplication, writer ownership and restart recovery                                                         |
+| Memory          | Public memory operations, note construction and evolution decisions, prompt assembly, model-output interpretation and retrieval composition |
+| NoteStore       | Durable note and vector records, identity lookup, similarity search and paginated inspection                                                |
+| Embeddings      | Text-to-vector conversion and the identity and configuration of the embedding space                                                         |
+| LanguageModel   | Model invocation, provider protocol and operational settings, returned output and invocation failure                                        |
 
 The host supplies source material, selects implementations and settings, owns credentials and
 controls their lifecycle. Library composition wires the supplied capabilities; it does not discover
@@ -21,7 +24,12 @@ the public library, not part of its operating path.
 
 ```mermaid
 flowchart LR
-    Host[Host application] --> Memory
+    Host[Agent clients] --> Service[Local memory service API]
+    Dashboard[Inspection host] --> Service
+    Service --> Queue[Ingestion queue]
+    Queue --> Memory
+    Service --> Memory
+    Service --> NoteStore
     Memory --> NoteStore
     Memory --> Embeddings
     Memory --> LanguageModel
@@ -61,7 +69,15 @@ Detailed contracts belong to [Memory](memory.md), [NoteStore](note-store.md),
 The [paper alignment audit](paper-alignment.md) distinguishes the research mechanism from our
 engineering and experimental choices.
 
-## Composition
+## Service deployment
+
+The [local service](service.md) is the shared access point for concurrent agents. It owns one encoder
+and collection, accepts durable submissions, and serves retrieval and paginated inspection. Its
+supervised process outlives client tasks. Clients configure the API URL; the service owns database
+and model credentials. The [queue](ingestion-queue.md) owns sequential writes and restart recovery.
+The inspection host uses the service API and owns projection, not another encoder or database client.
+
+## Library composition
 
 The host loads a configured embedder, opens or creates compatible storage using its declared space
 and the representation version, supplies a LanguageModel implementation, and constructs AgenticMemory.
@@ -134,10 +150,15 @@ leave an uncertain or partial write; they must not be presented as success or as
 The library does not automatically repeat an entire uncertain insertion, which could create a second
 note. The host receives the affected operation's identity and failure stage for diagnosis.
 
-Unattended integration must respect these outcomes and the single-writer constraint. The
+Raw add consumers must respect these outcomes and the single-writer constraint. The
 [failure contract](memory.md#failures) provides diagnosis rather than automatic crash recovery;
 [transport behavior](language-model.md#transport-behavior) specifies the retry boundary. This design
 does not assume Qdrant provides a multi-note transaction.
+
+For concurrent producers and automatic recovery, compose the [durable ingestion queue](ingestion-queue.md).
+Its independent local worker owns all collection mutations and persists prepared insertion plans
+before applying them. The service API can accept work while providers or its ingestion worker are unavailable.
+Preparation and application use public Memory contracts; reads continue through the ordinary API.
 
 A collection uses one declared embedding model and encoding configuration. Compatibility must not
 be inferred from vector dimensions alone. Model replacement that changes the embedding space requires

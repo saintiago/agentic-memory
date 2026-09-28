@@ -19,6 +19,12 @@ implementing; this design uses the stable v3 API, not the v4 alpha. Both librari
 Sigma owns rendering and camera interaction; Graphology holds the displayed nodes and directed edges.
 A small TypeScript inspection host runs locally under Linux/WSL and serves the browser UI on loopback.
 Keep its dependencies and entry point separate from the runtime library; no React requirement.
+In this repository that host lives in `inspector/` and is launched with `npm run inspector`; its
+settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
+lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
+served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
+`npm run inspector:build` bundles them for the host to serve. Only those modules import Sigma, so
+the data access, projection and display contracts stay independent of the renderer.
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version
@@ -27,12 +33,14 @@ not an encoder replacement or part of memory retrieval.
 
 ## Interface and data sources
 
-Use the public [Memory API](memory.md#interface) for note details and search, the
-[NoteStore contract](note-store.md#interface) for storage-owned inspection capabilities, and
-[embedding-space identity](embeddings.md#interface) to identify compatible vectors. The host owns
-configuration and credentials; the browser receives display data, not provider credentials.
+Use the [memory service API](service.md#api) for note details, search and paginated vector inspection,
+and [embedding-space identity](embeddings.md#interface) to identify compatible vectors. The service
+owns provider settings and credentials; the inspection host configures its service URL. The browser
+receives display data, not provider credentials.
+UI identity comparisons follow the NoteStore UUID contract; returned note and link spellings remain
+unchanged in displayed evidence.
 
-Search calls `AgenticMemory.search(query, { limit, linkedLimit })` against the selected collection
+Search calls `POST /v1/search` against the service-owned collection
 with the same configuration used by its consumer. Show the returned `via` classification and preserve
 result order. The dashboard does not reimplement search with browser distances or a second ranking.
 
@@ -61,21 +69,16 @@ last successful view with an error indication until refresh succeeds.
 
 ### Startup and composition
 
-Run a separate Node.js/TypeScript process under Linux/WSL. It serves the static Sigma UI and its
-same-origin HTTP API on `127.0.0.1`, independently of Nexus. Host configuration supplies port,
-collection connection settings, the exact encoder configuration/cache settings, polling interval,
-and an inspection-artifact directory. It does not discover or import Nexus configuration.
+Run a separate Node.js/TypeScript inspection process under Linux/WSL. It serves the static Sigma UI
+and same-origin browser API on `127.0.0.1`, independently of agent tasks. Configure the memory service
+URL, display port, polling interval and inspection-artifact directory. The host calls the service
+for note reads, search and paginated records; it does not initialize Qdrant, load an encoder or
+construct another Memory instance. Expose no insertion or mutation routes to the browser.
 
-Use the explicitly configured collection and the public storage initialization contract, including
-its compatibility checks and creation behavior. Initialize
-one matching embedder for queries and reuse it. Construct one `AgenticMemory` instance for public
-`get` and `search`. Its current constructor requires a `LanguageModel`; supply a host-local
-implementation that throws if invoked. Read operations must never call it, and the inspection
-process needs no generation-provider credentials. Expose no insertion or mutation routes.
-
-The host reads stored vectors through `pageEmbedded`, not through private provider imports. The
-library remains independent of this tool and its HTTP/projection dependencies. Keep the polling
-and projection lifecycle below in the host, not in the library or browser.
+Obtain collection and embedding identity through the service. Read stored vectors through
+`GET /v1/inspection/records`; keep polling and projection in the inspection host. The service's
+encoder is shared by agents and dashboard queries. Service outages retain the last completed view
+with an explicit error; do not silently fall back to direct database access.
 
 ### Browser API
 
@@ -129,7 +132,7 @@ reports a refresh error alongside the last successful view when available.
 
 ### Refresh and projection lifecycle
 
-On startup, traverse `pageEmbedded` to completion, fit the initial projection outside the HTTP
+On startup, traverse `/v1/inspection/records` to completion, fit the initial projection outside the HTTP
 request handler, then publish a completed view. Serve loading status while this happens. Start
 periodic refresh afterward; manual refresh uses the same path. Permit one export/projection job at
 a time and coalesce requests while it is running.
@@ -147,6 +150,20 @@ disposable inspection state, with collection and embedding-space identity. Do no
 runtime memory database. On restart, obtain a fresh export before presenting a cache as current;
 incompatible caches are discarded. Keep full fits explicit after the initial fit. On shutdown,
 stop polling/jobs, close HTTP and release provider/projection resources.
+
+### Launching the host
+
+The host is a separate consumer process, outside the runtime library and its published package:
+
+```bash
+export AMEM_SERVICE_URL=http://127.0.0.1:4748
+npm run inspector
+```
+
+`npm run inspector` builds the browser bundle of the UI and runs the TypeScript entry point through
+the pinned `tsx` loader; the projection worker thread uses the same loader. [inspector/README.md](../inspector/README.md)
+lists every host setting, the browser routes, the state the inspection process keeps and the
+commands that produce the acceptance-check evidence.
 
 ## Visual behavior
 
@@ -205,7 +222,12 @@ point must not imply that a memory was returned.
 Keep the returned note payload as evidence of that request. Refreshing the graph does not silently
 rerun the request or replace its result text. Show request time and whether the map has since refreshed.
 If a result is not yet mapped, retain it in the list, request a paginated inspection refresh and project it when
-available. Failed requests show an error, not a successful zero-result count. A later submitted
+available. A returned memory the map does not contain yet stays selectable through its returned
+payload, which is shown as its details evidence, and the actions that need a position stay
+unavailable. A completed refresh keeps the selected memory current: returned payloads stay as the
+request's evidence, details read from the host are read again once the displayed view moves, and a
+selection that leaves both the map and the results is cleared together with any answer still in
+flight for it. Failed requests show an error, not a successful zero-result count. A later submitted
 request takes precedence over an older request that finishes afterward.
 
 ## Live updates with Sigma
@@ -221,8 +243,12 @@ No runtime event bus or durable update stream is required for this first inspect
   coordinates. Show pending projection explicitly instead of presenting stale coordinates as current.
 - Provide an explicit **Rebuild projection** action when the corpus has changed substantially.
   A full refit may rearrange the map; it is not evidence that all memories changed.
-- Preserve selection and camera state. Use Sigma's `setCustomBBox()` to keep normalization bounds stable between full
-  projection rebuilds so an added outlier does not rescale the existing view unexpectedly.
+- Preserve selection and camera state, including active wheel zoom and drag inertia. Use Sigma's
+  `setCustomBBox()` to keep normalization fixed for the renderer's lifetime, so refreshes leave
+  both the viewport transformation and active gesture/animation targets unchanged. Track the
+  growing graph extent separately for explicit **Fit all**. An added outlier must not rescale or
+  move memories that were already displayed. Apply the coordinates of a completed full refit in
+  one commit, so no frame draws a mixture of the old and new projections.
 
 Sigma subscribes to Graphology changes and refreshes automatically. Use v3 `nodeReducer` and
 `edgeReducer` for temporary result/selection styling, retaining underlying note data. When external
@@ -276,11 +302,15 @@ visible in the list, including those absent from the map.
 3. A real search displays and highlights exactly its returned IDs, order, direct scores and linked
    classifications, including zero results and results not yet mapped.
 4. Refresh adds and changes memories without resetting zoom or selection; failed/incomplete refreshes
-   preserve existing data and do not invent deletions.
+   preserve existing data and do not invent deletions; an added outlier leaves already displayed
+   memories at their screen positions.
 5. New vectors use the existing projection; full refitting is explicit. The UI distinguishes
    projected proximity from original-vector similarity.
 6. Representative scale checks report corpus size, link count and hardware alongside measurements;
    all displayed source text is inert.
+
+The evidence for these checks is recorded with the dashboard's tests and its responsive scale check
+in [inspector/README.md](../inspector/README.md#acceptance-checks).
 
 ## References
 

@@ -55,13 +55,22 @@ module.exports = {
     },
     ...publicImportRules,
     ...directionRules,
+    {
+      name: "no-library-imports-inspector",
+      severity: "error",
+      comment:
+        "The local inspection host is a separate consumer process; the library never depends " +
+        "on it or on its HTTP and projection dependencies.",
+      from: { path: "^src/" },
+      to: { path: "^inspector/" },
+    },
   ],
   options: {
     tsPreCompilationDeps: true,
     tsConfig: { fileName: "tsconfig.json" },
     doNotFollow: { path: "^(node_modules|dist)/" },
     exclude: {
-      path: "^(node_modules|dist|coverage|\\.turbo|test/boundaries/fixtures)/",
+      path: "^(node_modules|dist|coverage|\\.turbo|inspector/ui/build|test/boundaries/fixtures)/",
     },
   },
 };
