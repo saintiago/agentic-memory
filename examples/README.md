@@ -57,11 +57,13 @@ before releasing provider resources.
 
 ## Model transport
 
-`host-model-transport.ts` is the minimal host implementation of the public
-[LanguageModel contract](../docs/language-model.md#interface). It speaks an OpenAI-compatible
-chat-completions protocol with explicit host settings: endpoint, model ID, output budget, timeout
-and optional credential, cancellation signal and fetch implementation. The library does not depend
-on it and never constructs a provider, so a host copies, adapts or replaces this example.
+`host-model-transport.ts` re-exports the minimal host implementation of the public
+[LanguageModel contract](../docs/language-model.md#interface) that the local memory service also
+composes; the implementation lives in `service/model-transport.ts`. It speaks an
+OpenAI-compatible chat-completions protocol with explicit host settings: endpoint, model ID, output
+budget, timeout and optional credential, cancellation signal and fetch implementation. The library
+does not depend on it and never constructs a provider, so a host copies, adapts or replaces this
+implementation.
 
 ```ts
 import {

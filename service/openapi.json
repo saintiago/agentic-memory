@@ -56,6 +56,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "500": { "$ref": "#/components/responses/Internal" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -83,6 +84,7 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Internal" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
@@ -173,7 +175,6 @@
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
-          "429": { "$ref": "#/components/responses/Overloaded" },
           "500": { "$ref": "#/components/responses/Internal" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }
@@ -208,7 +209,6 @@
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
-          "429": { "$ref": "#/components/responses/Overloaded" },
           "500": { "$ref": "#/components/responses/Internal" },
           "503": { "$ref": "#/components/responses/Unavailable" }
         }

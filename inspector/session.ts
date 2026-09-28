@@ -9,11 +9,16 @@
  *
  * See docs/dashboard.md#refresh-and-projection-lifecycle and docs/dashboard.md#asynchronous-data-updates.
  */
-import type { Cursor, EmbeddedPage, Note, NoteStore } from "../src/index.js";
+import type { Note } from "../src/index.js";
 import type { ProjectionArtifactStore } from "./artifacts.js";
 import { buildGraphView, type GraphSnapshot, type GraphView } from "./graph.js";
 import type { ProjectionArtifact, ProjectionInput } from "./projection.js";
 import type { ProjectionRunner } from "./projection-runner.js";
+import type {
+  InspectionIdentity,
+  InspectionPage,
+  InspectionSource,
+} from "./source.js";
 
 export type { GraphSnapshot };
 
@@ -32,12 +37,8 @@ export class InspectionComparisonError extends Error {
 }
 
 export interface InspectionSessionOptions {
-  /** The configured collection the export reads. */
-  readonly collection: string;
-  /** The embedding space identity the projected vectors belong to. */
-  readonly embeddingSpaceId: string;
-  /** The paginated embedded-record export; the session never writes through it. */
-  readonly store: Pick<NoteStore, "pageEmbedded">;
+  /** The service-backed read surface; the session never writes through it. */
+  readonly source: InspectionSource;
   /** Projection and comparison work, executed off the HTTP event loop. */
   readonly runner: ProjectionRunner;
   /** Disposable coordinates, written after each completed projection. */
@@ -71,11 +72,9 @@ class InspectionStopped extends Error {
 
 /** One host process's inspection state. */
 export class InspectionSession {
-  #store: Pick<NoteStore, "pageEmbedded">;
+  #source: InspectionSource;
   #runner: ProjectionRunner;
   #artifacts: ProjectionArtifactStore;
-  #collection: string;
-  #embeddingSpaceId: string;
   #pollIntervalMs: number;
   #pageLimit: number;
   #now: () => Date;
@@ -92,11 +91,9 @@ export class InspectionSession {
   #cacheTaken = false;
 
   constructor(options: InspectionSessionOptions) {
-    this.#store = options.store;
+    this.#source = options.source;
     this.#runner = options.runner;
     this.#artifacts = options.artifacts;
-    this.#collection = options.collection;
-    this.#embeddingSpaceId = options.embeddingSpaceId;
     this.#pollIntervalMs = options.pollIntervalMs;
     this.#pageLimit = options.pageLimit ?? defaultPageLimit;
     this.#now = options.now ?? (() => new Date());
@@ -225,8 +222,12 @@ export class InspectionSession {
 
   /** One complete inspection job: export, project, publish; failures keep the previous view. */
   async #run(rebuild: boolean): Promise<void> {
+    let identity: InspectionIdentity;
     let exported: Export;
     try {
+      // The collection and embedding-space identity come from the service on every job, so a
+      // reconnected or reconfigured service is never projected as the previous one.
+      identity = await this.#source.identity();
       exported = await this.#export();
     } catch (cause) {
       if (this.#stopped) {
@@ -238,11 +239,11 @@ export class InspectionSession {
     const capturedAt = this.#now().toISOString();
     let artifact: ProjectionArtifact;
     try {
-      const cached = await this.#takeCachedProjection();
+      const cached = await this.#takeCachedProjection(identity);
       this.#throwIfStopped();
       artifact = await this.#runner.project({
-        collection: this.#collection,
-        embeddingSpaceId: this.#embeddingSpaceId,
+        collection: identity.collection,
+        embeddingSpaceId: identity.embeddingSpaceId,
         inputs: exported.inputs,
         rebuild,
         ...(cached === undefined ? {} : { cached }),
@@ -250,7 +251,7 @@ export class InspectionSession {
       this.#throwIfStopped();
       this.#view = buildGraphView({
         capturedAt,
-        embeddingSpaceId: this.#embeddingSpaceId,
+        embeddingSpaceId: identity.embeddingSpaceId,
         projection: artifact,
         notes: exported.notes,
       });
@@ -281,7 +282,7 @@ export class InspectionSession {
   async #export(): Promise<Export> {
     const notes: Note[] = [];
     const inputs: ProjectionInput[] = [];
-    let cursor: Cursor | undefined;
+    let cursor: string | undefined;
     for (;;) {
       this.#throwIfStopped();
       const page = await this.#page(cursor);
@@ -297,17 +298,17 @@ export class InspectionSession {
   }
 
   /** Stop waiting on an export page; remove the subscription as soon as either side settles. */
-  async #page(cursor: Cursor | undefined): Promise<EmbeddedPage> {
+  async #page(cursor: string | undefined): Promise<InspectionPage> {
     this.#throwIfStopped();
     const signal = this.#cancellation.signal;
     let cancel: () => void = () => {};
     try {
-      return await new Promise<EmbeddedPage>((resolve, reject) => {
+      return await new Promise<InspectionPage>((resolve, reject) => {
         cancel = () => {
           reject(new InspectionStopped());
         };
         signal.addEventListener("abort", cancel, { once: true });
-        void this.#store
+        void this.#source
           .pageEmbedded(this.#pageLimit, cursor)
           .then(resolve, reject);
       });
@@ -324,15 +325,17 @@ export class InspectionSession {
   }
 
   /** The stored artifact is offered to the projection once, at the first complete export. */
-  async #takeCachedProjection(): Promise<ProjectionArtifact | undefined> {
+  async #takeCachedProjection(
+    identity: InspectionIdentity,
+  ): Promise<ProjectionArtifact | undefined> {
     if (this.#cacheTaken) {
       return undefined;
     }
     this.#cacheTaken = true;
     try {
       return await this.#artifacts.load({
-        collection: this.#collection,
-        embeddingSpaceId: this.#embeddingSpaceId,
+        collection: identity.collection,
+        embeddingSpaceId: identity.embeddingSpaceId,
       });
     } catch (cause) {
       console.warn(

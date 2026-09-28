@@ -23,6 +23,7 @@ import {
   RecordingRunner,
   removeDirectory,
   ScriptedReads,
+  ScriptedSource,
   scriptedArtifact,
   uuid,
   vector,
@@ -129,10 +130,9 @@ const startHost = async (
   if (options.reads === undefined) {
     reads.seed(note(0), note(1), note(2), note(3), note(4));
   }
+  const source = new ScriptedSource(store, reads);
   const session = new InspectionSession({
-    collection: "notes",
-    embeddingSpaceId: "space-1",
-    store,
+    source,
     runner,
     artifacts: createProjectionArtifactStore(
       options.artifactsDirectory ?? path.join(directory, "artifacts"),
@@ -144,7 +144,7 @@ const startHost = async (
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   const server = await startInspectionServer({
-    reads,
+    reads: source,
     session,
     uiDirectory,
     port: 0,
@@ -414,9 +414,7 @@ describe("inspection host", () => {
     const directory = await makeDirectory("amem-inspector-overlap-");
     let clock = Date.parse("2026-09-28T12:00:00.000Z");
     const session = new InspectionSession({
-      collection: "notes",
-      embeddingSpaceId: "space-1",
-      store,
+      source: new ScriptedSource(store),
       runner: createThreadProjectionRunner(),
       artifacts: createProjectionArtifactStore(directory),
       pollIntervalMs: 0,
@@ -511,9 +509,7 @@ describe("inspection host", () => {
     const runner = new RecordingRunner();
     const directory = await makeDirectory("amem-inspector-stop-");
     const session = new InspectionSession({
-      collection: "notes",
-      embeddingSpaceId: "space-1",
-      store,
+      source: new ScriptedSource(store),
       runner,
       artifacts: createProjectionArtifactStore(directory),
       pollIntervalMs: 0,
@@ -553,9 +549,7 @@ describe("inspection host", () => {
     });
     const directory = await makeDirectory("amem-inspector-stalled-");
     const session = new InspectionSession({
-      collection: "notes",
-      embeddingSpaceId: "space-1",
-      store,
+      source: new ScriptedSource(store),
       runner,
       artifacts: createProjectionArtifactStore(directory),
       pollIntervalMs: 0,

@@ -25,6 +25,7 @@ import {
   InspectionComparisonError,
   type InspectionSession,
 } from "./session.js";
+import { InspectionInputError } from "./source.js";
 
 /** The public read operations the host composes; it never writes or generates. */
 export interface InspectionReads {
@@ -219,7 +220,10 @@ const handleRequest = async (
       });
     } catch (cause) {
       // The public API validates the query and limits; its input failures are the caller's.
-      if (cause instanceof MemoryError && cause.stage === "input") {
+      if (
+        cause instanceof InspectionInputError ||
+        (cause instanceof MemoryError && cause.stage === "input")
+      ) {
         throw new HttpFailure(400, "The search request is not valid.", {
           cause,
         });

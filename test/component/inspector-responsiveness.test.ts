@@ -15,6 +15,7 @@ import {
   record,
   removeDirectory,
   ScriptedReads,
+  ScriptedSource,
   waitFor,
 } from "./support/inspection.js";
 
@@ -56,9 +57,7 @@ describe("inspection responsiveness", () => {
     const store = new PagedEmbeddedStore();
     store.seed(...Array.from({ length: 8 }, (_, index) => record(index)));
     const session = new InspectionSession({
-      collection: "notes",
-      embeddingSpaceId: "space-1",
-      store,
+      source: new ScriptedSource(store),
       runner: createThreadProjectionRunner({
         workerUrl: new URL(
           "./fixtures/blocking-projection.worker.mjs",
@@ -106,9 +105,7 @@ describe("inspection responsiveness", () => {
     const store = new PagedEmbeddedStore();
     store.seed(...Array.from({ length: 8 }, (_, index) => record(index)));
     const session = new InspectionSession({
-      collection: "notes",
-      embeddingSpaceId: "space-1",
-      store,
+      source: new ScriptedSource(store),
       runner: createThreadProjectionRunner({
         workerUrl: new URL(
           "./fixtures/blocking-projection.worker.mjs",

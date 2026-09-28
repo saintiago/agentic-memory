@@ -61,6 +61,10 @@ Tokenizer artifacts come from that same pinned revision, without host overrides.
 download permission do not alter the space ID. Expose these settings alongside the ID for diagnosis.
 Identical dimensions are insufficient evidence of compatibility.
 
+The component also exports the declared reference space itself, derived from those settings without
+loading artifacts, so a host that must bind durable state — for example the ingestion queue's
+collection binding — reads the same identity the loaded encoder later reports.
+
 ## Length and validation
 
 Set the reference maximum to 8,192 tokenizer tokens including special tokens. Use tokenizer

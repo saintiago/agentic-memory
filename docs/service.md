@@ -92,6 +92,10 @@ model endpoint and credentials, HTTP port and request-size limit. Store durable 
 workspaces. Consumers configure only the service URL and their source identity; connection failures
 remain explicit. No Nexus-specific configuration discovery is part of the service.
 
+The concrete variables, launch command, supervision example and client usage are in
+[service/README.md](../service/README.md); the service publishes the route definition in
+[service/openapi.json](../service/openapi.json).
+
 Initial deployment is loopback-only and trusts local operating-system users. Do not enable permissive
 CORS. Reject browser requests with an untrusted Origin; state-changing requests require JSON. The
 dashboard host accesses the API server-side and exposes only its inspection routes to the browser.

@@ -79,6 +79,24 @@ module.exports = {
       from: { path: "^src/" },
       to: { path: "^inspector/" },
     },
+    {
+      name: "no-library-imports-service",
+      severity: "error",
+      comment:
+        "The local memory service is a separate host process; the library never depends on " +
+        "its HTTP surface, lifecycle or providers.",
+      from: { path: "^src/" },
+      to: { path: "^service/" },
+    },
+    {
+      name: "no-service-imports-inspector",
+      severity: "error",
+      comment:
+        "The service and the local inspection host are separate consumer processes; the " +
+        "service never depends on the dashboard host.",
+      from: { path: "^service/" },
+      to: { path: "^inspector/" },
+    },
   ],
   options: {
     tsPreCompilationDeps: true,

@@ -10,55 +10,38 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 
 describe("inspection process lifecycle", () => {
   it.each(["SIGINT", "SIGTERM"] as const)(
-    "%s terminates stalled SDK export, detail and search requests before their timeout",
+    "%s terminates stalled service export, detail and search requests before their timeout",
     async (signal) => {
       const held = new Set<string>();
       const closed = new Set<string>();
-      // Controlled provider protocol, using the real SDK and NoteStore; no real Qdrant service.
+      // Controlled memory-service protocol; the host's real client and shutdown path run.
       const provider = createServer((request, response) => {
         const route = request.url ?? "";
         request.resume();
-        if (route.includes("/points")) {
-          held.add(route);
-          response.once("close", () => {
-            closed.add(route);
-          });
+        if (route === "/v1/status") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              collection: "notes",
+              embeddingSpace: {
+                id: "shutdown-test",
+                dimensions: 4,
+                distance: "Cosine",
+              },
+              availability: {
+                submission: true,
+                retrieval: true,
+                ingestion: true,
+              },
+            }),
+          );
           return;
         }
-        const space = {
-          id: "shutdown-test",
-          dimensions: 4,
-          distance: "Cosine",
-        };
-        const body =
-          route === "/"
-            ? { version: "1.19.1" }
-            : {
-                status: "ok",
-                time: 0,
-                result: route.endsWith("/exists")
-                  ? { exists: true }
-                  : {
-                      config: {
-                        params: {
-                          vectors: {
-                            size: 4,
-                            distance: "Cosine",
-                            datatype: "float32",
-                          },
-                        },
-                        metadata: {
-                          agenticMemory: {
-                            schemaVersion: 1,
-                            representation: "amem-note-v1",
-                            embeddingSpace: space,
-                          },
-                        },
-                      },
-                    },
-              };
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(body));
+        // The export, detail and search requests stay unanswered until the host exits.
+        held.add(route);
+        response.once("close", () => {
+          closed.add(route);
+        });
       });
       provider.listen(0, "127.0.0.1");
       await once(provider, "listening");
@@ -96,7 +79,7 @@ describe("inspection process lifecycle", () => {
         );
         await waitFor(
           () => held.size === 3,
-          "SDK scroll, retrieve and query requests",
+          "service export, detail and search requests",
         );
         const started = Date.now();
         child.kill(signal);

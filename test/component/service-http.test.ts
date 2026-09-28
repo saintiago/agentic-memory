@@ -396,6 +396,47 @@ describe("status route", () => {
 });
 
 describe("ingestion through the API", () => {
+  it("drains concurrent client submissions through one writer and one encoder", async () => {
+    const harness = await openService();
+    const submissions = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        postJson(harness.url("/v1/observations"), {
+          sourceKey: `concurrent-${String(index)}`,
+          content: `Concurrent observation ${String(index)}.`,
+        }),
+      ),
+    );
+    expect(submissions.map((response) => response.status)).toEqual([
+      202, 202, 202, 202, 202,
+    ]);
+    const receiptIds = submissions.map(
+      (response) => (response.body as { id: string }).id,
+    );
+    await waitFor(async () => {
+      const statuses = await Promise.all(
+        receiptIds.map(async (id) => {
+          const response = await receiptOf(harness, id);
+          return (response.body as { status: string }).status;
+        }),
+      );
+      return statuses.every((status) => status === "stored");
+    }, "every concurrent observation to be stored");
+
+    expect(harness.providers.store.writes.length).toBeGreaterThanOrEqual(5);
+    const noteIds = new Set(
+      harness.providers.store.writes.flatMap((batch) =>
+        batch.map((entry) => entry.note.id),
+      ),
+    );
+    expect(noteIds.size).toBe(5);
+    // One shared encoder and model served every insertion through the single writer.
+    expect(
+      harness.providers.model.requests.filter(
+        (request) => request.stage === "construct",
+      ),
+    ).toHaveLength(5);
+  });
+
   it("stores a submitted observation and serves it through search and reads", async () => {
     const harness = await openService();
     const accepted = await postJson(harness.url("/v1/observations"), {
