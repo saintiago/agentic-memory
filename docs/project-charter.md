@@ -50,8 +50,10 @@ The product is a library with replaceable infrastructure boundaries. Its initial
 insertion, linking, evolution, retrieval and inspection. It uses Qdrant and embeddings directly,
 without depending on the earlier A-MEM package or either prototype's implementation.
 
-Artifact parsers, Nexus integration, an agent runtime, answer generation, a hosted service and a
-production graph UI are separate consumer concerns. Automatic pruning, merging, permanent evolution
+Artifact parsers, Nexus integration, an agent runtime, answer generation and a production graph UI
+are separate consumer concerns. A local memory service with an HTTP API and durable ingestion queue
+supports concurrent clients, shared embeddings and restart recovery. Remote hosting and distributed
+service replicas are outside scope. Automatic pruning, merging, permanent evolution
 history, domain-specific filters and distributed concurrent writers are outside the initial scope.
 
 ## Evidence of value

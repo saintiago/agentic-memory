@@ -11,7 +11,7 @@ events from an application's logs or decide whether an event deserves to be reme
 Dependencies are the provider-owned [NoteStore](note-store.md#interface),
 [Embedder](embeddings.md#interface) and [LanguageModel](language-model.md#interface) contracts.
 `Note`, `Attributes`, `Page` and `Cursor` below are imported from NoteStore's public interface.
-Composition and dependency lifecycle are described in [architecture](architecture.md#composition).
+Composition and dependency lifecycle are described in [architecture](architecture.md#library-composition).
 
 ```ts
 interface AddInput {
@@ -175,6 +175,15 @@ particular, retrying `add` creates a fresh ID and can duplicate an uncertain ins
 must stop its ingestion, inspect the affected IDs and its retained source input, and decide how to
 reconcile storage before resuming. This baseline provides diagnosis, not automatic crash recovery,
 exactly-once ingestion or reconstruction of an interrupted evolution plan.
+
+## Durable preparation and application
+
+The [ingestion queue interface](ingestion-queue.md#interface) also requires public prepare/apply
+operations. Preparation uses the same construction and evolution rules as add, accepts the durable
+operation's fixed note ID and timestamp, and produces complete records without writes. Application
+validates plan version and collection/embedding binding and writes the exact supplied records without
+regeneration. Reapplication preserves identities, vectors and timestamps. The queue owns exclusivity
+and plan durability; raw add's uncertain-failure behavior above remains unchanged.
 
 ## Verification
 

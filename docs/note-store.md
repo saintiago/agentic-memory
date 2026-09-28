@@ -73,7 +73,9 @@ through the public package boundary; the inspection host calls the supplied stor
 `put` replaces complete supplied records at their IDs. Empty input is a no-op. Validate the entire
 batch before dispatch; duplicate record IDs in one batch are invalid. Return only after acknowledged
 application, or throw. This is an upsert primitive, not caller-content conflict detection. It does
-not promise a multi-record transaction or guaranteed rollback on failure.
+not promise a multi-record transaction or guaranteed rollback on failure. Reapplying the same complete
+records at the same identities preserves their supplied values, including vectors and update times;
+this is the storage property used by durable insertion-plan replay.
 
 ## Update time
 
