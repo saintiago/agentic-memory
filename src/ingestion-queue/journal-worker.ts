@@ -552,8 +552,9 @@ class JournalState {
         oldest === undefined
           ? undefined
           : requiredText(oldest["accepted_at"], "accepted_at"),
-      oldestPendingError:
-        oldest === undefined ? undefined : optionalText(oldest["last_error"]),
+      pendingError:
+        this.unresolvedReconciliation()?.lastError ??
+        (oldest === undefined ? undefined : optionalText(oldest["last_error"])),
     };
   }
 
@@ -659,8 +660,9 @@ const sameLegacyObservation = (
  * A preserved pending observation adds nothing to a receipt the queue already holds — the queue's
  * own durable state is authoritative — and a completed receipt resolves an uncertainty unless the
  * legacy record names a different identity, which is a conflict. An uncertain record that names an
- * observation the queue has not written, has not committed a plan for and has not already decided
- * becomes a reconciliation block, because the legacy system may have written it.
+ * observation whose legacy outcome has not already been decided becomes a reconciliation block.
+ * A queue plan (or interrupted preparation) cannot establish a separate legacy insertion's outcome,
+ * even when its note identity matches: the legacy write may have changed other records.
  */
 const legacyVerdict = (
   present: JournalRecord,
@@ -674,12 +676,7 @@ const legacyVerdict = (
       ? "existing"
       : "conflict";
   }
-  if (
-    present.reconciled ||
-    present.requiresReconciliation ||
-    present.planCommitted ||
-    present.status === "processing"
-  ) {
+  if (present.reconciled || present.requiresReconciliation) {
     return "existing";
   }
   return "reconcile";

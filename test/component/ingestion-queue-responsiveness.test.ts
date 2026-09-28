@@ -8,6 +8,7 @@ import { expect, it } from "vitest";
 import {
   AgenticMemory,
   openIngestionQueue,
+  QueueWorkerLockedError,
   type IngestionQueue,
   type MemoryPreparer,
 } from "../../src/index.js";
@@ -76,6 +77,59 @@ it("keeps the producer's event loop free while another connection holds the jour
     expect((await queue.status()).accepted).toBe(1);
   } finally {
     await queue.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("excludes worker startup until a contended migration commits without reporting a running worker", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "amem-queue-migration-"));
+  const embedder = new ControlledEmbedder();
+  const store = new RecordingStore();
+  const memory = new AgenticMemory(store, embedder, {
+    generate: async () => {
+      throw new Error("Uncertainty must prevent generation.");
+    },
+  });
+  const options = {
+    directory,
+    binding: {
+      endpoint: "http://127.0.0.1:6333",
+      collection: "memories",
+      embeddingSpace: { ...embedder.space },
+    },
+    memory,
+    pollIntervalMs: 10,
+  };
+  const importer = await openIngestionQueue(options);
+  const contender = await openIngestionQueue(options);
+  const blocker = new DatabaseSync(importer.journalPath);
+  let importing: Promise<unknown> | undefined;
+  try {
+    await contender.submit({ sourceKey: "pending", content: "Pending." });
+    blocker.exec("BEGIN IMMEDIATE");
+    importing = importer.importLegacyReceipts([
+      { status: "uncertain", sourceKey: "legacy", content: "Unknown outcome." },
+    ]);
+    await expect(contender.start()).rejects.toBeInstanceOf(
+      QueueWorkerLockedError,
+    );
+    expect((await contender.status()).worker).toBe("stopped");
+    blocker.exec("COMMIT");
+    await expect(importing).resolves.toEqual({
+      imported: 1,
+      existing: 0,
+      blocked: 1,
+    });
+    await contender.start();
+    expect(await contender.status()).toMatchObject({
+      counts: { blocked: 1, queued: 1 },
+    });
+    expect(store.writes).toEqual([]);
+  } finally {
+    blocker.close();
+    await importing;
+    await importer.close();
+    await contender.close();
     await rm(directory, { recursive: true, force: true });
   }
 }, 30_000);

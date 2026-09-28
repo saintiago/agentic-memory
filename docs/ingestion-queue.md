@@ -143,7 +143,10 @@ keys, inputs and timestamps. Import is idempotent and does not scan historical w
 stored receipts preserve their completed identity. Legacy in-flight or uncertain receipts without a
 durable plan require reconciliation before further collection writes; the new recovery guarantee
 cannot reconstruct a plan that was never saved. Stop old writers during migration and remove their
-competing ingestion path before starting the queue worker.
+competing ingestion path before starting the queue worker. Imports take the same exclusive ownership
+as draining and reject with `QueueWorkerLockedError` while a worker or another import owns it; stop
+the worker before importing, including for reimports. Ownership is held through the import commit
+so worker startup cannot overlap migration.
 
 An unresolved legacy uncertainty blocks every further collection write, whatever its position in
 the drain order and whatever a batch also contains: the legacy mutation may have changed the state
@@ -151,7 +154,9 @@ that any later write would evolve. Reimporting a legacy record whose observation
 accepted receipt stays idempotent only while the recorded outcomes agree. An uncertain record that
 names an observation the queue has not written turns that receipt into a reconciliation block, an
 operator decision leaves the receipt as it is, and a disagreeing completed identity is refused as a
-conflict. Uncertain legacy evidence is never treated as a known-unwritten observation.
+conflict. Preparation in progress or a committed queue plan does not resolve the outcome of a
+separate legacy insertion, even when it names the same note ID. Uncertain legacy evidence is never
+treated as a known-unwritten observation.
 
 One blocked receipt is reconciled explicitly: `stored` records the completed note identity, and
 `not-written` clears the unusable plan so preparation restarts with the accepted note identity and

@@ -27,6 +27,7 @@ import {
   RecordingStore,
   ScriptedModel,
   flush,
+  deferred,
   rejection,
 } from "./support/memory-harness.js";
 
@@ -460,6 +461,30 @@ describe("worker lifecycle", () => {
     expect((await receiptOf(harness.queue, waiting.id)).status).toBe("queued");
     expect((await harness.queue.status()).worker).toBe("stopped");
   });
+
+  it.each(["stop", "close"] as const)(
+    "%s leaves queued work unclaimed when journal selection is pending",
+    async (operation) => {
+      const harness = await createHarness();
+      harness.model.queue("construct", CONSTRUCTED);
+      const accepted = await harness.queue.submit({
+        sourceKey: "waiting",
+        content: "Waiting.",
+      });
+      // start resolves while the worker awaits its first journal selection.
+      await harness.queue.start();
+      expect(harness.preparer.prepares).toEqual([]);
+      await harness.queue[operation]();
+      const reopened = await createHarness({ directory: harness.directory });
+      expect(await receiptOf(reopened.queue, accepted.id)).toMatchObject({
+        status: "queued",
+        attemptCount: 0,
+      });
+      expect(harness.preparer.prepares).toEqual([]);
+      expect(harness.preparer.applies).toEqual([]);
+      expect((await reopened.queue.status()).worker).toBe("stopped");
+    },
+  );
 
   it("settles a stop that arrives while ownership is still being acquired", async () => {
     const harness = await createHarness();
@@ -1081,6 +1106,151 @@ describe("retry, blocking and recovery", () => {
 });
 
 describe("legacy receipt migration", () => {
+  it.each(["prepare", "apply"] as const)(
+    "refuses imports through either handle during %s without accepting uncertainty",
+    async (stage) => {
+      const harness = await createHarness();
+      const other = await createHarness({ directory: harness.directory });
+      const gate = deferred<void>();
+      const entered = deferred<void>();
+      const operation = harness.preparer[stage].bind(harness.preparer);
+      // Hold a public provider boundary, leaving the real queue and both journals active.
+      if (stage === "prepare") {
+        vi.spyOn(harness.preparer, "prepare").mockImplementation(
+          async (input) => {
+            entered.resolve();
+            await gate.promise;
+            return (operation as MemoryPreparer["prepare"])(input);
+          },
+        );
+      } else {
+        vi.spyOn(harness.preparer, "apply").mockImplementation(async (plan) => {
+          entered.resolve();
+          await gate.promise;
+          return (operation as MemoryPreparer["apply"])(plan);
+        });
+      }
+      harness.model.queue("construct", CONSTRUCTED);
+      const accepted = await harness.queue.submit({
+        sourceKey: "active",
+        content: "Active.",
+      });
+      await harness.queue.start();
+      await entered.promise;
+      try {
+        for (const queue of [harness.queue, other.queue]) {
+          await expect(
+            queue.importLegacyReceipts([
+              { status: "pending", sourceKey: "pending", content: "Pending." },
+              {
+                status: "uncertain",
+                sourceKey: "uncertain",
+                content: "Uncertain.",
+                receiptId: LEGACY_RECEIPT_ID,
+              },
+            ]),
+          ).rejects.toBeInstanceOf(QueueWorkerLockedError);
+          expect(await queue.receipt(LEGACY_RECEIPT_ID)).toBeUndefined();
+          expect((await queue.status()).accepted).toBe(1);
+        }
+      } finally {
+        gate.resolve();
+      }
+      await settle(
+        async () =>
+          (await harness.queue.receipt(accepted.id))?.status === "stored",
+        "the active operation to settle",
+      );
+      await harness.queue.stop();
+      expect(
+        await other.queue.importLegacyReceipts([
+          {
+            status: "uncertain",
+            sourceKey: "uncertain",
+            content: "Uncertain.",
+            receiptId: LEGACY_RECEIPT_ID,
+          },
+        ]),
+      ).toEqual({ imported: 1, existing: 0, blocked: 1 });
+    },
+  );
+
+  it.each([
+    ["prepared", "different"],
+    ["prepared", "same"],
+    ["prepared", "unknown"],
+    ["preparing", "different"],
+    ["preparing", "same"],
+    ["preparing", "unknown"],
+  ] as const)(
+    "blocks legacy uncertainty for a %s receipt with a %s identity",
+    async (phase, identity) => {
+      const harness = await createHarness();
+      harness.model.queue("construct", CONSTRUCTED);
+      if (phase === "prepared")
+        harness.store.failNextWrites(new Error("Lost acknowledgement."));
+      else harness.store.nearestError = new Error("Preparation interrupted.");
+      const accepted = await harness.queue.submit({
+        sourceKey: "shared",
+        content: "Observation.",
+      });
+      await harness.queue.start();
+      await settle(
+        async () =>
+          (await harness.queue.receipt(accepted.id))?.status === "retrying",
+        "the interrupted attempt",
+      );
+      await harness.queue.stop();
+      if (phase === "preparing") {
+        // Persist the state left by termination during preparation, before a plan was saved.
+        const journal = new DatabaseSync(harness.queue.journalPath);
+        journal
+          .prepare("UPDATE receipts SET status = 'processing' WHERE id = ?")
+          .run(accepted.id);
+        journal.close();
+      }
+      const record: LegacyReceipt = {
+        status: "uncertain",
+        sourceKey: "shared",
+        content: "Observation.",
+        ...(identity === "unknown"
+          ? {}
+          : {
+              noteId:
+                identity === "same"
+                  ? harness.preparer.prepares[0]!.noteId
+                  : OTHER_ID,
+            }),
+      };
+      expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+        imported: 0,
+        existing: 0,
+        blocked: 1,
+      });
+      expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+        imported: 0,
+        existing: 1,
+        blocked: 0,
+      });
+      expect(await receiptOf(harness.queue, accepted.id)).toMatchObject({
+        status: "blocked",
+      });
+      const preparations = harness.preparer.prepares.length;
+      const applications = harness.preparer.applies.length;
+      await harness.queue.start();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(harness.preparer.prepares).toHaveLength(preparations);
+      expect(harness.preparer.applies).toHaveLength(applications);
+      await harness.queue.stop();
+      await harness.queue.reconcile(accepted.id, { outcome: "not-written" });
+      expect(await harness.queue.importLegacyReceipts([record])).toEqual({
+        imported: 0,
+        existing: 1,
+        blocked: 0,
+      });
+    },
+  );
+
   it("imports pending observations idempotently and drains them with their timestamps", async () => {
     const harness = await createHarness();
     const records: LegacyReceipt[] = [
@@ -1120,6 +1290,7 @@ describe("legacy receipt migration", () => {
     expect(first.sourceKey).toBe("legacy-1");
     expect(first.status).toBe("stored");
     expect(harness.store.stored(first.noteId!)?.timestamp).toBe(NOTE_TIMESTAMP);
+    await harness.queue.stop();
     const second = await harness.queue.importLegacyReceipts(records);
     expect(second).toEqual({ imported: 0, existing: 2, blocked: 0 });
     expect(await receiptOf(harness.queue, LEGACY_RECEIPT_ID)).toEqual(first);
@@ -1326,6 +1497,7 @@ describe("legacy receipt migration", () => {
     });
     expect(reconciled.status).toBe("stored");
     expect(reconciled.noteId).toBe(OTHER_ID);
+    await harness.queue.stop();
     expect(await harness.queue.importLegacyReceipts([record])).toEqual({
       imported: 0,
       existing: 1,
@@ -1384,6 +1556,7 @@ describe("legacy receipt migration", () => {
       "the observation to be stored",
     );
 
+    await harness.queue.stop();
     await expect(
       harness.queue.importLegacyReceipts([
         {
@@ -1398,6 +1571,44 @@ describe("legacy receipt migration", () => {
 });
 
 describe("receipts and status", () => {
+  it("shares a later global block's diagnostic and clears it after reconciliation on another handle", async () => {
+    const harness = await createHarness();
+    await harness.queue.submit({
+      sourceKey: "older",
+      content: "Older queued work.",
+    });
+    await harness.queue.importLegacyReceipts([
+      {
+        status: "uncertain",
+        sourceKey: "later",
+        content: "Unknown outcome.",
+        receiptId: LEGACY_RECEIPT_ID,
+      },
+    ]);
+    const other = await createHarness({ directory: harness.directory });
+    await harness.queue.start();
+    await vi.advanceTimersByTimeAsync(100);
+    await harness.queue.stop();
+    for (const queue of [harness.queue, other.queue]) {
+      expect((await queue.status()).lastError).toContain("reconciliation");
+      expect((await queue.status()).counts).toMatchObject({
+        queued: 1,
+        blocked: 1,
+      });
+    }
+    await other.queue.close();
+    const reopened = await createHarness({ directory: harness.directory });
+    expect((await reopened.queue.status()).lastError).toContain(
+      "reconciliation",
+    );
+    await reopened.queue.reconcile(LEGACY_RECEIPT_ID, {
+      outcome: "not-written",
+    });
+    // The stopped worker must not retain its old diagnostic after another handle resolves it.
+    expect((await harness.queue.status()).lastError).toBeUndefined();
+    expect((await reopened.queue.status()).lastError).toBeUndefined();
+  });
+
   it("reports outcomes, backlog, oldest pending age and worker availability", async () => {
     const harness = await createHarness();
     harness.model.queue("construct", CONSTRUCTED);
@@ -1468,6 +1679,7 @@ describe("receipts and status", () => {
 
     // Availability belongs to the queue, not to the handle that happens to run the worker.
     expect((await second.queue.status()).worker).toBe("running");
+    await first.queue.stop();
 
     expect(
       await second.queue.importLegacyReceipts([
@@ -1479,6 +1691,7 @@ describe("receipts and status", () => {
         },
       ]),
     ).toEqual({ imported: 1, existing: 0, blocked: 1 });
+    await first.queue.start();
     await vi.advanceTimersByTimeAsync(5_000);
     const reported = await second.queue.status();
     expect(reported.lastError).toContain("reconciliation");

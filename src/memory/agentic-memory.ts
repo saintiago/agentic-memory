@@ -371,7 +371,7 @@ export class AgenticMemory {
           ? {}
           : { metadata: request.metadata }),
       });
-      return await this.#applyPlan("add", plan);
+      return await this.#applyPlan("add", this.#readPlan("add", plan));
     });
   }
 
@@ -389,10 +389,12 @@ export class AgenticMemory {
   /**
    * Apply one prepared plan: validate its version and declared embedding space, then write its
    * exact records through the store's `put` contract without regenerating anything. Reapplying the
-   * same plan preserves identities, vectors and update times.
+   * same plan preserves identities, vectors and update times. Validation detaches the supplied
+   * plan at invocation, before waiting for earlier insertions.
    */
   async apply(plan: InsertionPlan): Promise<Note> {
-    return await this.#enqueue(() => this.#applyPlan("apply", plan));
+    const prepared = this.#readPlan("apply", plan);
+    return await this.#enqueue(() => this.#applyPlan("apply", prepared));
   }
 
   /**
@@ -607,7 +609,7 @@ export class AgenticMemory {
     return this.#plan(noteId, batch);
   }
 
-  /** Assemble the versioned, immutable plan for one completed insertion decision. */
+  /** Detach provider-owned records before freezing the completed insertion decision. */
   #plan(noteId: string, records: EmbeddedNote[]): InsertionPlan {
     const space = this.#embedder.space;
     return deepFreeze({
@@ -619,19 +621,16 @@ export class AgenticMemory {
         distance: space.distance,
       },
       noteId,
-      records,
+      records: structuredClone(records),
     });
   }
 
   /**
-   * Validate and apply one plan. A plan is applicable when it declares this schema version and
-   * representation and the exact embedding space of this instance; the write then uses its records
-   * unchanged. A rejected plan fails before any write, while a rejected write attempt is uncertain.
+   * Validate and detach one plan. A plan is applicable when it declares this schema version and
+   * representation and the exact embedding space of this instance. Validation runs before
+   * enqueueing caller-supplied plans, so later mutations cannot change pending work.
    */
-  async #applyPlan(
-    operation: "add" | "apply",
-    plan: InsertionPlan,
-  ): Promise<Note> {
+  #readPlan(operation: "add" | "apply", plan: InsertionPlan): InsertionPlan {
     const parsed = insertionPlanSchema.safeParse(plan);
     if (!parsed.success) {
       throw insertionFailure(
@@ -690,6 +689,18 @@ export class AgenticMemory {
         prepared.noteId,
       );
     }
+    return prepared;
+  }
+
+  /** Apply the already validated, detached records in insertion order. */
+  async #applyPlan(
+    operation: "add" | "apply",
+    prepared: InsertionPlan,
+  ): Promise<Note> {
+    const incoming = prepared.records.find(
+      (record) =>
+        record.note.id.toLowerCase() === prepared.noteId.toLowerCase(),
+    )!;
     await this.#persist(operation, prepared.records, prepared.noteId);
     return detachNote(incoming.note);
   }

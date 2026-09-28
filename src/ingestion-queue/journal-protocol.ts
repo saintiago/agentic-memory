@@ -60,8 +60,8 @@ export interface JournalFailure {
 export interface JournalStatus {
   readonly counts: Record<QueueReceiptStatus, number>;
   readonly oldestPendingAt: string | undefined;
-  /** The safe diagnostic the oldest pending receipt recorded, if it recorded one. */
-  readonly oldestPendingError: string | undefined;
+  /** The global reconciliation diagnostic, otherwise the oldest pending receipt's error. */
+  readonly pendingError: string | undefined;
 }
 
 /** The journal bound to the version, representation and binding of its first handle. */

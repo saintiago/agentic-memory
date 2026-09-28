@@ -331,7 +331,7 @@ class DurableQueue implements IngestionQueue {
   #stopEpoch = 0;
   #closed = false;
   #wakeup: (() => void) | undefined;
-  #lastError: string | undefined;
+  #workerError: string | undefined;
 
   constructor(
     journal: Journal,
@@ -378,9 +378,9 @@ class DurableQueue implements IngestionQueue {
     this.#assertOpen();
     const [journalStatus, workerOwned] = await Promise.all([
       this.#journal.status(),
-      WorkerLock.isHeld(this.journalPath),
+      WorkerLock.isWorkerRunning(this.journalPath),
     ]);
-    const { counts, oldestPendingAt, oldestPendingError } = journalStatus;
+    const { counts, oldestPendingAt, pendingError } = journalStatus;
     const accepted = Object.values(counts).reduce(
       (total, count) => total + count,
       0,
@@ -388,9 +388,9 @@ class DurableQueue implements IngestionQueue {
     const backlog =
       counts.queued + counts.processing + counts.retrying + counts.blocked;
     const now = Date.now();
-    // A handle-local failure wins; otherwise the durable pending receipt carries the reason the
-    // backlog is held, which another handle and a reopened queue must also report.
-    const lastError = this.#lastError ?? oldestPendingError;
+    // Receipt diagnostics belong to the journal, including global reconciliation blocks.
+    // Only unexpected worker-lifecycle failures need a handle-local fallback.
+    const lastError = pendingError ?? this.#workerError;
     return queueStatusSchema.parse({
       worker: workerOwned ? "running" : "stopped",
       accepted,
@@ -417,14 +417,20 @@ class DurableQueue implements IngestionQueue {
         parsed.error,
       );
     }
-    const result = await this.#journal.importLegacy(
-      parsed.data,
-      new Date().toISOString(),
-    );
-    if (result.imported > 0) {
-      this.#wake();
+    // Migration and draining share exclusive ownership across all handles/processes. A probe
+    // followed by an import would race startup or an in-flight application. Hold ownership
+    // until the import commits, and refuse migration while a worker owns the queue.
+    const lock = await WorkerLock.acquire(this.journalPath, "migration");
+    try {
+      this.#assertOpen();
+      const result = await this.#journal.importLegacy(
+        parsed.data,
+        new Date().toISOString(),
+      );
+      return legacyImportResultSchema.parse(result);
+    } finally {
+      await lock.release();
     }
-    return legacyImportResultSchema.parse(result);
   }
 
   async reconcile(
@@ -554,6 +560,7 @@ class DurableQueue implements IngestionQueue {
     }
     // The worker loop reports its own failures through `status()`, so it never rejects; a
     // supervisor restarts it by calling `start()` again.
+    this.#workerError = undefined;
     this.#worker = this.#runWorker(lock).finally(() => {
       this.#worker = undefined;
     });
@@ -571,7 +578,6 @@ class DurableQueue implements IngestionQueue {
         if (unresolved !== undefined) {
           // The legacy system may have written this observation, so no collection write may
           // proceed until an operator reconciles it, whatever its place in the drain order.
-          this.#lastError = unresolved.lastError;
           await this.#wait(this.#pollIntervalMs);
           continue;
         }
@@ -593,16 +599,20 @@ class DurableQueue implements IngestionQueue {
           await this.#wait(Math.min(remaining, this.#pollIntervalMs));
           continue;
         }
+        // Selection crosses the journal thread; shutdown may have arrived while it was pending.
+        if (this.#stopRequested) {
+          break;
+        }
         await this.#process(pending);
       }
     } catch (cause) {
       // A failure that stops the loop leaves pending work durable for a supervised restart.
-      this.#lastError = classifyFailure(cause).reason;
+      this.#workerError = classifyFailure(cause).reason;
     } finally {
       try {
         await lock.release();
       } catch (cause) {
-        this.#lastError = classifyFailure(cause).reason;
+        this.#workerError = classifyFailure(cause).reason;
       }
     }
   }
@@ -631,7 +641,6 @@ class DurableQueue implements IngestionQueue {
         note.id,
         new Date().toISOString(),
       );
-      this.#lastError = undefined;
     } catch (cause) {
       const decision = classifyFailure(cause);
       const nextRetryAt = decision.retryAfterBackoff
@@ -649,7 +658,6 @@ class DurableQueue implements IngestionQueue {
         },
         new Date().toISOString(),
       );
-      this.#lastError = diagnostic;
     }
   }
 

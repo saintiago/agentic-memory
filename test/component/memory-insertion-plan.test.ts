@@ -167,6 +167,81 @@ describe("durable insertion preparation", () => {
     expect(harness.store.stored(NOTE_ID)).toEqual(incoming.note);
   });
 
+  it.each(["add", "prepare"] as const)(
+    "%s leaves shared provider records mutable and detaches the whole plan",
+    async (operation) => {
+      const harness = createMemory();
+      harness.store.seed({
+        note: candidate({ metadata: { nested: { values: ["original"] } } }),
+        vector: [1, 0, 0, 0],
+      });
+      const shared = harness.store.records.get(CANDIDATE_ID)!;
+      const metadata = shared.note.metadata as { nested: { values: string[] } };
+      vi.spyOn(harness.store, "nearest").mockResolvedValue([
+        { note: shared.note, score: 1 },
+      ]);
+      const put = harness.store.put.bind(harness.store);
+      vi.spyOn(harness.store, "put").mockImplementation(async (records) => {
+        // A conforming provider can replace records by updating its existing storage arrays.
+        const replacement = records.find(
+          (record) => record.note.id === CANDIDATE_ID,
+        )!;
+        shared.note.links.splice(
+          0,
+          shared.note.links.length,
+          ...replacement.note.links,
+        );
+        metadata.nested.values.splice(
+          0,
+          metadata.nested.values.length,
+          "updated",
+        );
+        await put(records);
+      });
+      harness.model.queue("construct", CONSTRUCTED);
+      harness.model.queue("evolve", () => ({
+        links: [CANDIDATE_ID],
+        newTags: ["incoming"],
+        updates: [
+          {
+            id: CANDIDATE_ID,
+            context: "A revised neighbor context.",
+            keywords: ["revised"],
+            tags: ["history"],
+          },
+        ],
+      }));
+      const input = {
+        noteId: NOTE_ID,
+        content: "The incoming account.",
+        timestamp: NOTE_TIMESTAMP,
+      };
+      if (operation === "prepare") {
+        const plan = await harness.memory.prepare(input);
+        const snapshot = structuredClone(plan);
+        expect(harness.store.writes).toEqual([]);
+        expect(Object.isFrozen(shared.note.links)).toBe(false);
+        expect(Object.isFrozen(metadata.nested.values)).toBe(false);
+        shared.note.links.push(OTHER_ID);
+        metadata.nested.values.push("provider change");
+        expect(plan).toEqual(snapshot);
+        await harness.memory.apply(plan);
+        expect(harness.store.writes[0]).toEqual(snapshot.records);
+      } else {
+        await harness.memory.add({
+          content: input.content,
+          timestamp: input.timestamp,
+        });
+      }
+      expect(harness.store.stored(CANDIDATE_ID)).toMatchObject({
+        context: "A revised neighbor context.",
+        links: [],
+        metadata: { nested: { values: ["original"] } },
+      });
+      expect(harness.store.writes).toHaveLength(1);
+    },
+  );
+
   it("validates preparation input before any provider work", async () => {
     const cases: ReadonlyArray<[string, () => unknown]> = [
       [
@@ -280,6 +355,45 @@ describe("durable insertion application", () => {
     note.tags.push("appended-through-the-returned-note");
     expect(harness.store.stored(note.id)).toEqual(plan.records[0]!.note);
   });
+
+  it.each([false, true])(
+    "snapshots a deserialized plan at invocation (earlier insertion pending: %s)",
+    async (pending) => {
+      const harness = createMemory();
+      const original = await preparedPlan(harness);
+      const supplied = JSON.parse(JSON.stringify(original)) as InsertionPlan;
+      supplied.records[0]!.note.metadata = { nested: { values: ["original"] } };
+      const expected = structuredClone(supplied);
+      const gate = deferred<void>();
+      let earlier: Promise<InsertionPlan> | undefined;
+      if (pending) {
+        harness.model.queue("construct", async () => {
+          await gate.promise;
+          return CONSTRUCTED();
+        });
+        earlier = harness.memory.prepare({
+          noteId: OTHER_ID,
+          content: "Earlier pending work.",
+          timestamp: NOTE_TIMESTAMP,
+        });
+        await flush();
+      }
+      const applying = harness.memory.apply(supplied);
+      supplied.records[0]!.note.content = "Changed after invocation.";
+      supplied.records[0]!.note.id = OTHER_ID;
+      supplied.records[0]!.vector[0] = 999;
+      supplied.records[0]!.note.links.push(CANDIDATE_ID);
+      (
+        supplied.records[0]!.note.metadata as { nested: { values: string[] } }
+      ).nested.values.push("changed");
+      supplied.noteId = OTHER_ID;
+      (supplied.embeddingSpace as { id: string }).id = "changed-space";
+      gate.resolve();
+      await earlier;
+      expect(await applying).toEqual(expected.records[0]!.note);
+      expect(harness.store.writes).toEqual([expected.records]);
+    },
+  );
 
   it("reapplies the same plan without regenerating anything", async () => {
     const harness = createMemory();

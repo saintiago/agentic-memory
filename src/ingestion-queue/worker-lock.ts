@@ -27,11 +27,15 @@ export class WorkerLock {
     this.#server = server;
   }
 
-  static acquire(journalPath: string): Promise<WorkerLock> {
-    // Ownership probes connect to the lock, so the owner accepts and releases each probe without
-    // treating it as work.
+  static acquire(
+    journalPath: string,
+    purpose: "worker" | "migration" = "worker",
+  ): Promise<WorkerLock> {
+    // Probes never acquire ownership. Report its purpose so migration does not look like a
+    // running worker. A disconnected probe cannot disrupt ownership.
     const server = createServer((socket: Socket) => {
-      socket.destroy();
+      socket.on("error", () => socket.destroy());
+      socket.end(purpose);
     });
     return new Promise<WorkerLock>((resolve, reject) => {
       const onError = (cause: NodeJS.ErrnoException): void => {
@@ -53,16 +57,21 @@ export class WorkerLock {
   }
 
   /**
-   * Whether any process currently owns this journal's worker, so any handle can report shared
+   * Whether a worker (rather than an import) owns the journal, so any handle can report shared
    * availability. The probe connects to the ownership binding instead of taking it, so it can
    * never create, steal or disturb ownership.
    */
-  static isHeld(journalPath: string): Promise<boolean> {
+  static isWorkerRunning(journalPath: string): Promise<boolean> {
     const socket = connect({ path: lockName(journalPath) });
     return new Promise<boolean>((resolve, reject) => {
-      socket.once("connect", () => {
+      let purpose = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        purpose += chunk;
+      });
+      socket.once("end", () => {
         socket.destroy();
-        resolve(true);
+        resolve(purpose === "worker");
       });
       socket.once("error", (cause: NodeJS.ErrnoException) => {
         socket.destroy();

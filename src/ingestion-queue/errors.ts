@@ -43,12 +43,14 @@ export class QueueBindingError extends Error {
   }
 }
 
-/** Another worker already owns this queue. Producers may still submit; only draining is refused. */
+/** A worker or migration owns this queue. Producers may still submit. */
 export class QueueWorkerLockedError extends Error {
   readonly journalPath: string;
 
   constructor(journalPath: string) {
-    super(`Another ingestion worker already owns the queue at ${journalPath}.`);
+    super(
+      `Another ingestion worker or migration already owns the queue at ${journalPath}.`,
+    );
     this.name = "QueueWorkerLockedError";
     this.journalPath = journalPath;
   }
