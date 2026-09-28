@@ -35,6 +35,7 @@ describe("dependency boundaries", () => {
       "--config",
       ".dependency-cruiser.cjs",
       "src",
+      "inspector",
       "examples",
       "experiments",
       "test",

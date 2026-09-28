@@ -19,6 +19,8 @@ implementing; this design uses the stable v3 API, not the v4 alpha. Both librari
 Sigma owns rendering and camera interaction; Graphology holds the displayed nodes and directed edges.
 A small TypeScript inspection host runs locally under Linux/WSL and serves the browser UI on loopback.
 Keep its dependencies and entry point separate from the runtime library; no React requirement.
+In this repository that host lives in `inspector/` and is launched with `npm run inspector`; its
+settings and checks are documented in [inspector/README.md](../inspector/README.md).
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version
@@ -147,6 +149,20 @@ disposable inspection state, with collection and embedding-space identity. Do no
 runtime memory database. On restart, obtain a fresh export before presenting a cache as current;
 incompatible caches are discarded. Keep full fits explicit after the initial fit. On shutdown,
 stop polling/jobs, close HTTP and release provider/projection resources.
+
+### Launching the host
+
+The host is a separate consumer process, outside the runtime library and its published package:
+
+```bash
+export AMEM_QDRANT_URL=http://127.0.0.1:16333
+export AMEM_QDRANT_COLLECTION=amem-notes
+npm run inspector
+```
+
+`npm run inspector` runs the TypeScript entry point through the pinned `tsx` loader; the projection
+worker thread uses the same loader. [inspector/README.md](../inspector/README.md) lists every host
+setting, the browser routes and the state the inspection process keeps.
 
 ## Visual behavior
 

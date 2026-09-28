@@ -31,13 +31,14 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "boundaries": "depcruise src examples experiments test --config .dependency-cruiser.cjs",
+    "boundaries": "depcruise src inspector examples experiments test --config .dependency-cruiser.cjs",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:embeddings": "vitest run --config vitest.embeddings.config.ts",
     "demo:evaluation": "vitest run --config vitest.demo.config.ts --reporter=verbose",
     "replay:live": "vitest run --config vitest.live.config.ts --reporter=verbose",
     "graph:inspect": "vitest run --config vitest.graph.config.ts --reporter=verbose",
+    "inspector": "node --import tsx inspector/main.ts",
     "validate": "turbo run format:check lint typecheck boundaries test build",
     "verify:pack": "npm run build && node scripts/verify-packed-package.mjs"
   },
@@ -54,9 +55,11 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.12.0",
     "prettier": "^3.9.9",
+    "tsx": "4.23.15",
     "turbo": "^2.11.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.70.1",
+    "umap-js": "1.4.0",
     "vitest": "^5.0.2"
   }
 }

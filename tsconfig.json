@@ -24,6 +24,7 @@
   },
   "include": [
     "src",
+    "inspector",
     "examples",
     "experiments",
     "test",
