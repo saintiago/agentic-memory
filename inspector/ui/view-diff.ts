@@ -18,6 +18,19 @@ import {
 export const linkKey = (source: string, target: string): string =>
   `${source}\u0000${target}`;
 
+/**
+ * The comparable identity of one displayed memory: the served evidence a refresh can change. The
+ * display model and the planner build it the same way, so a fallback can plan against the graph
+ * that is actually on screen.
+ */
+export const nodeIdentity = (node: {
+  readonly label: string;
+  readonly x: number;
+  readonly y: number;
+  readonly updatedAt?: string | undefined;
+}): string =>
+  JSON.stringify([node.label, node.x, node.y, node.updatedAt ?? null]);
+
 /** The compact state one planned diff is compared against. */
 export interface ViewIndex {
   readonly nodes: ReadonlyMap<string, string>;
@@ -75,12 +88,7 @@ export const indexView = (view: GraphSnapshot["view"]): ViewIndex => {
     throw new Error("A view index needs a completed view.");
   }
   return {
-    nodes: new Map(
-      view.nodes.map((node) => [
-        node.id,
-        JSON.stringify([node.label, node.x, node.y, node.updatedAt ?? null]),
-      ]),
-    ),
+    nodes: new Map(view.nodes.map((node) => [node.id, nodeIdentity(node)])),
     links: new Set(view.edges.map((edge) => linkKey(edge.source, edge.target))),
   };
 };
@@ -143,11 +151,7 @@ export const planViewDiff = (
   const addedNodes = view.nodes.filter((node) => !previous.nodes.has(node.id));
   const updatedNodes = view.nodes.filter((node) => {
     const before = previous.nodes.get(node.id);
-    return (
-      before !== undefined &&
-      before !==
-        JSON.stringify([node.label, node.x, node.y, node.updatedAt ?? null])
-    );
+    return before !== undefined && before !== nodeIdentity(node);
   });
   const removedNodeIds = [...previous.nodes.keys()].filter(
     (id) => !nodes.has(id),
@@ -184,6 +188,12 @@ export type ViewPlanResponse =
 /** Parse, validate and diff the served graph payload off the main thread. */
 export interface ViewDiffer {
   plan(text: string): Promise<ViewDiff>;
+  /**
+   * Adopt the displayed view as the planning baseline. A worker keeps its own history; the inline
+   * planner needs the handoff to reconcile the display after a worker failure instead of planning
+   * against an empty baseline.
+   */
+  adopt(index: ViewIndex | undefined): void;
   /** Whether the current plans run in a worker; the responsiveness check records it. */
   usesWorker(): boolean;
   dispose(): void;
@@ -208,6 +218,9 @@ export const createInlineViewDiffer = (): ViewDiffer => {
         return Promise.reject(cause);
       }
     },
+    adopt: (index: ViewIndex | undefined): void => {
+      previous = index;
+    },
     usesWorker: (): boolean => false,
     dispose: (): void => {
       previous = undefined;
@@ -215,7 +228,24 @@ export const createInlineViewDiffer = (): ViewDiffer => {
   };
 };
 
-const createWorkerViewDiffer = (worker: Worker): ViewDiffer => {
+/**
+ * A served payload the planner had to reject. The worker itself stays healthy, so the caller keeps
+ * using it instead of replacing it with the inline planner.
+ */
+export class ViewPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ViewPlanError";
+  }
+}
+
+/** The planning operations of one differ with its history; the worker owns that history. */
+interface Planner {
+  plan(text: string): Promise<ViewDiff>;
+  dispose(): void;
+}
+
+const createWorkerViewDiffer = (worker: Worker): Planner => {
   let nextId = 1;
   let disposed = false;
   const pending = new Map<
@@ -241,7 +271,7 @@ const createWorkerViewDiffer = (worker: Worker): ViewDiffer => {
       if ("diff" in response) {
         entry.resolve(response.diff);
       } else {
-        entry.reject(new Error(response.error));
+        entry.reject(new ViewPlanError(response.error));
       }
     },
   );
@@ -263,7 +293,6 @@ const createWorkerViewDiffer = (worker: Worker): ViewDiffer => {
         pending.set(id, { resolve, reject });
         worker.postMessage({ id, text } satisfies ViewPlanRequest);
       }),
-    usesWorker: (): boolean => true,
     dispose: (): void => {
       if (disposed) {
         return;
@@ -280,13 +309,14 @@ const createWorkerViewDiffer = (worker: Worker): ViewDiffer => {
 
 /**
  * Plan served payloads in a worker when the browser supports one. A worker that cannot start or
- * fails while parsing falls back to inline planning; applying a plan is idempotent, so the
- * fallback can only repeat work, never corrupt the display.
+ * fails while parsing falls back to inline planning; the fallback plans against the displayed view
+ * the dashboard adopted, so a replacement plan still reconciles removals and never fits the camera
+ * of an existing view.
  */
 export const createViewDiffer = (): ViewDiffer => {
   const inline = createInlineViewDiffer();
   let worker: Worker | undefined;
-  let active: ViewDiffer | undefined;
+  let active: Planner | undefined;
   if (typeof Worker !== "undefined") {
     try {
       // The build emits the worker next to this bundle; the indirection keeps the bundler from
@@ -301,7 +331,7 @@ export const createViewDiffer = (): ViewDiffer => {
       active = undefined;
     }
   }
-  const fallBackToInline = (cause: unknown): ViewDiffer => {
+  const fallBackToInline = (cause: unknown): Planner => {
     console.warn(
       "[inspector] graph parsing worker unavailable, diffing inline:",
       cause,
@@ -318,9 +348,17 @@ export const createViewDiffer = (): ViewDiffer => {
       if (differ === undefined) {
         return inline.plan(text);
       }
-      return differ
-        .plan(text)
-        .catch((cause: unknown) => fallBackToInline(cause).plan(text));
+      return differ.plan(text).catch((cause: unknown) => {
+        // A rejected payload is not a broken worker: the same payload fails inline, and the
+        // worker keeps its history for the next poll.
+        if (cause instanceof ViewPlanError) {
+          throw cause;
+        }
+        return fallBackToInline(cause).plan(text);
+      });
+    },
+    adopt: (index: ViewIndex | undefined): void => {
+      inline.adopt(index);
     },
     /** Whether requests currently run in a worker; the responsiveness check records it. */
     usesWorker: (): boolean => active !== undefined,

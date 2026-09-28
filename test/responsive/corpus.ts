@@ -34,6 +34,9 @@ export interface SyntheticOptions {
   /** Nodes and links one growth step adds; the check grows the corpus once. */
   readonly growthNodes: number;
   readonly growthLinksPerNode: number;
+  /** One far, asymmetric position the growth step adds as an extra memory; absent adds none. */
+  readonly growthOutlier:
+    { readonly x: number; readonly y: number } | undefined;
   /** Milliseconds one export page waits, keeping the export asynchronous. */
   readonly exportDelayMs: number;
   /** Milliseconds one projection run waits. */
@@ -45,6 +48,7 @@ const defaults: SyntheticOptions = {
   linksPerNode: 5,
   growthNodes: 500,
   growthLinksPerNode: 5,
+  growthOutlier: undefined,
   exportDelayMs: 20,
   projectionDelayMs: 100,
 };
@@ -57,6 +61,9 @@ const delay = (milliseconds: number): Promise<void> =>
 /** The stable, UUID-shaped identity of one synthetic memory. */
 export const syntheticId = (index: number): string =>
   `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+
+/** The identity of the far memory the optional growth outlier adds. */
+export const syntheticOutlierId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 
 /**
  * The projected position of one synthetic memory: a deterministic sunflower disc, so a stable
@@ -125,6 +132,20 @@ const syntheticNote = (
   ),
 });
 
+/**
+ * The far memory one growth step can add: it sits outside the previous extent, so the completed
+ * view's bounds grow to one side.
+ */
+const syntheticOutlier = (): Note => ({
+  id: syntheticOutlierId,
+  content: "Memory far outside the previous extent, added by the growth step",
+  timestamp: "2026-09-20T10:00:00.000Z",
+  context: "Synthetic outlier context",
+  keywords: ["synthetic outlier"],
+  tags: ["scale-check"],
+  links: [],
+});
+
 /** The corpus, its paged export and the projection and read substitutes one run needs. */
 export class SyntheticMemory {
   readonly options: SyntheticOptions;
@@ -136,6 +157,9 @@ export class SyntheticMemory {
   failExport: string | undefined;
   #grown = false;
   #notes: Note[] | undefined;
+  /** An export the check holds open, so the update window is explicit instead of racy. */
+  #held: Promise<void> | undefined;
+  #releaseHeld: (() => void) | undefined;
 
   constructor(options: Partial<SyntheticOptions> = {}) {
     this.options = { ...defaults, ...options };
@@ -163,6 +187,17 @@ export class SyntheticMemory {
     );
   }
 
+  /** The projected position of one identity, including the optional far growth outlier. */
+  positionOf(id: string): { readonly x: number; readonly y: number } {
+    if (id === syntheticOutlierId) {
+      const outlier = this.options.growthOutlier;
+      if (outlier !== undefined) {
+        return outlier;
+      }
+    }
+    return this.position(indexOf(id));
+  }
+
   /** Add the growth step once: new memories and links, plus one changed memory. */
   grow(): void {
     if (this.#grown) {
@@ -170,6 +205,21 @@ export class SyntheticMemory {
     }
     this.#grown = true;
     this.#notes = undefined;
+  }
+
+  /** Hold the next export until `releaseExport()`; the session then reports a running refresh. */
+  holdNextExport(): void {
+    this.#held = new Promise<void>((resolve) => {
+      this.#releaseHeld = resolve;
+    });
+  }
+
+  /** Release an export held by `holdNextExport()`. */
+  releaseExport(): void {
+    const release = this.#releaseHeld;
+    this.#releaseHeld = undefined;
+    this.#held = undefined;
+    release?.();
   }
 
   note(index: number): Note {
@@ -213,6 +263,10 @@ export class SyntheticMemory {
         limit: number,
         cursor?: Cursor,
       ): Promise<EmbeddedPage> => {
+        const held = this.#held;
+        if (held !== undefined) {
+          await held;
+        }
         if (this.options.exportDelayMs > 0) {
           await delay(this.options.exportDelayMs);
         }
@@ -252,8 +306,7 @@ export class SyntheticMemory {
           await delay(this.options.projectionDelayMs);
         }
         const points = request.inputs.map((input) => {
-          const index = indexOf(input);
-          const position = this.position(index);
+          const position = this.positionOf(input.id);
           return {
             id: input.id,
             x: position.x,
@@ -298,22 +351,27 @@ export class SyntheticMemory {
   }
 
   #allNotes(): Note[] {
-    this.#notes ??= Array.from({ length: this.nodes }, (_, index) =>
-      syntheticNote(index, {
-        baseNodes: this.options.nodes,
-        size: this.nodes,
-        linksPerNode: this.options.linksPerNode,
-        growthLinksPerNode: this.options.growthLinksPerNode,
-        grown: this.#grown,
-      }),
-    );
+    this.#notes ??= [
+      ...Array.from({ length: this.nodes }, (_, index) =>
+        syntheticNote(index, {
+          baseNodes: this.options.nodes,
+          size: this.nodes,
+          linksPerNode: this.options.linksPerNode,
+          growthLinksPerNode: this.options.growthLinksPerNode,
+          grown: this.#grown,
+        }),
+      ),
+      ...(this.#grown && this.options.growthOutlier !== undefined
+        ? [syntheticOutlier()]
+        : []),
+    ];
     return this.#notes;
   }
 }
 
 /** The corpus index of one identity; the synthetic ids end in the zero-padded index. */
-const indexOf = (input: ProjectionInput): number => {
-  const digits = input.id.slice(input.id.lastIndexOf("-") + 1);
+const indexOf = (id: string): number => {
+  const digits = id.slice(id.lastIndexOf("-") + 1);
   const index = Number.parseInt(digits, 10);
   return Number.isNaN(index) ? 0 : index;
 };

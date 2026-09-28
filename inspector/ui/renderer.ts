@@ -76,6 +76,14 @@ const unionOf = (left: GraphBounds, right: GraphBounds): GraphBounds => ({
   y: [Math.min(left.y[0], right.y[0]), Math.max(left.y[1], right.y[1])],
 });
 
+/** The extent Sigma derives its aspect-dependent correction ratio from. */
+const extentOf = (
+  bounds: GraphBounds,
+): { readonly width: number; readonly height: number } => ({
+  width: bounds.x[1] - bounds.x[0] || 1,
+  height: bounds.y[1] - bounds.y[0] || 1,
+});
+
 const sameBounds = (left: GraphBounds, right: GraphBounds): boolean =>
   left.x[0] === right.x[0] &&
   left.x[1] === right.x[1] &&
@@ -143,18 +151,39 @@ export const createSigmaRenderer = (
   const dimensions = (): { readonly width: number; readonly height: number } =>
     sigma.getDimensions();
 
-  /** The pixel extent of one graph unit along each axis at the current camera state. */
-  const pixelsPerGraphUnit = (): { readonly x: number; readonly y: number } => {
-    const origin = sigma.graphToViewport({ x: 0, y: 0 });
-    const unitX = sigma.graphToViewport({ x: 1, y: 0 });
-    const unitY = sigma.graphToViewport({ x: 0, y: 1 });
-    return {
-      x: Math.abs(unitX.x - origin.x) || 1,
-      y: Math.abs(unitY.y - origin.y) || 1,
-    };
+  /** The normalization span of the box Sigma currently frames the graph with. */
+  const normalizationSpan = (): number => spanOf(customBBox ?? sigma.getBBox());
+
+  /** The displayed box, which is what Sigma normalizes and derives its correction ratio from. */
+  const normalizationBounds = (): GraphBounds => customBBox ?? sigma.getBBox();
+
+  /**
+   * Pixels one framed-graph unit covers on screen for the supplied extent, measured through
+   * Sigma's own conversion so the camera ratio, the viewport and Sigma's aspect-dependent
+   * correction ratio are all accounted for without duplicating them here.
+   */
+  const pixelsPerFramedUnit = (bounds: GraphBounds): number => {
+    const graphDimensions = extentOf(bounds);
+    const origin = sigma.framedGraphToViewport(
+      { x: 0, y: 0 },
+      { graphDimensions },
+    );
+    const unit = sigma.framedGraphToViewport(
+      { x: 1, y: 0 },
+      { graphDimensions },
+    );
+    return Math.abs(unit.x - origin.x) || 1;
   };
 
-  /** Move the camera so the supplied graph point sits at the viewport center. */
+  /** Pixels one graph unit covers on screen at the current camera and normalization box. */
+  const pixelsPerGraphUnit = (): number =>
+    pixelsPerFramedUnit(normalizationBounds()) / normalizationSpan();
+
+  /**
+   * Move the camera so the supplied graph point sits at the viewport center. The camera position
+   * is a framed-graph coordinate, so the required move is the graph-space difference divided by
+   * the normalization span; measuring the point at the viewport center stays a live conversion.
+   */
   const centerOn = (point: {
     readonly x: number;
     readonly y: number;
@@ -162,15 +191,11 @@ export const createSigmaRenderer = (
     const { width, height } = dimensions();
     const camera = sigma.getCamera();
     const state = camera.getState();
-    const current = sigma.graphToViewport(point);
-    const framed = sigma.viewportToFramedGraph(current);
-    const framedCenter = sigma.viewportToFramedGraph({
-      x: width / 2,
-      y: height / 2,
-    });
+    const atCentre = sigma.viewportToGraph({ x: width / 2, y: height / 2 });
+    const span = normalizationSpan();
     camera.setState({
-      x: state.x + (framed.x - framedCenter.x),
-      y: state.y + (framed.y - framedCenter.y),
+      x: state.x + (point.x - atCentre.x) / span,
+      y: state.y + (point.y - atCentre.y) / span,
     });
   };
 
@@ -189,10 +214,10 @@ export const createSigmaRenderer = (
     const spanY = bounds.y[1] - bounds.y[0];
     const ratios: number[] = [];
     if (spanX > 0) {
-      ratios.push((state.ratio * pixels.x) / (available.width / spanX));
+      ratios.push((state.ratio * pixels) / (available.width / spanX));
     }
     if (spanY > 0) {
-      ratios.push((state.ratio * pixels.y) / (available.height / spanY));
+      ratios.push((state.ratio * pixels) / (available.height / spanY));
     }
     if (ratios.length > 0) {
       camera.setState({
@@ -217,19 +242,26 @@ export const createSigmaRenderer = (
       if (sameBounds(current, next)) {
         return;
       }
-      // Measure the graph point at the viewport center with the current normalization before the
-      // box changes, then keep the camera on the same graph-space window.
+      // Keep the graph point at the viewport center centered and the pixel scale unchanged. The
+      // displayed scale depends on the normalization span, on the camera ratio and on Sigma's
+      // aspect-dependent correction ratio, which changes when an asymmetric extent changes the
+      // box ratio; both boxes are therefore measured through Sigma's own framed-graph conversion
+      // instead of compensating the span alone.
       const { width, height } = dimensions();
       const reference = sigma.viewportToGraph({ x: width / 2, y: height / 2 });
       const camera = sigma.getCamera();
       const state = camera.getState();
+      const before = pixelsPerFramedUnit(current);
+      const after = pixelsPerFramedUnit(next);
       const framed = framedPoint(next, reference);
       customBBox = next;
       sigma.setCustomBBox(customBBox);
       camera.setState({
         x: framed.x,
         y: framed.y,
-        ratio: state.ratio * (spanOf(current) / spanOf(next)),
+        ratio: camera.getBoundedRatio(
+          (state.ratio * (spanOf(current) / spanOf(next)) * after) / before,
+        ),
       });
     },
     fitAll: (): void => {

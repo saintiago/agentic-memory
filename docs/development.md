@@ -46,7 +46,7 @@ provide these npm scripts:
 | `graph:inspect`        | Offline HTML graph and JSON evidence rendered from one saved run directory                 |
 | `inspector`            | Local inspection host serving the loopback browser API and the built Sigma dashboard       |
 | `inspector:build`      | Bundle the browser dashboard of the inspection UI                                          |
-| `inspector:responsive` | Real-browser scale and responsiveness check of the inspection dashboard                    |
+| `inspector:responsive` | Real-browser scale, responsiveness and camera-preservation checks of the dashboard         |
 | `build`                | Produce JavaScript ESM and type declarations                                               |
 | `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                         |
 

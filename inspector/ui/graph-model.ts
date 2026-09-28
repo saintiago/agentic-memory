@@ -9,7 +9,12 @@
  */
 import { DirectedGraph } from "graphology";
 
-import { linkKey, type ViewDiff } from "./view-diff.js";
+import {
+  linkKey,
+  nodeIdentity,
+  type ViewDiff,
+  type ViewIndex,
+} from "./view-diff.js";
 import type { LinkAttributes, NodeAttributes, StyleSource } from "./style.js";
 
 /** The result state the display highlight is derived from. */
@@ -34,6 +39,11 @@ export interface ApplyOptions {
   readonly batchSize?: number;
   /** Yield to the event loop between batches; the browser waits for the next animation frame. */
   readonly yieldFrame?: () => Promise<void>;
+  /**
+   * Apply every mutation in one task without yielding. A completed projection refit must reach the
+   * renderer atomically, so no frame can draw a mixture of the old and new coordinate systems.
+   */
+  readonly atomic?: boolean;
 }
 
 /**
@@ -137,6 +147,27 @@ export class GraphModel implements StyleSource {
   }
 
   /**
+   * The planner's view of what is currently displayed. Handing this index to a differ that lost
+   * its history (the inline planner after a worker failure) reconciles the next completed view
+   * against the display instead of an empty baseline. An empty display is planned as the initial
+   * view, so a genuinely first view still fits the camera.
+   */
+  viewIndex(): ViewIndex | undefined {
+    if (this.graph.order === 0) {
+      return undefined;
+    }
+    const nodes = new Map<string, string>();
+    this.graph.forEachNode((nodeId, attributes) => {
+      nodes.set(nodeId, nodeIdentity(attributes));
+    });
+    const links = new Set<string>();
+    this.graph.forEachEdge((_key, _attributes, source, target) => {
+      links.add(linkKey(source, target));
+    });
+    return { nodes, links };
+  }
+
+  /**
    * Apply one planned view diff in bounded batches that yield to the caller between them. An
    * existing node keeps its identity and receives the served attributes, so a refresh never
    * recreates the graph behind Sigma.
@@ -147,10 +178,11 @@ export class GraphModel implements StyleSource {
   ): Promise<ApplyReport> {
     const batchSize = Math.max(1, options.batchSize ?? defaultBatchSize);
     const yieldFrame = options.yieldFrame ?? nextFrame;
+    const atomic = options.atomic ?? false;
     let applied = 0;
     let batches = 0;
     for (const mutate of this.#mutations(diff)) {
-      if (applied > 0 && applied % batchSize === 0) {
+      if (!atomic && applied > 0 && applied % batchSize === 0) {
         batches += 1;
         await yieldFrame();
       }

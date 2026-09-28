@@ -49,15 +49,19 @@ export interface DashboardDiagnostics {
   readonly view: ViewSummary | undefined;
   readonly nodes: number;
   readonly links: number;
+  /** The selected memory, which may be a returned result the map does not contain yet. */
   readonly selectedId: string | undefined;
   readonly linkMode: "all" | "focused";
   readonly highlightedIds: readonly string[];
   readonly resultOrder: readonly string[];
   readonly unmappedIds: readonly string[];
   readonly lastApply: ApplyMeasurement | undefined;
-  /** The handler latency of the latest request: submission to painted results. */
+  /** The handler latency of the latest request: submission to the updated results panel. */
   readonly lastSearchMs: number | undefined;
-  /** The handler latency of the latest selection: click to painted details panel. */
+  /**
+   * The handler latency of the latest selection: click to the updated details panel, which the
+   * browser paints in the next frame.
+   */
   readonly lastSelectionMs: number | undefined;
 }
 
@@ -157,7 +161,16 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   /** True while a planned view is being applied to the display in bounded batches. */
   let applying = false;
   let viewError: string | undefined;
+  /** The summary of the completed view the display currently shows. */
   let view: ViewSummary | undefined;
+  /** The summary being applied right now; it becomes `view` only once the display holds it. */
+  let applyingView: ViewSummary | undefined;
+  let hasAppliedView = false;
+  /**
+   * The selected memory. It can be a returned memory the map does not contain yet, so it is not
+   * always the display model's positioned selection.
+   */
+  let selectionId: string | undefined;
   let lastApply: ApplyMeasurement | undefined;
   let lastSearchMs: number | undefined;
   let lastSelectionMs: number | undefined;
@@ -173,6 +186,8 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   let detailsState: DetailsState = { kind: "empty" };
   let detailsToken = 0;
   let missingRequestRevision: number | undefined;
+  /** The notice text a failed poll wrote; a later successful poll clears exactly this one. */
+  let pollingNotice: string | undefined;
 
   const renderLegend = (): void => {
     clear(shell.legend);
@@ -218,6 +233,11 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       );
       parts.push(`projection ${view.projectionId}`);
       parts.push(`embedding space ${view.embeddingSpaceId}`);
+    }
+    if (applyingView !== undefined) {
+      parts.push(
+        `${formatCount(applyingView.nodeCount)} memories and ${formatCount(applyingView.linkCount)} links in the completed view being applied`,
+      );
     }
     if (refreshing || applying) {
       parts.push(refreshing ? "refreshing…" : "applying the completed view…");
@@ -295,7 +315,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
 
     for (const [index, result] of (state.outcome?.results ?? []).entries()) {
-      const selected = model.selectedId === result.note.id;
+      const selected = selectionId === result.note.id;
       const item = element("li", {
         className: selected ? "result selected" : "result",
       });
@@ -348,6 +368,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   const paintComparison = (state: ComparisonState): void => {
     renderComparison(shell.comparison, state, {
       label: (nodeId) => labelFor(nodeId),
+      hasPosition: (nodeId) => model.hasNode(nodeId),
       onCompare: () => {
         void compare();
       },
@@ -383,29 +404,53 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     renderControls();
   };
 
+  /**
+   * Whether the selection still has evidence: a positioned memory of the display, or a returned
+   * memory that keeps its request payload as its evidence.
+   */
+  const selectionKnown = (nodeId: string): boolean =>
+    model.hasNode(nodeId) || results.noteFor(nodeId) !== undefined;
+
+  /** Drop a comparison result or an in-flight answer whose pair is no longer the current one. */
+  const resetComparison = (): void => {
+    comparisonToken += 1;
+    comparison = {
+      leftId: comparisonHistory[1],
+      rightId: comparisonHistory[0],
+      pending: false,
+      result: undefined,
+      error: undefined,
+    };
+  };
+
   const select = (nodeId: string | undefined): void => {
     if (disposed) {
       return;
     }
     const selectedAt = now();
-    if (nodeId !== undefined && !model.hasNode(nodeId)) {
+    const resolved =
+      nodeId !== undefined && selectionKnown(nodeId) ? nodeId : undefined;
+    if (resolved === undefined && selectionId === undefined) {
       return;
     }
-    if (!model.select(nodeId)) {
-      return;
-    }
-    if (nodeId !== undefined) {
-      comparisonHistory = [
-        nodeId,
-        ...comparisonHistory.filter((id) => id !== nodeId),
+    selectionId = resolved;
+    // The map can mark a selection only where the memory is positioned; a returned memory the
+    // view does not contain yet is selected through its returned payload instead of a new node.
+    model.select(
+      resolved !== undefined && model.hasNode(resolved) ? resolved : undefined,
+    );
+    if (resolved !== undefined) {
+      const history = [
+        resolved,
+        ...comparisonHistory.filter((id) => id !== resolved),
       ].slice(0, 2);
-      comparison = {
-        leftId: comparisonHistory[1],
-        rightId: comparisonHistory[0],
-        pending: false,
-        result: undefined,
-        error: undefined,
-      };
+      if (
+        history[0] !== comparisonHistory[0] ||
+        history[1] !== comparisonHistory[1]
+      ) {
+        comparisonHistory = history;
+        resetComparison();
+      }
     }
     renderer?.styleChanged();
     void loadDetails();
@@ -418,7 +463,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   const loadDetails = async (): Promise<void> => {
     detailsToken += 1;
     const token = detailsToken;
-    const nodeId = model.selectedId;
+    const nodeId = selectionId;
     if (nodeId === undefined) {
       detailsState = { kind: "empty" };
       paintDetails(detailsState);
@@ -469,10 +514,29 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     paintDetails(detailsState);
   };
 
+  /** Whether a comparison answer still describes the pair the panel currently shows. */
+  const comparisonStillCurrent = (
+    token: number,
+    leftId: string,
+    rightId: string,
+  ): boolean =>
+    !disposed &&
+    token === comparisonToken &&
+    comparison.leftId === leftId &&
+    comparison.rightId === rightId;
+
   const compare = async (): Promise<void> => {
     const leftId = comparison.leftId;
     const rightId = comparison.rightId;
-    if (leftId === undefined || rightId === undefined || leftId === rightId) {
+    if (
+      leftId === undefined ||
+      rightId === undefined ||
+      leftId === rightId ||
+      // The host compares vectors of its completed view; a memory the map does not hold cannot
+      // be compared, so the action stays unavailable instead of failing on the round trip.
+      !model.hasNode(leftId) ||
+      !model.hasNode(rightId)
+    ) {
       return;
     }
     comparisonToken += 1;
@@ -486,7 +550,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     paintComparison(comparison);
     try {
       const result = await options.client.compare(leftId, rightId);
-      if (disposed || token !== comparisonToken) {
+      if (!comparisonStillCurrent(token, leftId, rightId)) {
         return;
       }
       comparison = {
@@ -497,7 +561,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
         error: undefined,
       };
     } catch (cause) {
-      if (disposed || token !== comparisonToken) {
+      if (!comparisonStillCurrent(token, leftId, rightId)) {
         return;
       }
       comparison = {
@@ -511,39 +575,85 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     paintComparison(comparison);
   };
 
+  /**
+   * Bring the selection and the details panel in line with a completed view. A returned memory
+   * keeps its returned payload as evidence; a memory read from the host is read again once the
+   * display moves, so the panel never keeps evidence the current note does not have.
+   */
+  const reconcileSelection = (
+    diff: ViewDiff,
+    displayed: ViewSummary | undefined,
+  ): void => {
+    const selected = selectionId;
+    if (selected === undefined) {
+      paintDetails(detailsState);
+      return;
+    }
+    if (!selectionKnown(selected)) {
+      // The memory left both the map and the request evidence. Bumping the details token through
+      // loadDetails() also discards a read that is still in flight for it.
+      selectionId = undefined;
+      model.select(undefined);
+      resetComparison();
+      void loadDetails();
+      return;
+    }
+    model.select(model.hasNode(selected) ? selected : undefined);
+    if (detailsState.kind === "note" && detailsState.returnedAt !== undefined) {
+      paintDetails(detailsState);
+      return;
+    }
+    const viewMoved = displayed?.capturedAt !== view?.capturedAt;
+    const nodeChanged =
+      diff.updatedNodes.some((node) => node.id === selected) ||
+      diff.addedNodes.some((node) => node.id === selected);
+    if (viewMoved || nodeChanged) {
+      void loadDetails();
+      return;
+    }
+    paintDetails(detailsState);
+  };
+
   const applyDiff = async (diff: ViewDiff): Promise<void> => {
     status = diff.status;
     refreshing = diff.refreshing;
     viewError = diff.error;
-    if (diff.summary !== undefined) {
-      if (
-        view !== undefined &&
-        view.projectionId !== diff.summary.projectionId
-      ) {
-        setNotice(
-          `The projection was refitted (${diff.summary.projectionId}); the map layout changed.`,
-        );
-      }
-      view = diff.summary;
-    }
-    if (diff.summary === undefined) {
+    const summary = diff.summary;
+    if (summary === undefined) {
       renderStatus();
       return;
     }
+    const displayed = view;
+    const refit =
+      displayed !== undefined &&
+      displayed.projectionId !== summary.projectionId;
     const startedAt = now();
     applying = true;
+    applyingView = summary;
     renderStatus();
     let report: ApplyReport;
     try {
       report = await model.applyDiff(diff, {
         ...(batchSize === undefined ? {} : { batchSize }),
         ...(yieldFrame === undefined ? {} : { yieldFrame }),
+        // A refit replaces the coordinate system of every memory; staged batches would let a
+        // frame draw a mixture of the old and the new projection.
+        atomic: refit && !diff.initial,
       });
     } finally {
       applying = false;
+      applyingView = undefined;
     }
     if (disposed) {
       return;
+    }
+    // Publish the completed view only now that the display holds it, so the status line, the
+    // details panel and comparison context never describe a view the map does not show yet.
+    view = summary;
+    if (refit) {
+      setNotice(
+        `The projection was refitted (${summary.projectionId}); the map layout changed.`,
+      );
     }
     if (report.batches > 0) {
       // Only a plan that changed the display is an applied update; a poll of the same view is not.
@@ -561,19 +671,22 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       };
     }
     const active = startRenderer();
-    active.includeBounds(diff.summary.bounds);
-    if (diff.initial) {
+    active.includeBounds(summary.bounds);
+    if (diff.initial && !hasAppliedView) {
       active.fitAll();
     }
+    hasAppliedView = true;
     active.styleChanged();
-    if (report.selectionCleared) {
-      detailsState = { kind: "empty" };
-      paintDetails(detailsState);
-      renderControls();
-    }
+    // Hand the planner the display it must reconcile a fallback against: a worker that fails later
+    // plans against this index instead of an empty baseline.
+    options.differ.adopt(model.viewIndex());
+    reconcileSelection(diff, displayed);
     renderStatus();
     syncResultMapping();
     renderResults();
+    // The comparison's availability follows the displayed positions of its pair.
+    paintComparison(comparison);
+    renderControls();
   };
 
   const syncResultMapping = (): void => {
@@ -603,6 +716,14 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       return;
     }
     await applyDiff(diff);
+    if (pollingNotice !== undefined) {
+      // The host answered and the completed view was applied, so a temporary outage is over.
+      // Only the notice this poll loop wrote is cleared; unrelated notices stay.
+      if (shell.notice.textContent === pollingNotice) {
+        setNotice(undefined);
+      }
+      pollingNotice = undefined;
+    }
   };
 
   const fail = (cause: unknown): void => {
@@ -610,11 +731,10 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       return;
     }
     status = view === undefined ? "error" : status;
-    setNotice(
-      `The inspection host could not be polled: ${sanitizedMessage(cause)}. ${
-        view === undefined ? "" : "The last completed view is still displayed."
-      }`,
-    );
+    pollingNotice = `The inspection host could not be polled: ${sanitizedMessage(
+      cause,
+    )}. ${view === undefined ? "" : "The last completed view is still displayed."}`;
+    setNotice(pollingNotice);
     renderStatus();
   };
 
@@ -673,13 +793,13 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
 
   const clearRequest = (): void => {
     results.clear();
-    comparison = {
-      leftId: comparisonHistory[1],
-      rightId: comparisonHistory[0],
-      pending: false,
-      result: undefined,
-      error: undefined,
-    };
+    // The cleared request is no longer evidence for any memory it returned, so a selection that
+    // only existed through it has nothing left to show.
+    if (selectionId !== undefined && !selectionKnown(selectionId)) {
+      selectionId = undefined;
+      model.select(undefined);
+    }
+    resetComparison();
     renderer?.styleChanged();
     renderResults();
     renderControls();
@@ -784,7 +904,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       view,
       nodes: model.graph.order,
       links: model.graph.size,
-      selectedId: model.selectedId,
+      selectedId: selectionId,
       linkMode: model.linkMode,
       highlightedIds: [...results.highlightIds],
       resultOrder: results.resultIds(),

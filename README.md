@@ -64,8 +64,9 @@ and serves the loopback browser API documented in [docs/dashboard.md](docs/dashb
 no generation credential and never writes a memory; it builds and serves the Sigma dashboard in
 `inspector/ui`, which shows projected positions with directed links, freshness, real requests and
 their highlighted results. [inspector/README.md](inspector/README.md) lists its settings, the
-dashboard's behavior and the recorded responsive scale check (`npm run inspector:responsive`)
-against a synthetic 10,000-memory graph with about 50,000 directed links.
+dashboard's behavior and the recorded responsive browser checks (`npm run inspector:responsive`):
+the required scale check against a synthetic 10,000-memory graph with about 50,000 directed links
+and the real-renderer check that an added outlier does not move already displayed memories.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

@@ -179,6 +179,7 @@ describe("comparison panel", () => {
     const container = document.createElement("div");
     renderComparison(container, state(), {
       label: (nodeIdValue) => `Memory ${nodeIdValue}`,
+      hasPosition: () => true,
       onCompare: () => undefined,
     });
 
@@ -194,6 +195,7 @@ describe("comparison panel", () => {
     const container = document.createElement("div");
     renderComparison(container, state({ rightId: nodeId(0) }), {
       label: (nodeIdValue) => nodeIdValue,
+      hasPosition: () => true,
       onCompare: () => undefined,
     });
 
@@ -218,6 +220,7 @@ describe("comparison panel", () => {
       }),
       {
         label: (nodeIdValue) => nodeIdValue,
+        hasPosition: () => true,
         onCompare: () => {
           compared.push(1);
         },
@@ -234,9 +237,24 @@ describe("comparison panel", () => {
     const container = document.createElement("div");
     renderComparison(container, state({ error: "The comparison failed." }), {
       label: (nodeIdValue) => nodeIdValue,
+      hasPosition: () => true,
       onCompare: () => undefined,
     });
 
     expect(container.textContent).toContain("The comparison failed.");
+  });
+
+  it("disables the comparison while a selected memory is not in the current map", () => {
+    const container = document.createElement("div");
+    renderComparison(container, state(), {
+      label: (nodeIdValue) => nodeIdValue,
+      hasPosition: (nodeIdValue) => nodeIdValue !== nodeId(1),
+      onCompare: () => undefined,
+    });
+
+    expect(container.querySelector("button")?.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "both memories must be in the current map",
+    );
   });
 });

@@ -31,12 +31,18 @@ export interface ResponsivenessReport {
     readonly initialLoadMs: number;
     readonly initialApplyMs: number | undefined;
     readonly initialApplyBatches: number | undefined;
+    /** Request to applied view, including the interaction window the check held open. */
     readonly updateRequestToAppliedMs: number;
     readonly updateApplyMs: number | undefined;
     readonly updateApplyBatches: number | undefined;
-    /** Handler latency inside the page: request submission to painted results. */
+    /** Whether every interaction ran while the completed view was still pending. */
+    readonly updatePendingDuringInteractions: boolean;
+    /** Handler latency inside the page: request submission to the updated results panel. */
     readonly searchToResultsMs: number;
-    /** Handler latency inside the page: selection click to painted details panel. */
+    /**
+     * Handler latency inside the page: selection click to the updated details panel. The panel is
+     * updated synchronously for a returned memory; the browser paints it in the next frame.
+     */
     readonly clickToSelectionMs: number;
     /** Driver-observed round trips, which include any queued redraws of the page. */
     readonly observedSearchMs: number;
@@ -53,7 +59,10 @@ export interface ResponsivenessReport {
       readonly maxMs: number;
       readonly p95Ms: number;
     };
-    readonly cameraPreservedAcrossUpdate: boolean;
+    /** The largest distance one unchanged memory moved on screen across the update. */
+    readonly maxViewportDriftPx: number;
+    /** Whether the camera state was re-expressed for the new normalization box. */
+    readonly cameraStateChangedByNormalization: boolean;
     readonly selectionPreservedAcrossUpdate: boolean;
     readonly failedRefreshKeptTheView: boolean;
   };
@@ -117,11 +126,12 @@ export const summarize = (report: ResponsivenessReport): string => {
     `Initial load: ${String(measurements.initialLoadMs)} ms total, ` +
       `${String(measurements.initialApplyMs ?? -1)} ms to apply the first view in ` +
       `${String(measurements.initialApplyBatches ?? -1)} batches.`,
-    `Refresh: ${String(measurements.updateRequestToAppliedMs)} ms from request to applied view, ` +
+    `Refresh: ${String(measurements.updateRequestToAppliedMs)} ms from request to applied view ` +
+      `(interactions held the update pending: ${String(measurements.updatePendingDuringInteractions)}), ` +
       `${String(measurements.updateApplyMs ?? -1)} ms to apply in ` +
       `${String(measurements.updateApplyBatches ?? -1)} batches.`,
-    `Interaction during the update: search→results ${String(measurements.searchToResultsMs)} ms, ` +
-      `click→selection ${String(measurements.clickToSelectionMs)} ms, ` +
+    `Interaction during the update: search→results panel ${String(measurements.searchToResultsMs)} ms, ` +
+      `click→panels ${String(measurements.clickToSelectionMs)} ms, ` +
       `wheel→camera ${String(measurements.zoomToCameraChangeMs)} ms, ` +
       `drag→camera ${String(measurements.panToCameraChangeMs)} ms ` +
       `(driver-observed search ${String(measurements.observedSearchMs)} ms, ` +
@@ -130,7 +140,9 @@ export const summarize = (report: ResponsivenessReport): string => {
       `(max ${String(measurements.longTasks.maxMs)} ms, total ${String(measurements.longTasks.totalMs)} ms); ` +
       `frame gaps max ${String(measurements.frameGapsMs.maxMs)} ms, ` +
       `p95 ${String(measurements.frameGapsMs.p95Ms)} ms over ${String(measurements.frameGapsMs.samples)} samples.`,
-    `Preserved across the update: camera ${String(measurements.cameraPreservedAcrossUpdate)}, ` +
+    `Preserved across the update: displayed view (max drift ` +
+      `${measurements.maxViewportDriftPx.toFixed(3)} px; camera state re-expressed ` +
+      `${String(measurements.cameraStateChangedByNormalization)}), ` +
       `selection ${String(measurements.selectionPreservedAcrossUpdate)}; ` +
       `failed refresh kept the view ${String(measurements.failedRefreshKeptTheView)}.`,
   ];

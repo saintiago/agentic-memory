@@ -176,6 +176,8 @@ export interface ComparisonState {
 export interface ComparisonContext {
   /** A short label for one memory; falls back to the ID. */
   readonly label: (nodeId: string) => string;
+  /** Whether one memory is positioned in the displayed map. */
+  readonly hasPosition: (nodeId: string) => boolean;
   readonly onCompare: () => void;
 }
 
@@ -211,6 +213,12 @@ export const renderComparison = (
   pairRow("Latest selection", state.rightId);
   container.append(pair);
 
+  const comparisonPair = [state.leftId, state.rightId];
+  const positioned =
+    comparisonPair[0] !== undefined &&
+    comparisonPair[1] !== undefined &&
+    context.hasPosition(comparisonPair[0]) &&
+    context.hasPosition(comparisonPair[1]);
   const button = element("button", {
     id: "compare",
     type: "button",
@@ -220,12 +228,26 @@ export const renderComparison = (
     state.pending ||
     state.leftId === undefined ||
     state.rightId === undefined ||
-    state.leftId === state.rightId;
+    state.leftId === state.rightId ||
+    !positioned;
   button.addEventListener("click", () => {
     context.onCompare();
   });
   container.append(element("div", { className: "actions" }, [button]));
 
+  if (
+    state.leftId !== undefined &&
+    state.rightId !== undefined &&
+    state.leftId !== state.rightId &&
+    !positioned
+  ) {
+    container.append(
+      element("p", {
+        className: "muted",
+        text: "The host compares vectors of its completed view, so both memories must be in the current map.",
+      }),
+    );
+  }
   if (state.error !== undefined) {
     container.append(element("p", { className: "error", text: state.error }));
   }

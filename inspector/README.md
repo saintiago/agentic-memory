@@ -157,39 +157,57 @@ substituted HTTP host and a recording renderer: the imported identities and dire
 served positions, positions that survive a link-only refresh, removals only from completed views,
 the freshness palette and its unknown-update neutral, returned order with direct scores and linked
 classifications, a zero-result search, a superseded request, retained views after failures,
-unmapped results, the details and comparison panels, camera and selection preservation across a
-refresh, and source text that stays inert. `npm run validate` also builds the browser bundle, so a
-broken bundle fails the aggregate check.
+unmapped results and their returned evidence, the details and comparison panels, details that are
+re-read when a completed view changes them, comparison answers a later selection supersedes, the
+inline planner's fallback after a worker failure, atomic projection refits, camera and selection
+preservation across a refresh, and source text that stays inert. `npm run validate` also builds
+the browser bundle, so a broken bundle fails the aggregate check.
 
-### Responsive scale check
+### Responsive browser checks
 
-`npm run inspector:responsive` builds the bundle and runs the required scale check in a real
-headless Chromium through `playwright-core`, against the real inspection session and HTTP server
-with a synthetic collection and projection (10,000 memories, 49,996 directed links; a refresh adds
-500 memories and 2,500 links). It exercises zoom, pan, selection and a search while the refresh is
-applied, and records the corpus size, link count, hardware, browser, load time, update latency,
-long tasks and frame gaps in `.data/inspector-responsive/report.json`
-(`AMEM_INSPECTOR_RESPONSIVE_OUT` overrides the path). It fails with instructions when the browser
-build or the Chromium download is missing, and it fails when the camera or selection does not
-survive the update, when a failed refresh empties the map, or when the main thread is frozen.
+`npm run inspector:responsive` builds the bundle and runs two checks in a real headless Chromium
+through `playwright-core`, against the real inspection session and HTTP server with a synthetic
+collection and projection.
+
+The required scale check imports and refreshes 10,000 memories with 49,996 directed links (the
+refresh adds 500 memories and 2,500 links) and exercises zoom, pan, selection and a search while
+that update is provably pending: it holds the next export open until the interactions are done, so
+the update window is explicit, and only then captures the preservation baseline and releases the
+export. It records the corpus size, link count, hardware, browser, load time, update latency, long
+tasks, frame gaps and the largest viewport drift of an unchanged memory in
+`.data/inspector-responsive/report.json` (`AMEM_INSPECTOR_RESPONSIVE_OUT` overrides the path). It
+fails with instructions when the browser build or the Chromium download is missing, and it fails
+when the displayed view or the selection does not survive the update, when a failed refresh empties
+the map, or when the main thread is frozen.
+
+The added-outlier check (`test/responsive/inspector-camera.responsive.ts`) fits a small corpus,
+moves and zooms the camera, then refreshes into a completed view whose extent grows far to one side
+through an asymmetric outlier. It compares the viewport positions of unchanged memories before and
+after that update through the real renderer, so an added outlier that rescales the existing view
+fails the check instead of passing a camera sample taken after the fact.
 
 Recorded run on the development machine (13th Gen Intel Core i7-13700KF, 24 cores, 16 GiB, WSL2;
 Chromium 153 with software WebGL through SwiftShader):
 
-| Measurement                       | Value                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                             |
-| Initial load                      | 2,598 ms from navigation to the displayed view; 173 ms to apply it in 12 batches                  |
-| Refresh, request to applied view  | 8,109 ms wall clock; 14 ms to apply the diff in 1 batch                                           |
-| Interaction during the update     | search → results 3,096 ms, click → selection 40 ms, wheel → camera 119 ms, drag → camera 3,023 ms |
-| Main thread                       | 12 long tasks, longest 1,448 ms; frame gaps p95 1,434 ms                                          |
-| Preservation and failure handling | camera preserved, selection preserved, failed refresh kept the view                               |
+| Measurement                       | Value                                                                                                                |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                                |
+| Initial load                      | 2693 ms from navigation to the displayed view; 171 ms to apply it in 12 batches                                      |
+| Refresh, request to applied view  | 24185 ms wall clock including the held interaction window; 14 ms to apply the diff in 1 batch                        |
+| Interaction during the update     | search → results panel 3106 ms, click → panels 37 ms, wheel → camera 55 ms, drag → camera 4856 ms                    |
+| Main thread                       | 31 long tasks, longest 1554 ms; frame gaps p95 1478 ms over 104 samples                                              |
+| Preservation and failure handling | interaction ran while pending, largest viewport drift 0.000025 px, selection preserved, failed refresh kept the view |
 
 The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link
 layer costs about 1.3 s, and repeated runs of the same check vary with how many of those redraws
 are already queued when an interaction arrives. The check records the renderer string with the
 numbers instead of presenting them as a hardware-accelerated result; zoom, pan, selection and
-search still complete, and the update applies in one batch while they run.
+search still complete, and the update applies in one batch while they run. The recorded search and
+click figures are the page's own handler latencies (submission to the updated results panel, click
+to the updated panels); the driver-observed round trips that include queued redraws are in the
+report as `observedSearchMs` and `observedClickMs`. The scale check's growth also changes the
+normalization box slightly, so the recorded camera state is re-expressed while the displayed
+memories keep their screen positions.
 
 ## Acceptance checks
 
@@ -198,10 +216,11 @@ evidence in this scope:
 
 | Check                                                                                                                          | Evidence                                                                                             |
 | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Stored IDs and directed links at the served positions; links do not move nodes                                                 | `ui/tests/graph-model.test.ts` and the browser check's served-position assertion                     |
+| Stored IDs and directed links at the served positions; links do not move nodes                                                 | `ui/tests/graph-model.test.ts` and the scale check's served-position assertion                       |
 | Known update times yield the expected age colors, unknown stays unknown                                                        | `ui/tests/freshness.test.ts`, `ui/tests/style.test.ts` and `ui/tests/details.test.ts`                |
-| A real search displays and highlights exactly its returned IDs, order, scores and classifications                              | `ui/tests/results.test.ts`, `ui/tests/dashboard.test.ts` and the browser check's search step         |
-| Refresh adds and changes memories without resetting zoom or selection; failures preserve data                                  | `ui/tests/dashboard.test.ts`, `ui/tests/graph-model.test.ts` and the browser check's refresh step    |
+| A real search displays and highlights exactly its returned IDs, order, scores and classifications                              | `ui/tests/results.test.ts`, `ui/tests/dashboard.test.ts` and the scale check's search step           |
+| Refresh adds and changes memories without resetting zoom or selection; failures preserve data                                  | `ui/tests/dashboard.test.ts`, `ui/tests/graph-model.test.ts` and the scale check's held refresh step |
+| An added outlier leaves already displayed memories at their screen positions                                                   | `test/responsive/inspector-camera.responsive.ts` (real renderer, asymmetric extent growth)           |
 | New vectors use the existing projection; full refitting is explicit; projection is distinguished from stored-vector similarity | `ui/tests/dashboard.test.ts` (explicit rebuild, labelled comparison) and the host's projection tests |
 | Representative scale check reports corpus size, links and hardware; displayed text is inert                                    | `npm run inspector:responsive` and `ui/tests/dashboard.test.ts` (inertness)                          |
 

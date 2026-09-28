@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { GraphModel, type ResultsSource } from "../graph-model.js";
 import {
+  linkKey,
+  nodeIdentity,
   indexView,
   parseGraphSnapshot,
   planViewDiff,
@@ -250,6 +252,83 @@ describe("displayed graph", () => {
 
     expect(report.batches).toBe(3);
     expect(yields).toEqual([2, 4]);
+  });
+
+  it("applies a projection refit atomically across the production batch boundary", async () => {
+    const count = 5_001;
+    const graph = model();
+    const first = graphView({
+      nodes: Array.from({ length: count }, (_, index) => graphNode(index)),
+    });
+    await apply(graph, graphSnapshot({ view: first }));
+
+    const refit = graphView({
+      nodes: Array.from({ length: count }, (_, index) =>
+        graphNode(index, { x: 100 + index, y: -100 - index }),
+      ),
+      projectionId: "test-projection:rebuild",
+      capturedAt: "2026-09-28T12:02:00.000Z",
+    });
+    const observed: number[][] = [];
+    const report = await graph.applyDiff(
+      planViewDiff(indexView(first), graphSnapshot({ view: refit })),
+      {
+        // A frame between batches would render a mixture of both coordinate systems.
+        atomic: true,
+        yieldFrame: () => {
+          observed.push(
+            graph.graph
+              .nodes()
+              .map((id) => graph.graph.getNodeAttributes(id).x),
+          );
+          return Promise.resolve();
+        },
+      },
+    );
+
+    expect(observed).toEqual([]);
+    expect(report.batches).toBe(1);
+    expect(report.updatedNodes).toBe(count);
+    expect(
+      graph.graph
+        .nodes()
+        .every((id) => graph.graph.getNodeAttributes(id).x >= 100),
+    ).toBe(true);
+  });
+
+  it("describes the displayed graph as the planner's baseline", async () => {
+    const graph = model();
+    expect(graph.viewIndex()).toBeUndefined();
+
+    const view = graphView({
+      nodes: [
+        graphNode(0),
+        graphNode(1, { updatedAt: "2026-09-28T11:00:00.000Z" }),
+      ],
+      edges: [graphEdge(1, 0)],
+    });
+    await apply(graph, graphSnapshot({ view }));
+
+    const index = graph.viewIndex();
+    expect(index?.nodes.get(nodeId(0))).toBe(nodeIdentity(graphNode(0)));
+    expect(index?.nodes.get(nodeId(1))).toBe(
+      nodeIdentity(graphNode(1, { updatedAt: "2026-09-28T11:00:00.000Z" })),
+    );
+    expect(index?.links).toEqual(new Set([linkKey(nodeId(1), nodeId(0))]));
+    // A differ that lost its history can reconcile the same completed view against this index
+    // without rebuilding or fitting it.
+    const repeated = planViewDiff(
+      index,
+      graphSnapshot({
+        view,
+        error: "The last inspection projection failed.",
+      }),
+    );
+    expect(repeated.initial).toBe(false);
+    expect(repeated.addedNodes).toEqual([]);
+    expect(repeated.updatedNodes).toEqual([]);
+    expect(repeated.removedNodeIds).toEqual([]);
+    expect(repeated.removedLinkKeys).toEqual([]);
   });
 
   it("does not invent a link whose endpoint is absent from the display", async () => {

@@ -226,7 +226,12 @@ point must not imply that a memory was returned.
 Keep the returned note payload as evidence of that request. Refreshing the graph does not silently
 rerun the request or replace its result text. Show request time and whether the map has since refreshed.
 If a result is not yet mapped, retain it in the list, request a paginated inspection refresh and project it when
-available. Failed requests show an error, not a successful zero-result count. A later submitted
+available. A returned memory the map does not contain yet stays selectable through its returned
+payload, which is shown as its details evidence, and the actions that need a position stay
+unavailable. A completed refresh keeps the selected memory current: returned payloads stay as the
+request's evidence, details read from the host are read again once the displayed view moves, and a
+selection that leaves both the map and the results is cleared together with any answer still in
+flight for it. Failed requests show an error, not a successful zero-result count. A later submitted
 request takes precedence over an older request that finishes afterward.
 
 ## Live updates with Sigma
@@ -242,8 +247,12 @@ No runtime event bus or durable update stream is required for this first inspect
   coordinates. Show pending projection explicitly instead of presenting stale coordinates as current.
 - Provide an explicit **Rebuild projection** action when the corpus has changed substantially.
   A full refit may rearrange the map; it is not evidence that all memories changed.
-- Preserve selection and camera state. Use Sigma's `setCustomBBox()` to keep normalization bounds stable between full
-  projection rebuilds so an added outlier does not rescale the existing view unexpectedly.
+- Preserve selection and camera state. Use Sigma's `setCustomBBox()` to own the normalization
+  bounds: when a completed export extends them, update the box together with the camera state so
+  the whole graph-to-viewport transform is unchanged, the graph point at the viewport center stays
+  centered and the aspect-dependent correction Sigma derives from the box is compensated. An added
+  outlier must not rescale or move memories that were already displayed. Apply the coordinates of a
+  completed full refit in one commit, so no frame draws a mixture of the old and new projections.
 
 Sigma subscribes to Graphology changes and refreshes automatically. Use v3 `nodeReducer` and
 `edgeReducer` for temporary result/selection styling, retaining underlying note data. When external
@@ -297,7 +306,8 @@ visible in the list, including those absent from the map.
 3. A real search displays and highlights exactly its returned IDs, order, direct scores and linked
    classifications, including zero results and results not yet mapped.
 4. Refresh adds and changes memories without resetting zoom or selection; failed/incomplete refreshes
-   preserve existing data and do not invent deletions.
+   preserve existing data and do not invent deletions; an added outlier leaves already displayed
+   memories at their screen positions.
 5. New vectors use the existing projection; full refitting is explicit. The UI distinguishes
    projected proximity from original-vector similarity.
 6. Representative scale checks report corpus size, link count and hardware alongside measurements;
