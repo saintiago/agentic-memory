@@ -27,12 +27,14 @@ import {
   queueObservationSchema,
   queueReceiptSchema,
   queueStatusSchema,
+  queueSubmissionSchema,
   reconcileOutcomeSchema,
   type LegacyImportResult,
   type LegacyReceipt,
   type QueueBinding,
   type QueueObservation,
   type QueueReceipt,
+  type QueueSubmission,
   type QueueStatus,
   type ReconcileOutcome,
 } from "./contract.js";
@@ -67,8 +69,11 @@ export interface IngestionQueue {
   readonly binding: QueueBinding;
   /** The SQLite journal to back up together with the collection. */
   readonly journalPath: string;
-  /** Accept one observation after its durable commit, or return its existing receipt. */
-  submit(observation: QueueObservation): Promise<QueueReceipt>;
+  /**
+   * Accept one observation after its durable commit, or return its existing receipt. The outcome
+   * reports whether this call created the receipt.
+   */
+  submit(observation: QueueObservation): Promise<QueueSubmission>;
   /** Look up one receipt by identity; an unknown identity returns `undefined`. */
   receipt(id: string): Promise<QueueReceipt | undefined>;
   /** Current receipt outcomes, backlog and worker availability. */
@@ -346,7 +351,7 @@ class DurableQueue implements IngestionQueue {
     this.#pollIntervalMs = pollIntervalMs;
   }
 
-  async submit(observation: QueueObservation): Promise<QueueReceipt> {
+  async submit(observation: QueueObservation): Promise<QueueSubmission> {
     this.#assertOpen();
     const parsed = queueObservationSchema.safeParse(observation);
     if (!parsed.success) {
@@ -355,13 +360,13 @@ class DurableQueue implements IngestionQueue {
         parsed.error,
       );
     }
-    const record = await this.#journal.submit(
+    const { record, created } = await this.#journal.submit(
       parsed.data,
       new Date().toISOString(),
     );
     // New work should not wait for the next poll, but the submission never waits for the worker.
     this.#wake();
-    return toReceipt(record);
+    return queueSubmissionSchema.parse({ ...toReceipt(record), created });
   }
 
   async receipt(id: string): Promise<QueueReceipt | undefined> {

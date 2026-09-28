@@ -241,7 +241,9 @@ describe("durable submission", () => {
       provenance: { task: "AMEM-12", host: "cli" },
     });
 
-    expect(resubmitted).toEqual(accepted);
+    expect(accepted.created).toBe(true);
+    // The identical resubmission finds the same receipt, but this call created nothing.
+    expect(resubmitted).toEqual({ ...accepted, created: false });
     expect((await harness.queue.status()).accepted).toBe(1);
     await expect(
       harness.queue.submit({

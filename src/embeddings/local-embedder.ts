@@ -121,6 +121,17 @@ export const embeddingSpaceId = (settings: EncoderSettings): string => {
     .digest("hex")}`;
 };
 
+/**
+ * The declared embedding space of the pinned reference encoder. It is derived from the pinned
+ * settings alone, so a host that must bind durable state to the space before loading the encoder
+ * reads the same identity the loaded encoder reports instead of duplicating it.
+ */
+export const referenceEmbeddingSpace: EmbeddingSpace = Object.freeze({
+  id: embeddingSpaceId(referenceEncoderSettings),
+  dimensions: DIMENSIONS,
+  distance: "Cosine",
+});
+
 const optionsSchema = z.strictObject({
   cacheDir: z.string().min(1, "A cache directory must be nonempty."),
   allowDownloads: z.boolean(),
@@ -312,11 +323,7 @@ class LocalReferenceEmbedder implements ReferenceEmbedder {
   constructor(tokenizer: PreTrainedTokenizer, model: PreTrainedModel) {
     this.#tokenizer = tokenizer;
     this.#model = model;
-    this.space = {
-      id: embeddingSpaceId(this.settings),
-      dimensions: DIMENSIONS,
-      distance: "Cosine",
-    };
+    this.space = referenceEmbeddingSpace;
   }
 
   embed(text: string): Promise<number[]> {

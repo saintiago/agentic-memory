@@ -24,6 +24,7 @@
   },
   "include": [
     "src",
+    "service",
     "inspector",
     "examples",
     "experiments",

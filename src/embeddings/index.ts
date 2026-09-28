@@ -9,6 +9,7 @@ export {
   embeddingSpaceId,
   openReferenceEmbedder,
   referenceEncoderSettings,
+  referenceEmbeddingSpace,
 } from "./local-embedder.js";
 export type {
   EncoderSettings,

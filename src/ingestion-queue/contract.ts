@@ -94,6 +94,16 @@ export const queueReceiptSchema = z.strictObject({
 
 export type QueueReceipt = z.infer<typeof queueReceiptSchema>;
 
+/**
+ * The outcome of one submission: the accepted receipt fields plus whether this call created the
+ * receipt. A producer only learns whether it accepted new work; the receipt itself is unchanged.
+ */
+export const queueSubmissionSchema = queueReceiptSchema.extend({
+  created: z.boolean(),
+});
+
+export type QueueSubmission = z.infer<typeof queueSubmissionSchema>;
+
 /** Receipt outcomes and pending backlog of one queue. Counts include every accepted receipt. */
 export const queueStatusSchema = z.strictObject({
   worker: z.enum(["running", "stopped"]),

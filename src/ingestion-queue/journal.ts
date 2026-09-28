@@ -202,7 +202,10 @@ export class Journal {
    * Accept one observation durably. An identical resubmission returns the existing receipt without
    * changing it; the same source key with different content or provenance is a conflict.
    */
-  submit(observation: QueueObservation, now: string): Promise<JournalRecord> {
+  submit(
+    observation: QueueObservation,
+    now: string,
+  ): Promise<{ record: JournalRecord; created: boolean }> {
     return this.#channel.request({ operation: "submit", observation, now });
   }
 

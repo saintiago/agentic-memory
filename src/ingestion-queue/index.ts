@@ -13,6 +13,7 @@ export {
   queueObservationSchema,
   queueReceiptSchema,
   queueReceiptStatuses,
+  queueSubmissionSchema,
   queueStatusSchema,
   reconcileOutcomeSchema,
 } from "./contract.js";
@@ -23,6 +24,7 @@ export type {
   QueueObservation,
   QueueReceipt,
   QueueReceiptStatus,
+  QueueSubmission,
   QueueStatus,
   ReconcileOutcome,
 } from "./contract.js";

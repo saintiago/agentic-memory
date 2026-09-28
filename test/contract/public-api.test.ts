@@ -40,6 +40,7 @@ import type {
   QueueObservation,
   QueueReceipt,
   QueueReceiptStatus,
+  QueueSubmission,
   QueueStatus,
   ReconcileOutcome,
   ReferenceEmbedder,
@@ -275,7 +276,7 @@ describe("package root exports", () => {
       .parameter(0)
       .toEqualTypeOf<QueueObservation>();
     expectTypeOf<IngestionQueue["submit"]>().returns.toEqualTypeOf<
-      Promise<QueueReceipt>
+      Promise<QueueSubmission>
     >();
     expectTypeOf<IngestionQueue["receipt"]>().returns.toEqualTypeOf<
       Promise<QueueReceipt | undefined>

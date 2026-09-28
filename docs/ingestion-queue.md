@@ -10,9 +10,10 @@ This is a single-host service with durable local storage, not distributed writer
 ## Interface
 
 The queue accepts a caller-owned source key, content, optional observation timestamp and opaque
-provenance. Submission resolves only after durable local acceptance and returns a receipt identity
-and current status. It does not require the model, encoder or database to be available. A storage
-failure returns an explicit rejection; an unacknowledged submission may safely be submitted again.
+provenance. Submission resolves only after durable local acceptance and returns a receipt identity,
+current status and whether this call created the receipt. It does not require the model, encoder or
+database to be available. A storage failure returns an explicit rejection; an unacknowledged
+submission may safely be submitted again.
 
 ```ts
 interface QueueBinding {
@@ -29,7 +30,7 @@ interface QueueObservation {
 interface IngestionQueue {
   readonly binding: QueueBinding;
   readonly journalPath: string;
-  submit(observation: QueueObservation): Promise<QueueReceipt>;
+  submit(observation: QueueObservation): Promise<QueueSubmission>;
   receipt(id: string): Promise<QueueReceipt | undefined>;
   status(): Promise<QueueStatus>;
   importLegacyReceipts(
@@ -47,6 +48,15 @@ binding it was first opened with, and refuses another endpoint, collection, embe
 representation. Receipt objects, statuses, status counts and migration records are the exported
 schemas of this component; `EmbeddingSpace`, `JsonValue` and `EmbeddedNote` come from the
 Embeddings and NoteStore public interfaces.
+
+One submission outcome is the receipt plus a `created` flag, so a client can tell a new durable
+acceptance from an identical resubmission that found the existing receipt:
+
+```ts
+interface QueueSubmission extends QueueReceipt {
+  created: boolean;
+}
+```
 
 Receipt lookup returns status, attempt count, safe last error, next retry time when applicable,
 and note identity once stored. Statuses are `queued`, `processing`, `retrying`, `stored`, `failed`
