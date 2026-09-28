@@ -78,7 +78,8 @@ stored values, so `updatedAt` alone is never treated as a change. Vectors are tr
 time, because umap-js 1.4.0 moves its fitted training coordinates when a transform batch is as long
 as the training set. A vector whose neighbors are all at zero distance, as for a memory that
 repeats an equivalent stored vector, cannot be placed by the library; it keeps the position of its
-nearest committed memory instead of failing the refresh.
+nearest fitted anchor instead of failing the refresh. Fitted anchors survive complete removal of
+displayed notes and are replaced only on a new fit.
 
 `projection.json` under the artifact directory records the collection, embedding-space ID, layout,
 projection ID, algorithm and parameters, build time, fit inputs and current coordinates with the
@@ -95,6 +96,13 @@ stored coordinates has no fitted model, so the first later export that differs f
 is fitted fresh (that process's initial fit) instead of transforming into a layout it cannot
 reproduce. Within one run, later exports transform new or changed vectors and keep every other
 coordinate.
+
+On SIGINT or SIGTERM, the standalone host stops polling, cancels pending jobs, terminates the
+projection worker and disconnects all HTTP clients, including pending detail/search requests.
+It then exits explicitly: the public NoteStore and Embedder contracts expose no disposal API,
+so process termination releases outstanding provider sockets, SDK timers and encoder resources
+without waiting for provider timeouts. `InspectionSession.stop()` alone cancels inspection work;
+the process owns provider cleanup.
 
 ## Checks
 

@@ -338,6 +338,13 @@ interface ProjectionCandidate {
 export class ProjectionState {
   #vectors = new Map<string, readonly number[]>();
   #coordinates = new Map<string, ProjectionPoint>();
+  // Anchors belong to the fitted model, not the latest export. Keep them through removals and
+  // replace them only with the model; this stays bounded by the training set, not refresh history.
+  #anchors: {
+    id: string;
+    vector: readonly number[];
+    position: ProjectionPoint;
+  }[] = [];
   #model: UMAP | undefined;
   #artifact: ProjectionArtifact | undefined;
 
@@ -513,10 +520,10 @@ export class ProjectionState {
   }
 
   /**
-   * The committed position of the stored vector closest to `vector` in original space. umap-js
+   * The fitted anchor closest to `vector` in original space. umap-js
    * cannot place a query whose neighbors are all at zero cosine distance, which is exactly the
    * case for a memory that repeats an equivalent stored vector; such a vector shares the position
-   * of its nearest committed memory instead of failing the refresh, and the fitted coordinate
+   * of its nearest fitted anchor even after every displayed note disappears, and the coordinate
    * system stays untouched.
    */
   #nearestPosition(vector: readonly number[]): {
@@ -526,11 +533,7 @@ export class ProjectionState {
     let nearestId: string | undefined;
     let nearestDistance = Number.POSITIVE_INFINITY;
     let nearestPosition: { readonly x: number; readonly y: number } | undefined;
-    for (const [id, stored] of this.#vectors) {
-      const position = this.#coordinates.get(id);
-      if (position === undefined) {
-        continue;
-      }
+    for (const { id, vector: stored, position } of this.#anchors) {
       const distance = cosineDistance(vector, stored);
       if (
         nearestId === undefined ||
@@ -545,7 +548,7 @@ export class ProjectionState {
     if (nearestPosition === undefined) {
       throw new ProjectionError(
         "projection-failed",
-        "The fitted projection holds no committed vector to place the changed one from.",
+        "The fitted projection holds no anchor to place the changed vector from.",
       );
     }
     return nearestPosition;
@@ -630,6 +633,16 @@ export class ProjectionState {
 
   /** Commit a completed projection; only a successful candidate reaches this point. */
   #commit(candidate: ProjectionCandidate): ProjectionArtifact {
+    if (candidate.model !== this.#model) {
+      this.#anchors =
+        candidate.model === undefined
+          ? []
+          : [...candidate.vectors].map(([id, vector]) => ({
+              id,
+              vector,
+              position: candidate.coordinates.get(id)!,
+            }));
+    }
     this.#vectors = candidate.vectors;
     this.#coordinates = candidate.coordinates;
     this.#model = candidate.model;

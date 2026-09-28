@@ -207,6 +207,50 @@ describe("inspection projection", () => {
     }
   });
 
+  it("retains degenerate fitted anchors across empty exports and replaces them on rebuild", async () => {
+    const values = vector(7, 1_024);
+    const norm = Math.sqrt(
+      values.reduce((sum, value) => sum + value * value, 0),
+    );
+    const shared = values.map((value) => Math.fround(value / norm));
+    const repeated = (offset: number, count: number): ProjectionInput[] =>
+      Array.from({ length: count }, (_, index) => ({
+        id: uuid(offset + index),
+        vector: shared,
+      }));
+    const runner = createThreadProjectionRunner();
+    try {
+      const fitted = await runner.project(request(repeated(0, 20)));
+      for (let cycle = 1; cycle <= 3; cycle += 1) {
+        const empty = await runner.project(request([]));
+        expect(empty.coordinates).toEqual([]);
+        expect(empty.projectionId).toBe(fitted.projectionId);
+        await expect(runner.compare(uuid(0), uuid(0))).rejects.toThrow(
+          /does not hold a vector/,
+        );
+        const revived = await runner.project(request(repeated(cycle * 100, 1)));
+        expect(revived.projectionId).toBe(fitted.projectionId);
+        expect(revived.fitInputs).toEqual(fitted.fitInputs);
+        expectFinite(revived);
+        expect(positions(revived).get(uuid(cycle * 100))).toEqual(
+          positions(fitted).get(uuid(0)),
+        );
+      }
+      const rebuilt = await runner.project(
+        request(repeated(500, 24), { rebuild: true }),
+      );
+      expect(rebuilt.projectionId).not.toBe(fitted.projectionId);
+      await runner.project(request([]));
+      const revived = await runner.project(request(repeated(900, 1)));
+      expect(revived.projectionId).toBe(rebuilt.projectionId);
+      expect(positions(revived).get(uuid(900))).toEqual(
+        positions(rebuilt).get(uuid(500)),
+      );
+    } finally {
+      await runner.close();
+    }
+  }, 60_000);
+
   it("refits only for an explicit rebuild", () => {
     const state = new ProjectionState();
     const fitted = state.project(request(inputs(20)));

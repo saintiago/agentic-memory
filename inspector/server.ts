@@ -346,7 +346,8 @@ export const startInspectionServer = async (
             reject(error);
           }
         });
-        server.closeIdleConnections();
+        // Pending detail/search reads and incomplete request bodies must not delay shutdown.
+        server.closeAllConnections();
       });
     },
   };

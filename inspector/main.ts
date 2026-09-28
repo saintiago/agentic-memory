@@ -10,6 +10,7 @@ import { createProjectionArtifactStore } from "./artifacts.js";
 import { openInspectionMemory } from "./composition.js";
 import { createThreadProjectionRunner } from "./projection-runner.js";
 import { startInspectionServer } from "./server.js";
+import { installShutdownHandlers } from "./shutdown.js";
 import { InspectionSession } from "./session.js";
 import { readInspectionSettings } from "./settings.js";
 
@@ -47,25 +48,7 @@ const start = async (): Promise<void> => {
         `(${String(embedder.space.dimensions)} dimensions); queries are embedded locally and no ` +
         `language model is invoked.`,
     );
-    let closing = false;
-    const shutdown = async (signal: string): Promise<void> => {
-      if (closing) {
-        return;
-      }
-      closing = true;
-      console.log(`Stopping the memory inspection host (${signal}).`);
-      // Begin cancellation first: closing the projection worker releases a request that is
-      // waiting on it, so HTTP shutdown is never held behind a long projection.
-      const stopping = session.stop();
-      await server.close();
-      await stopping;
-    };
-    process.once("SIGINT", () => {
-      void shutdown("SIGINT");
-    });
-    process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
-    });
+    installShutdownHandlers(session, server);
   } catch (cause) {
     await session.stop();
     throw cause;
@@ -75,5 +58,6 @@ const start = async (): Promise<void> => {
 await start().catch((cause: unknown) => {
   const message = cause instanceof Error ? cause.message : String(cause);
   console.error(`The memory inspection host could not start: ${message}`);
-  process.exitCode = 1;
+  // Startup may already have opened provider resources that have no public disposal API.
+  process.exit(1);
 });

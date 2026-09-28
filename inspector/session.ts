@@ -92,8 +92,7 @@ export class InspectionSession {
   #running = false;
   #stopped = false;
   #stopping: Promise<void> | undefined;
-  #resolveStopped: (() => void) | undefined;
-  #stoppedSignal: Promise<void>;
+  #cancellation = new AbortController();
   #queued: QueuedJob | undefined;
   #current: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
@@ -108,9 +107,6 @@ export class InspectionSession {
     this.#pollIntervalMs = options.pollIntervalMs;
     this.#pageLimit = options.pageLimit ?? defaultPageLimit;
     this.#now = options.now ?? (() => new Date());
-    this.#stoppedSignal = new Promise((resolve) => {
-      this.#resolveStopped = resolve;
-    });
   }
 
   /** Start the initial export and projection; periodic refresh starts once it completes. */
@@ -203,7 +199,7 @@ export class InspectionSession {
    */
   async #stop(): Promise<void> {
     this.#stopped = true;
-    this.#resolveStopped?.();
+    this.#cancellation.abort();
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer);
       this.#timer = undefined;
@@ -307,16 +303,24 @@ export class InspectionSession {
     }
   }
 
-  /** One export page, abandoned when the session stops before it arrives. */
+  /** Stop waiting on an export page; remove the subscription as soon as either side settles. */
   async #page(cursor: Cursor | undefined): Promise<EmbeddedPage> {
-    const page = await Promise.race([
-      this.#store.pageEmbedded(this.#pageLimit, cursor),
-      this.#stoppedSignal.then(() => undefined),
-    ]);
-    if (page === undefined) {
-      throw new InspectionStopped();
+    this.#throwIfStopped();
+    const signal = this.#cancellation.signal;
+    let cancel: () => void = () => {};
+    try {
+      return await new Promise<EmbeddedPage>((resolve, reject) => {
+        cancel = () => {
+          reject(new InspectionStopped());
+        };
+        signal.addEventListener("abort", cancel, { once: true });
+        void this.#store
+          .pageEmbedded(this.#pageLimit, cursor)
+          .then(resolve, reject);
+      });
+    } finally {
+      signal.removeEventListener("abort", cancel);
     }
-    return page;
   }
 
   /** Fail a pending job as soon as the session stops; its run reports no failure for it. */
