@@ -1,5 +1,7 @@
 node_modules/
 dist/
+inspector/ui/build/
+.data/
 coverage/
 .turbo/
 package-lock.json

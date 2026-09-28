@@ -34,5 +34,8 @@
     "vitest.live.config.ts",
     "vitest.integration.config.ts",
     "vitest.embeddings.config.ts"
-  ]
+  ],
+  // The browser sources of the inspection dashboard are type-checked by tsconfig.ui.json, which
+  // supplies the DOM libraries; they are excluded here so no Node code can rely on DOM globals.
+  "exclude": ["inspector/ui"]
 }

@@ -2,45 +2,15 @@
  * The display view the browser polls: displayed notes at their projected positions, the directed
  * links between displayed endpoints, freshness evidence and the identity of the projection the
  * coordinates belong to. The host serves display data, never stored vectors or provider settings.
+ * The served shapes themselves live in [payloads](payloads.ts).
  *
  * See docs/dashboard.md#browser-api.
  */
-import type { Note } from "../src/index.js";
+import type { Note } from "../src/note-store/index.js";
 import type { ProjectionArtifact } from "./projection.js";
+import type { GraphView } from "./payloads.js";
 
-/** One displayed memory: stable identity, short label, projected position and update evidence. */
-export interface GraphNode {
-  readonly id: string;
-  readonly label: string;
-  readonly x: number;
-  readonly y: number;
-  /** The persisted update time, omitted while the historical update time is unknown. */
-  readonly updatedAt?: string;
-}
-
-/** One stored outgoing link between two displayed notes; direction is the stored direction. */
-export interface GraphEdge {
-  readonly source: string;
-  readonly target: string;
-}
-
-/** The plotted extent of the projected coordinates. */
-export interface GraphBounds {
-  readonly x: readonly [number, number];
-  readonly y: readonly [number, number];
-}
-
-/** One completed graph view. */
-export interface GraphView {
-  /** Export completion time, not an atomic snapshot time of the collection. */
-  readonly capturedAt: string;
-  readonly embeddingSpaceId: string;
-  readonly projectionId: string;
-  readonly layout: "umap" | "non-semantic";
-  readonly bounds: GraphBounds;
-  readonly nodes: GraphNode[];
-  readonly edges: GraphEdge[];
-}
+export * from "./payloads.js";
 
 /** The label length of one node; the full note stays available through the detail route. */
 export const shortLabelLength = 64;

@@ -1,0 +1,293 @@
+/**
+ * The displayed graph model: exact stored identities and directed links at the supplied projected
+ * positions, refreshes that keep other coordinates, removals only from completed views, batching
+ * between frames and the payload validation the planner performs.
+ *
+ * See docs/dashboard.md#live-updates-with-sigma, docs/dashboard.md#acceptance-checks.
+ */
+import { describe, expect, it } from "vitest";
+
+import { GraphModel, type ResultsSource } from "../graph-model.js";
+import {
+  indexView,
+  parseGraphSnapshot,
+  planViewDiff,
+  type ViewDiff,
+} from "../view-diff.js";
+import {
+  graphEdge,
+  graphNode,
+  graphSnapshot,
+  graphView,
+  nodeId,
+  snapshotText,
+} from "./support.js";
+
+const noResults: ResultsSource = {
+  highlightIds: new Set(),
+  retrievalKind: () => undefined,
+};
+
+const model = (now = 0): GraphModel =>
+  new GraphModel({ results: noResults, now: () => now });
+
+const apply = async (
+  graph: GraphModel,
+  snapshot: Parameters<typeof planViewDiff>[1],
+  previous?: ReturnType<typeof indexView>,
+): Promise<ViewDiff> => {
+  const diff = planViewDiff(previous, snapshot);
+  await graph.applyDiff(diff, { yieldFrame: () => Promise.resolve() });
+  return diff;
+};
+
+describe("displayed graph", () => {
+  it("renders the exact stored identities and directed links at the supplied positions", async () => {
+    const graph = model();
+    const view = graphView({
+      nodes: [
+        graphNode(0, { x: 0, y: 0 }),
+        graphNode(1, { x: 1.5, y: -2 }),
+        graphNode(2, { x: -3, y: 0.25 }),
+      ],
+      edges: [graphEdge(0, 1), graphEdge(2, 0)],
+    });
+
+    const diff = await apply(graph, graphSnapshot({ view }));
+
+    expect(diff.initial).toBe(true);
+    expect(graph.graph.nodes().sort()).toEqual(
+      [nodeId(0), nodeId(1), nodeId(2)].sort(),
+    );
+    expect(graph.graph.getNodeAttributes(nodeId(1))).toEqual({
+      label: "Memory 1",
+      x: 1.5,
+      y: -2,
+    });
+    expect(graph.graph.hasDirectedEdge(nodeId(0), nodeId(1))).toBe(true);
+    expect(graph.graph.hasDirectedEdge(nodeId(1), nodeId(0))).toBe(false);
+    expect(graph.graph.hasDirectedEdge(nodeId(2), nodeId(0))).toBe(true);
+    expect(graph.counts()).toEqual({ nodes: 3, links: 2 });
+  });
+
+  it("adds links without changing the coordinates of existing memories", async () => {
+    const graph = model();
+    const first = graphView({
+      nodes: [graphNode(0), graphNode(1), graphNode(2)],
+    });
+    const firstDiff = await apply(graph, graphSnapshot({ view: first }));
+    const before = graph.graph.getNodeAttributes(nodeId(2));
+
+    const second = graphView({
+      nodes: [graphNode(0), graphNode(1), graphNode(2)],
+      edges: [graphEdge(0, 1), graphEdge(1, 2)],
+      capturedAt: "2026-09-28T12:01:00.000Z",
+    });
+    const secondDiff = planViewDiff(
+      indexView(firstDiff.summary === undefined ? undefined : first),
+      graphSnapshot({ view: second }),
+    );
+    await graph.applyDiff(secondDiff, { yieldFrame: () => Promise.resolve() });
+
+    expect(secondDiff.updatedNodes).toEqual([]);
+    expect(secondDiff.addedLinks).toHaveLength(2);
+    expect(graph.graph.getNodeAttributes(nodeId(2))).toEqual(before);
+    expect(graph.graph.size).toBe(2);
+  });
+
+  it("adds, updates and removes memories and links of one completed view", async () => {
+    const graph = model();
+    const first = graphView({
+      nodes: [graphNode(0), graphNode(1), graphNode(2)],
+      edges: [graphEdge(0, 1), graphEdge(1, 2)],
+    });
+    await apply(graph, graphSnapshot({ view: first }));
+
+    const second = graphView({
+      nodes: [
+        graphNode(0, {
+          label: "renamed",
+          updatedAt: "2026-09-28T11:00:00.000Z",
+        }),
+        graphNode(1, { x: 42, y: 42 }),
+        graphNode(3, { x: 7, y: 7 }),
+      ],
+      edges: [graphEdge(1, 3)],
+      capturedAt: "2026-09-28T12:01:00.000Z",
+    });
+    const diff = await apply(
+      graph,
+      graphSnapshot({ view: second }),
+      indexView(first),
+    );
+
+    expect(diff.updatedNodes.map((node) => node.id)).toEqual([
+      nodeId(0),
+      nodeId(1),
+    ]);
+    expect(diff.addedNodes.map((node) => node.id)).toEqual([nodeId(3)]);
+    expect(diff.removedNodeIds).toEqual([nodeId(2)]);
+    expect(diff.addedLinks).toEqual([graphEdge(1, 3)]);
+    expect(diff.removedLinkKeys).toHaveLength(2);
+    expect(graph.graph.hasNode(nodeId(2))).toBe(false);
+    expect(graph.graph.getNodeAttributes(nodeId(0)).label).toBe("renamed");
+    expect(graph.graph.getNodeAttributes(nodeId(1))).toMatchObject({
+      x: 42,
+      y: 42,
+    });
+    expect(
+      graph.graph.getEdgeAttributes(`${nodeId(1)}\u0000${nodeId(3)}`),
+    ).toEqual({
+      kind: "link",
+    });
+    expect(graph.counts()).toEqual({ nodes: 3, links: 1 });
+  });
+
+  it("marks every memory as changed when a full refit moves the coordinates", async () => {
+    const graph = model();
+    const first = graphView({
+      nodes: [graphNode(0), graphNode(1)],
+      edges: [graphEdge(0, 1)],
+    });
+    await apply(graph, graphSnapshot({ view: first }));
+
+    const refit = graphView({
+      nodes: [
+        graphNode(0, { x: 100, y: 100 }),
+        graphNode(1, { x: 200, y: 200 }),
+      ],
+      edges: [graphEdge(0, 1)],
+      projectionId: "test-projection:rebuild",
+      capturedAt: "2026-09-28T12:02:00.000Z",
+    });
+    const diff = await apply(
+      graph,
+      graphSnapshot({ view: refit }),
+      indexView(first),
+    );
+
+    expect(diff.summary?.projectionId).toBe("test-projection:rebuild");
+    expect(diff.updatedNodes).toHaveLength(2);
+    expect(diff.addedLinks).toEqual([]);
+    expect(graph.graph.getNodeAttributes(nodeId(0))).toMatchObject({
+      x: 100,
+      y: 100,
+    });
+  });
+
+  it("never infers a deletion from an unavailable or failed view", async () => {
+    const graph = model();
+    const view = graphView({ nodes: [graphNode(0), graphNode(1)] });
+    await apply(graph, graphSnapshot({ view }));
+
+    const failed = graphSnapshot({
+      view,
+      status: "ready",
+      error: "The last inspection export failed.",
+    });
+    const diff = await apply(graph, failed, indexView(view));
+
+    expect(diff.error).toBe("The last inspection export failed.");
+    expect(diff.addedNodes).toEqual([]);
+    expect(diff.removedNodeIds).toEqual([]);
+    expect(diff.addedLinks).toEqual([]);
+    expect(diff.removedLinkKeys).toEqual([]);
+    expect(graph.counts()).toEqual({ nodes: 2, links: 0 });
+
+    const loading = graphSnapshot({ status: "loading" });
+    const loadingDiff = await apply(graph, loading, indexView(view));
+    expect(loadingDiff.summary).toBeUndefined();
+    expect(loadingDiff.status).toBe("loading");
+    expect(graph.counts()).toEqual({ nodes: 2, links: 0 });
+  });
+
+  it("clears a selection whose memory disappeared from a completed view", async () => {
+    const graph = model();
+    const first = graphView({ nodes: [graphNode(0), graphNode(1)] });
+    await apply(graph, graphSnapshot({ view: first }));
+    expect(graph.select(nodeId(1))).toBe(true);
+
+    const second = graphView({ nodes: [graphNode(0)] });
+    const report = await graph.applyDiff(
+      planViewDiff(indexView(first), graphSnapshot({ view: second })),
+      { yieldFrame: () => Promise.resolve() },
+    );
+
+    expect(report.selectionCleared).toBe(true);
+    expect(graph.selectedId).toBeUndefined();
+  });
+
+  it("applies a repeated plan without duplicating anything", async () => {
+    const graph = model();
+    const view = graphView({
+      nodes: [graphNode(0), graphNode(1)],
+      edges: [graphEdge(0, 1)],
+    });
+    const diff = planViewDiff(undefined, graphSnapshot({ view }));
+
+    await graph.applyDiff(diff, { yieldFrame: () => Promise.resolve() });
+    await graph.applyDiff(diff, { yieldFrame: () => Promise.resolve() });
+
+    expect(graph.counts()).toEqual({ nodes: 2, links: 1 });
+  });
+
+  it("yields between bounded mutation batches", async () => {
+    const graph = model();
+    const view = graphView({
+      nodes: [0, 1, 2, 3, 4, 5].map((index) => graphNode(index)),
+    });
+    const yields: number[] = [];
+    const report = await graph.applyDiff(
+      planViewDiff(undefined, graphSnapshot({ view })),
+      {
+        batchSize: 2,
+        yieldFrame: () => {
+          yields.push(graph.graph.order);
+          return Promise.resolve();
+        },
+      },
+    );
+
+    expect(report.batches).toBe(3);
+    expect(yields).toEqual([2, 4]);
+  });
+
+  it("does not invent a link whose endpoint is absent from the display", async () => {
+    const graph = model();
+    const diff: ViewDiff = {
+      status: "ready",
+      refreshing: false,
+      error: undefined,
+      summary: undefined,
+      addedNodes: [graphNode(0)],
+      removedNodeIds: [],
+      updatedNodes: [],
+      addedLinks: [graphEdge(0, 9)],
+      removedLinkKeys: [],
+      initial: true,
+    };
+
+    await graph.applyDiff(diff, { yieldFrame: () => Promise.resolve() });
+
+    expect(graph.counts()).toEqual({ nodes: 1, links: 0 });
+  });
+
+  it("rejects a served payload that does not match the contract", () => {
+    expect(() => parseGraphSnapshot("{")).toThrow(
+      "The graph response is not valid JSON.",
+    );
+    expect(() =>
+      parseGraphSnapshot(
+        JSON.stringify({ status: "ready", refreshing: false, view: {} }),
+      ),
+    ).toThrow(
+      "The graph response does not match the documented inspection contract.",
+    );
+    const invalid = graphSnapshot({
+      view: graphView({ nodes: [graphNode(0, { x: Number.NaN })] }),
+    });
+    expect(() => parseGraphSnapshot(snapshotText(invalid))).toThrow(
+      "does not match the documented inspection contract",
+    );
+  });
+});

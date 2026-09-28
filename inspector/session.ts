@@ -11,18 +11,11 @@
  */
 import type { Cursor, EmbeddedPage, Note, NoteStore } from "../src/index.js";
 import type { ProjectionArtifactStore } from "./artifacts.js";
-import { buildGraphView, type GraphView } from "./graph.js";
+import { buildGraphView, type GraphSnapshot, type GraphView } from "./graph.js";
 import type { ProjectionArtifact, ProjectionInput } from "./projection.js";
 import type { ProjectionRunner } from "./projection-runner.js";
 
-/** The graph state the browser polls: a completed view, a pending first view, or a failure. */
-export interface GraphSnapshot {
-  readonly status: "loading" | "ready" | "error";
-  readonly refreshing: boolean;
-  /** A sanitized refresh failure; kept next to the last successful view until a refresh succeeds. */
-  readonly error?: string;
-  readonly view?: GraphView;
-}
+export type { GraphSnapshot };
 
 /** Why an explicit comparison could not be served. */
 export type ComparisonFailure = "no-view" | "unknown-note";

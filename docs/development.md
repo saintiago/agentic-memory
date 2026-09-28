@@ -32,21 +32,23 @@ be established before their concrete implementations without temporary methods t
 Follow [tech stack](tech-stack.md) and [testing](testing.md). Pin Node 24, lock dependencies, and
 provide these npm scripts:
 
-| Command            | Responsibility                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------ |
-| `format:check`     | Check source and Markdown formatting without changing files                                |
-| `lint`             | ESLint                                                                                     |
-| `typecheck`        | TypeScript static checking                                                                 |
-| `boundaries`       | Dependency Cruiser public imports and dependency directions                                |
-| `test`             | Deterministic unit/component tests, no paid calls or external services                     |
-| `test:integration` | Isolated real-Qdrant contract and system checks; clearly report unavailable infrastructure |
-| `test:embeddings`  | Explicit pinned-artifact encoder integration check                                         |
-| `demo:evaluation`  | Deterministic in-memory replay of the synthetic fixtures with its measurement report       |
-| `replay:live`      | Opt-in live replay with a declared call/token budget and recorded stopping reason          |
-| `graph:inspect`    | Offline HTML graph and JSON evidence rendered from one saved run directory                 |
-| `inspector`        | Local inspection host serving the loopback browser API for one configured collection       |
-| `build`            | Produce JavaScript ESM and type declarations                                               |
-| `validate`         | Formatting, lint, types, boundaries, deterministic tests and build                         |
+| Command                | Responsibility                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------ |
+| `format:check`         | Check source and Markdown formatting without changing files                                |
+| `lint`                 | ESLint                                                                                     |
+| `typecheck`            | TypeScript static checking                                                                 |
+| `boundaries`           | Dependency Cruiser public imports and dependency directions                                |
+| `test`                 | Deterministic unit/component tests, no paid calls or external services                     |
+| `test:integration`     | Isolated real-Qdrant contract and system checks; clearly report unavailable infrastructure |
+| `test:embeddings`      | Explicit pinned-artifact encoder integration check                                         |
+| `demo:evaluation`      | Deterministic in-memory replay of the synthetic fixtures with its measurement report       |
+| `replay:live`          | Opt-in live replay with a declared call/token budget and recorded stopping reason          |
+| `graph:inspect`        | Offline HTML graph and JSON evidence rendered from one saved run directory                 |
+| `inspector`            | Local inspection host serving the loopback browser API and the built Sigma dashboard       |
+| `inspector:build`      | Bundle the browser dashboard of the inspection UI                                          |
+| `inspector:responsive` | Real-browser scale and responsiveness check of the inspection dashboard                    |
+| `build`                | Produce JavaScript ESM and type declarations                                               |
+| `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                         |
 
 Integrations must not silently skip and report success when requested. Separate expensive model
 loading and external-state checks from deterministic cacheable validation. The first foundation

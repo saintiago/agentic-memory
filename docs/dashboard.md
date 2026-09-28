@@ -20,7 +20,11 @@ Sigma owns rendering and camera interaction; Graphology holds the displayed node
 A small TypeScript inspection host runs locally under Linux/WSL and serves the browser UI on loopback.
 Keep its dependencies and entry point separate from the runtime library; no React requirement.
 In this repository that host lives in `inspector/` and is launched with `npm run inspector`; its
-settings and checks are documented in [inspector/README.md](../inspector/README.md).
+settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
+lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
+served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
+`npm run inspector:build` bundles them for the host to serve. Only those modules import Sigma, so
+the data access, projection and display contracts stay independent of the renderer.
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version
@@ -160,9 +164,10 @@ export AMEM_QDRANT_COLLECTION=amem-notes
 npm run inspector
 ```
 
-`npm run inspector` runs the TypeScript entry point through the pinned `tsx` loader; the projection
-worker thread uses the same loader. [inspector/README.md](../inspector/README.md) lists every host
-setting, the browser routes and the state the inspection process keeps.
+`npm run inspector` builds the browser bundle of the UI and runs the TypeScript entry point through
+the pinned `tsx` loader; the projection worker thread uses the same loader. [inspector/README.md](../inspector/README.md)
+lists every host setting, the browser routes, the state the inspection process keeps and the
+commands that produce the acceptance-check evidence.
 
 ## Visual behavior
 
@@ -297,6 +302,9 @@ visible in the list, including those absent from the map.
    projected proximity from original-vector similarity.
 6. Representative scale checks report corpus size, link count and hardware alongside measurements;
    all displayed source text is inert.
+
+The evidence for these checks is recorded with the dashboard's tests and its responsive scale check
+in [inspector/README.md](../inspector/README.md#acceptance-checks).
 
 ## References
 

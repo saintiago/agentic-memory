@@ -4,8 +4,9 @@ The separate local host of the [Sigma memory dashboard](../docs/dashboard.md). I
 explicitly configured collection through the public memory and storage contracts, projects the
 stored vectors, serves the same-origin browser API on loopback and keeps the last completed view
 interactive while work is pending. It never writes a memory, never calls a language model and
-holds no runtime persistence of its own. The browser UI is implemented by AMEM-11 and replaces the
-placeholder page in `ui/`.
+holds no runtime persistence of its own. The browser UI lives in `ui/`: a host client, a view
+planner that parses and diffs served payloads in a worker, a Graphology display model, inert DOM
+panels and a thin Sigma v3 rendering adapter that is the only module the renderer touches.
 
 ## Launching
 
@@ -23,9 +24,37 @@ HTTP and the projection worker on `SIGINT` or `SIGTERM` without waiting for an i
 projection. It needs no generation-provider credential, starts no Qdrant server and imports no
 Nexus configuration.
 
-`npm run inspector` runs the TypeScript entry point through the pinned `tsx` loader, and the
-projection worker thread uses the same loader. The worker holds the fitted projection, the exported
-vectors, the coordinates and the comparison state for this process only.
+`npm run inspector` first builds the browser bundle of `ui/` into `ui/build/` (see
+`npm run inspector:build`) and then runs the TypeScript entry point through the pinned `tsx`
+loader; the projection worker thread uses the same loader. The worker holds the fitted projection,
+the exported vectors, the coordinates and the comparison state for this process only. Open the
+printed loopback URL to use the dashboard; the page needs no build step of its own because the
+host serves the built bundle.
+
+## Browser dashboard
+
+The page is one composition of a status line, a zoomable Sigma map, a query bar with an ordered
+result list, a details panel and an explicit stored-vector comparison. It states that positions
+are an approximate embedding projection and labels a non-semantic fallback layout as such.
+
+| Part                     | Behavior                                                                                                                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Map                      | Directed stored links, freshness fill from the fixed palette, zoom/pan through Sigma, **Fit all**, **Fit results**, **Focus selected** and all-links versus focused-links |
+| Freshness legend         | The labeled age ranges and the neutral unknown-update color, comparable between refreshes                                                                                 |
+| Query bar                | Real `AgenticMemory.search` through the host; results keep returned order, **Direct match** scores and **Linked addition** labels, and highlight exactly the returned IDs |
+| Details                  | Original content, context, keywords, tags, provenance, the memory timestamp, the exact update time with its age (or `unknown`) and the capture time of the displayed view |
+| Stored-vector comparison | Original-space cosine similarity of the two most recently selected memories, with the capture time of the view that holds them and explicitly not a retrieval score       |
+
+Updates are asynchronous: the page polls `GET /api/graph`, parses and diffs each payload in a
+worker, applies the mutations to the existing Graphology graph in bounded batches and never
+recreates Sigma, so the camera and selection survive a refresh. The status line reports a running
+refresh and an in-progress application of a completed view. A failed poll or refresh keeps the last
+completed view and shows the error instead of an empty map. Returned memories the current view does
+not contain stay in the result list, are marked as not in the current map and request one paginated
+inspection refresh. Ages are recomputed without re-embedding or moving nodes. The map renders the
+graph after the first completed view is applied, so a large initial import costs one draw rather
+than one draw per batch, and it skips the link layer while the camera moves to keep zoom and pan
+responsive with tens of thousands of links.
 
 ## Host settings
 
@@ -64,7 +93,10 @@ foreign vectors.
 Validation failures are 400, a note that the latest view or the collection does not contain is 404,
 a comparison before the first completed view is 409, and operation failures are 500 with a fixed
 message. Failure text is sanitized; details stay on the host's stderr. Refresh and projection
-failures never turn into an empty graph or an empty search result.
+failures never turn into an empty graph or an empty search result. The served shapes are defined
+once in [payloads.ts](payloads.ts), the host sends what that module accepts and the browser
+validates what it receives with the same schemas, so a malformed or drifted payload fails visibly
+instead of rendering an empty collection.
 
 ## Projection and inspection state
 
@@ -118,6 +150,60 @@ the build, including the host's component tests:
   worker-thread execution;
 - responsiveness: while a CPU-bound projection occupies its worker thread, the graph route keeps
   answering and the view is published once the worker finishes.
+
+The dashboard's own tests are colocated with its modules under `ui/tests/` and run in the same
+deterministic scope. They exercise the real Graphology model, view planner and DOM panels with a
+substituted HTTP host and a recording renderer: the imported identities and directed links at the
+served positions, positions that survive a link-only refresh, removals only from completed views,
+the freshness palette and its unknown-update neutral, returned order with direct scores and linked
+classifications, a zero-result search, a superseded request, retained views after failures,
+unmapped results, the details and comparison panels, camera and selection preservation across a
+refresh, and source text that stays inert. `npm run validate` also builds the browser bundle, so a
+broken bundle fails the aggregate check.
+
+### Responsive scale check
+
+`npm run inspector:responsive` builds the bundle and runs the required scale check in a real
+headless Chromium through `playwright-core`, against the real inspection session and HTTP server
+with a synthetic collection and projection (10,000 memories, 49,996 directed links; a refresh adds
+500 memories and 2,500 links). It exercises zoom, pan, selection and a search while the refresh is
+applied, and records the corpus size, link count, hardware, browser, load time, update latency,
+long tasks and frame gaps in `.data/inspector-responsive/report.json`
+(`AMEM_INSPECTOR_RESPONSIVE_OUT` overrides the path). It fails with instructions when the browser
+build or the Chromium download is missing, and it fails when the camera or selection does not
+survive the update, when a failed refresh empties the map, or when the main thread is frozen.
+
+Recorded run on the development machine (13th Gen Intel Core i7-13700KF, 24 cores, 16 GiB, WSL2;
+Chromium 153 with software WebGL through SwiftShader):
+
+| Measurement                       | Value                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                             |
+| Initial load                      | 2,598 ms from navigation to the displayed view; 173 ms to apply it in 12 batches                  |
+| Refresh, request to applied view  | 8,109 ms wall clock; 14 ms to apply the diff in 1 batch                                           |
+| Interaction during the update     | search → results 3,096 ms, click → selection 40 ms, wheel → camera 119 ms, drag → camera 3,023 ms |
+| Main thread                       | 12 long tasks, longest 1,448 ms; frame gaps p95 1,434 ms                                          |
+| Preservation and failure handling | camera preserved, selection preserved, failed refresh kept the view                               |
+
+The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link
+layer costs about 1.3 s, and repeated runs of the same check vary with how many of those redraws
+are already queued when an interaction arrives. The check records the renderer string with the
+numbers instead of presenting them as a hardware-accelerated result; zoom, pan, selection and
+search still complete, and the update applies in one batch while they run.
+
+## Acceptance checks
+
+Each acceptance check of [docs/dashboard.md](../docs/dashboard.md#acceptance-checks) has its
+evidence in this scope:
+
+| Check                                                                                                                          | Evidence                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Stored IDs and directed links at the served positions; links do not move nodes                                                 | `ui/tests/graph-model.test.ts` and the browser check's served-position assertion                     |
+| Known update times yield the expected age colors, unknown stays unknown                                                        | `ui/tests/freshness.test.ts`, `ui/tests/style.test.ts` and `ui/tests/details.test.ts`                |
+| A real search displays and highlights exactly its returned IDs, order, scores and classifications                              | `ui/tests/results.test.ts`, `ui/tests/dashboard.test.ts` and the browser check's search step         |
+| Refresh adds and changes memories without resetting zoom or selection; failures preserve data                                  | `ui/tests/dashboard.test.ts`, `ui/tests/graph-model.test.ts` and the browser check's refresh step    |
+| New vectors use the existing projection; full refitting is explicit; projection is distinguished from stored-vector similarity | `ui/tests/dashboard.test.ts` (explicit rebuild, labelled comparison) and the host's projection tests |
+| Representative scale check reports corpus size, links and hardware; displayed text is inert                                    | `npm run inspector:responsive` and `ui/tests/dashboard.test.ts` (inertness)                          |
 
 The authoritative design, including the acceptance checks that belong to the AMEM-11 UI, is
 [docs/dashboard.md](../docs/dashboard.md).
