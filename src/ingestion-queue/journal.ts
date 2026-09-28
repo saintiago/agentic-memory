@@ -231,8 +231,8 @@ export class Journal {
     return this.#channel.request({ operation: "unresolvedReconciliation" });
   }
 
-  /** Mark a receipt processing for one attempt and retain the attempt count across restarts. */
-  claim(sequence: number, now: string): Promise<JournalRecord> {
+  /** Claim a still-eligible receipt, or skip a selection that durable state has superseded. */
+  claim(sequence: number, now: string): Promise<JournalRecord | undefined> {
     return this.#channel.request({ operation: "claim", sequence, now });
   }
 

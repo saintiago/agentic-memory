@@ -623,6 +623,9 @@ class DurableQueue implements IngestionQueue {
       pending.sequence,
       new Date().toISOString(),
     );
+    if (claimed === undefined) {
+      return;
+    }
     try {
       const plan =
         claimed.plan !== undefined

@@ -427,9 +427,23 @@ class JournalState {
     return row === undefined ? undefined : readRecord(row);
   }
 
-  /** Mark a receipt processing for one attempt and retain the attempt count across restarts. */
-  claim(sequence: number, now: string): JournalRecord {
+  /** Claim only work still eligible in durable state, atomically with respect to reconciliation. */
+  claim(sequence: number, now: string): JournalRecord | undefined {
     return this.#transaction(() => {
+      // Selection is only a polling hint. Another handle may have reconciled it while the
+      // claim was in flight. BEGIN IMMEDIATE also makes a later reconciliation see processing
+      // and reject, so an acknowledged operator decision cannot race with provider work.
+      const pending = this.nextPending();
+      if (
+        pending === undefined ||
+        pending.sequence !== sequence ||
+        this.unresolvedReconciliation() !== undefined ||
+        (pending.status === "blocked" && pending.nextRetryAt === undefined) ||
+        (pending.nextRetryAt !== undefined &&
+          Date.parse(pending.nextRetryAt) > Date.parse(now))
+      ) {
+        return undefined;
+      }
       this.#db
         .prepare(
           "UPDATE receipts SET status = 'processing', attempt_count = attempt_count + 1, " +

@@ -161,6 +161,9 @@ treated as a known-unwritten observation.
 One blocked receipt is reconciled explicitly: `stored` records the completed note identity, and
 `not-written` clears the unusable plan so preparation restarts with the accepted note identity and
 observation. Until then the blocked receipt keeps its place, so no later observation is written.
+Claiming and reconciliation serialize through journal transactions, including across handles: a
+completed `stored` decision cannot be undone by a previously selected retry. If the worker claims
+first, the receipt is processing and reconciliation rejects because it is no longer blocked.
 
 ## Visibility and verification
 

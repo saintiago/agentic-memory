@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1048,6 +1049,205 @@ describe("retry, blocking and recovery", () => {
       "the later observation to succeed",
     );
   });
+
+  it.each(
+    (["preparation", "application"] as const).flatMap((stage) =>
+      (["same", "another"] as const).flatMap((handle) =>
+        (["stored", "not-written"] as const).map((outcome) => ({
+          stage,
+          handle,
+          outcome,
+        })),
+      ),
+    ),
+  )(
+    "preserves $outcome reconciliation through $handle handle ahead of a stale $stage retry claim",
+    async ({ stage, handle, outcome }) => {
+      const harness = await createHarness();
+      const operator =
+        handle === "same"
+          ? harness.queue
+          : (await createHarness({ directory: harness.directory })).queue;
+      const credentialFailure = Object.assign(new Error("Unauthorized"), {
+        status: 401,
+      });
+      harness.model.queue("construct", CONSTRUCTED);
+      if (stage === "preparation") {
+        harness.store.nearestError = credentialFailure;
+      } else {
+        harness.store.failNextWrites(credentialFailure);
+      }
+      const accepted = await harness.queue.submit({
+        sourceKey: "reconciled",
+        content: "The reconciled observation.",
+      });
+      await harness.queue.start();
+      await settle(
+        async () => (await operator.receipt(accepted.id))?.status === "blocked",
+        "the credential failure to block the receipt",
+      );
+      const blocked = await receiptOf(operator, accepted.id);
+      expect(blocked.nextRetryAt).toBeDefined();
+      harness.store.nearestError = undefined;
+
+      // Hold only delivery of the next claim. Selection, journal transactions and Memory stay
+      // real, while the operator deterministically commits before that stale claim can run.
+      const postMessage = Worker.prototype.postMessage;
+      let resumeClaim: (() => void) | undefined;
+      const delivery = vi.spyOn(Worker.prototype, "postMessage");
+      delivery.mockImplementation(function (
+        this: Worker,
+        ...args: Parameters<Worker["postMessage"]>
+      ) {
+        const message: unknown = args[0];
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "operation" in message &&
+          message.operation === "claim"
+        ) {
+          resumeClaim = () => postMessage.apply(this, args);
+          return;
+        }
+        postMessage.apply(this, args);
+      });
+      try {
+        await settle(() => resumeClaim !== undefined, "the due retry's claim");
+        const originalNoteId = harness.preparer.prepares[0]!.noteId;
+        if (outcome === "stored") {
+          harness.store.seed({
+            note: candidate({
+              id: originalNoteId,
+              context: "Operator verified context.",
+            }),
+            vector: [1, 0, 0, 0],
+          });
+        }
+        const recordsBefore = structuredClone(harness.store.records);
+        const reconciled = await operator.reconcile(
+          accepted.id,
+          outcome === "stored"
+            ? { outcome, noteId: originalNoteId }
+            : { outcome },
+        );
+        expect(reconciled.status).toBe(
+          outcome === "stored" ? "stored" : "queued",
+        );
+        // A fresh preparation must replace the discarded plan after not-written reconciliation.
+        if (outcome === "not-written") {
+          harness.model.queue("construct", () =>
+            attributes("Fresh context.", [], []),
+          );
+        }
+        harness.model.queue("construct", CONSTRUCTED);
+        harness.model.queue("evolve", unchanged);
+        const later = await harness.queue.submit({
+          sourceKey: "later",
+          content: "The later observation.",
+        });
+        delivery.mockRestore();
+        resumeClaim?.();
+        resumeClaim = undefined;
+        await settle(
+          async () => (await operator.receipt(later.id))?.status === "stored",
+          "the backlog to drain after reconciliation",
+        );
+        const completed = await receiptOf(operator, accepted.id);
+        if (outcome === "stored") {
+          expect(completed).toEqual(reconciled);
+          expect(harness.preparer.prepares).toHaveLength(2);
+          expect(harness.preparer.applies).toHaveLength(
+            stage === "application" ? 2 : 1,
+          );
+          expect(harness.store.records.get(originalNoteId)).toEqual(
+            recordsBefore.get(originalNoteId),
+          );
+          expect(harness.store.writes).toHaveLength(1);
+        } else {
+          expect(completed).toMatchObject({
+            status: "stored",
+            noteId: originalNoteId,
+            attemptCount: 2,
+          });
+          expect(harness.preparer.prepares).toHaveLength(3);
+          expect(harness.store.stored(originalNoteId)?.context).toBe(
+            "Fresh context.",
+          );
+          expect(harness.store.writes).toHaveLength(2);
+        }
+        await harness.queue.close();
+        const reopened = await createHarness({ directory: harness.directory });
+        expect(await receiptOf(reopened.queue, accepted.id)).toEqual(completed);
+      } finally {
+        delivery.mockRestore();
+        resumeClaim?.();
+      }
+    },
+  );
+
+  it.each(["preparation", "application"] as const)(
+    "rejects reconciliation through another handle after a retry claims %s",
+    async (stage) => {
+      const harness = await createHarness();
+      const operator = await createHarness({ directory: harness.directory });
+      const credentialFailure = Object.assign(new Error("Unauthorized"), {
+        status: 401,
+      });
+      harness.model.queue("construct", CONSTRUCTED);
+      if (stage === "preparation") {
+        harness.store.nearestError = credentialFailure;
+      } else {
+        harness.store.failNextWrites(credentialFailure);
+      }
+      const accepted = await harness.queue.submit({
+        sourceKey: "claimed-before-reconciliation",
+        content: "The observation.",
+      });
+      await harness.queue.start();
+      await settle(
+        async () =>
+          (await operator.queue.receipt(accepted.id))?.status === "blocked",
+        "the initial attempt to block",
+      );
+      harness.store.nearestError = undefined;
+      const gate =
+        stage === "application" ? harness.store.holdWrites() : deferred<void>();
+      if (stage === "preparation") {
+        harness.model.queue("construct", async () => {
+          await gate.promise;
+          return CONSTRUCTED();
+        });
+      }
+      try {
+        await settle(
+          async () =>
+            (await operator.queue.receipt(accepted.id))?.status ===
+            "processing",
+          "the retry to claim the receipt",
+        );
+        for (const outcome of [
+          { outcome: "stored", noteId: OTHER_ID },
+          { outcome: "not-written" },
+        ] as const) {
+          await expect(
+            operator.queue.reconcile(accepted.id, outcome),
+          ).rejects.toBeInstanceOf(QueueRequestError);
+        }
+      } finally {
+        gate.resolve(undefined);
+      }
+      await settle(
+        async () =>
+          (await operator.queue.receipt(accepted.id))?.status === "stored",
+        "the claimed retry to complete",
+      );
+      expect(await receiptOf(operator.queue, accepted.id)).toMatchObject({
+        noteId: harness.preparer.prepares[0]!.noteId,
+        attemptCount: 2,
+      });
+      expect(harness.store.writes).toHaveLength(1);
+    },
+  );
 
   it("blocks a corrupt stored plan for reconciliation and clears it on request", async () => {
     const harness = await createHarness();
