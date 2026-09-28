@@ -2,8 +2,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MemoryError } from "../../src/index.js";
+import {
+  MemoryError,
+  type Cursor,
+  type EmbeddedNote,
+  type EmbeddedPage,
+} from "../../src/index.js";
 import { createProjectionArtifactStore } from "../../inspector/artifacts.js";
+import { createThreadProjectionRunner } from "../../inspector/projection-runner.js";
 import {
   startInspectionServer,
   type InspectionServer,
@@ -19,6 +25,7 @@ import {
   ScriptedReads,
   scriptedArtifact,
   uuid,
+  vector,
   waitFor,
 } from "./support/inspection.js";
 
@@ -58,6 +65,43 @@ const seededStore = (): PagedEmbeddedStore => {
   );
   return store;
 };
+
+/** An in-memory export that can hold one page open while other work overlaps it. */
+class GatedEmbeddedStore extends PagedEmbeddedStore {
+  calls = 0;
+  #holdAt: number | undefined;
+  #held: (() => void) | undefined;
+  #gate: Promise<void> | undefined;
+
+  /** Hold the call to the given one-based page until `releasePage` is called. */
+  holdPage(call: number): void {
+    this.#holdAt = call;
+    this.#gate = new Promise((resolve) => {
+      this.#held = resolve;
+    });
+  }
+
+  releasePage(): void {
+    this.#held?.();
+    this.#held = undefined;
+  }
+
+  override async pageEmbedded(
+    limit: number,
+    cursor?: Cursor,
+  ): Promise<EmbeddedPage> {
+    this.calls += 1;
+    if (this.calls === this.#holdAt) {
+      this.#holdAt = undefined;
+      const gate = this.#gate;
+      this.#gate = undefined;
+      if (gate !== undefined) {
+        await gate;
+      }
+    }
+    return super.pageEmbedded(limit, cursor);
+  }
+}
 
 const startHost = async (
   options: {
@@ -353,6 +397,82 @@ describe("inspection host", () => {
     });
   });
 
+  it("answers a comparison from the completed export that holds its vectors", async () => {
+    const shared = [1, 0, 0, 0];
+    const store = new GatedEmbeddedStore();
+    store.seed(
+      ...Array.from({ length: 20 }, (_, index): EmbeddedNote => ({
+        note: note(index),
+        vector:
+          index === 0
+            ? [...shared]
+            : index === 1
+              ? [0, 1, 0, 0]
+              : vector(index),
+      })),
+    );
+    const directory = await makeDirectory("amem-inspector-overlap-");
+    let clock = Date.parse("2026-09-28T12:00:00.000Z");
+    const session = new InspectionSession({
+      collection: "notes",
+      embeddingSpaceId: "space-1",
+      store,
+      runner: createThreadProjectionRunner(),
+      artifacts: createProjectionArtifactStore(directory),
+      pollIntervalMs: 0,
+      now: () => new Date((clock += 1_000)),
+    });
+    try {
+      session.start();
+      await session.settled();
+      const before = session.snapshot();
+      expect(before.status).toBe("ready");
+
+      // Note 1 becomes equivalent to note 0 while the next export is held open. The comparison
+      // must describe the completed export that holds its vectors, not the earlier view.
+      store.records.set(uuid(1), { note: note(1), vector: [...shared] });
+      store.holdPage(2);
+      session.refresh();
+      const compared = session.compare(uuid(0), uuid(1));
+      store.releasePage();
+      const result = await compared;
+
+      expect(result.similarity).toBeCloseTo(1, 12);
+      expect(result.capturedAt).toBe(session.snapshot().view?.capturedAt);
+      expect(result.capturedAt).not.toBe(before.view?.capturedAt);
+    } finally {
+      await session.stop();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("refuses a comparison whose note a pending refresh removed", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const host = await startHost();
+    await host.session.settled();
+
+    // The refresh that removes note 0 is held inside its projection while the comparison runs.
+    host.runner.control({
+      async project(request) {
+        await gate;
+        return scriptedArtifact(request);
+      },
+    });
+    host.store.records.delete(uuid(0));
+    host.session.refresh();
+    const compared = host.session.compare(uuid(0), uuid(1));
+    const expectation = expect(compared).rejects.toMatchObject({
+      reason: "unknown-note",
+    });
+    release?.();
+    await host.session.settled();
+
+    await expectation;
+  });
+
   it("coalesces refresh requests and rebuilds the projection only when asked", async () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -383,6 +503,78 @@ describe("inspection host", () => {
     expect(runner.projections).toHaveLength(2);
     expect(runner.projections[0]?.rebuild).toBe(false);
     expect(runner.projections[1]?.rebuild).toBe(true);
+  });
+
+  it("stops an in-flight export before its next page or projection", async () => {
+    const store = new GatedEmbeddedStore();
+    store.seed(...Array.from({ length: 5 }, (_, index) => record(index)));
+    const runner = new RecordingRunner();
+    const directory = await makeDirectory("amem-inspector-stop-");
+    const session = new InspectionSession({
+      collection: "notes",
+      embeddingSpaceId: "space-1",
+      store,
+      runner,
+      artifacts: createProjectionArtifactStore(directory),
+      pollIntervalMs: 0,
+      pageLimit: 2,
+    });
+    try {
+      store.holdPage(2);
+      session.start();
+      await waitFor(() => store.calls === 2, "the held second export page");
+
+      await session.stop();
+
+      expect(runner.closed).toBe(true);
+      expect(runner.projections).toEqual([]);
+      expect(store.calls).toBe(2);
+
+      // The abandoned page never continues the traversal or publishes a view.
+      store.releasePage();
+      await session.settled();
+      expect(store.calls).toBe(2);
+      expect(runner.projections).toEqual([]);
+      expect(session.snapshot()).toEqual({
+        status: "loading",
+        refreshing: false,
+      });
+    } finally {
+      await session.stop();
+      await removeDirectory(directory);
+    }
+  });
+
+  it("releases the projection worker without waiting for stalled work", async () => {
+    const store = new PagedEmbeddedStore();
+    store.seed(...Array.from({ length: 5 }, (_, index) => record(index)));
+    const runner = new RecordingRunner({
+      project: () => new Promise<never>(() => undefined),
+    });
+    const directory = await makeDirectory("amem-inspector-stalled-");
+    const session = new InspectionSession({
+      collection: "notes",
+      embeddingSpaceId: "space-1",
+      store,
+      runner,
+      artifacts: createProjectionArtifactStore(directory),
+      pollIntervalMs: 0,
+    });
+    try {
+      session.start();
+      await waitFor(
+        () => runner.projections.length === 1,
+        "the stalled projection",
+      );
+
+      await session.stop();
+
+      expect(runner.closed).toBe(true);
+      expect(session.snapshot().view).toBeUndefined();
+    } finally {
+      await session.stop();
+      await removeDirectory(directory);
+    }
   });
 
   it("keeps the last successful view and reports sanitized failures", async () => {

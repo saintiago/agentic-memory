@@ -54,8 +54,11 @@ const start = async (): Promise<void> => {
       }
       closing = true;
       console.log(`Stopping the memory inspection host (${signal}).`);
+      // Begin cancellation first: closing the projection worker releases a request that is
+      // waiting on it, so HTTP shutdown is never held behind a long projection.
+      const stopping = session.stop();
       await server.close();
-      await session.stop();
+      await stopping;
     };
     process.once("SIGINT", () => {
       void shutdown("SIGINT");

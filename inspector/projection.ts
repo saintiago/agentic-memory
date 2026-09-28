@@ -210,6 +210,38 @@ export const cosineSimilarity = (
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
+/** Fit the pinned UMAP model over one export; the fitted anchors must not move afterwards. */
+export const fitProjectionModel = (vectors: readonly number[][]): UMAP => {
+  const model = new UMAP({
+    nComponents: projectionParameters.nComponents,
+    nNeighbors: projectionParameters.nNeighbors,
+    minDist: projectionParameters.minDist,
+    random: mulberry32(projectionParameters.seed),
+    distanceFn: cosineDistance,
+  });
+  model.fit([...vectors]);
+  return model;
+};
+
+/**
+ * Place one vector through a fitted model. umap-js 1.4.0 moves its training coordinates when a
+ * transform batch is exactly as long as the training set, so vectors are placed one call at a
+ * time: a single-vector batch of a model fitted over `minProjectedNotes` or more points can never
+ * match the training length, and the fitted coordinate system stays fixed for any batch size. A
+ * vector the library cannot place (its neighbors are all at zero distance, as for repeated
+ * equivalent memories) yields no usable coordinate instead of a position.
+ */
+export const placeVector = (
+  model: UMAP,
+  vector: number[],
+): { readonly x: number; readonly y: number } | undefined => {
+  const [x, y] = model.transform([vector])[0] ?? [];
+  if (!isFiniteNumber(x) || !isFiniteNumber(y)) {
+    return undefined;
+  }
+  return { x, y };
+};
+
 /** The exported vectors as canonical, validated projection input: unique sorted lowercased IDs. */
 const canonicalInputs = (
   inputs: readonly ProjectionInput[],
@@ -427,7 +459,12 @@ export class ProjectionState {
     });
   }
 
-  /** Place new or changed vectors through the fitted model, keeping every other coordinate. */
+  /**
+   * Place new or changed vectors through the fitted model, keeping every other coordinate. An
+   * export without any new or changed vector, such as a refresh that only removes notes, commits
+   * the surviving coordinates and vectors and keeps the fitted model instead of transforming an
+   * empty batch.
+   */
   #transform(
     inputs: readonly { readonly id: string; readonly vector: number[] }[],
     identities: readonly ProjectionInputIdentity[],
@@ -441,50 +478,26 @@ export class ProjectionState {
       );
     }
     const positions = new Map<string, { x: number; y: number }>();
-    const toTransform: {
-      identity: ProjectionInputIdentity;
-      vector: number[];
-    }[] = [];
+    const toPlace: { readonly id: string; readonly vector: number[] }[] = [];
     inputs.forEach((input, index) => {
       const identity = identities[index];
-      if (identity === undefined) {
-        return;
-      }
       const existing = this.#coordinates.get(input.id);
-      if (existing !== undefined && existing.vectorId === identity.vectorId) {
+      if (
+        identity !== undefined &&
+        existing !== undefined &&
+        existing.vectorId === identity.vectorId
+      ) {
         positions.set(input.id, { x: existing.x, y: existing.y });
         return;
       }
-      toTransform.push({ identity, vector: input.vector });
+      toPlace.push({ id: input.id, vector: input.vector });
     });
-
-    let moved: number[][];
-    try {
-      moved = model.transform(toTransform.map(({ vector }) => vector));
-    } catch (cause) {
-      // A failed transform can leave the library model unusable, so the next projection fits a
-      // fresh one instead of presenting coordinates from a half-updated fit.
-      this.#model = undefined;
-      throw new ProjectionError(
-        "projection-failed",
-        "The fitted projection could not place the changed vectors.",
-        { cause },
+    for (const { id, vector } of toPlace) {
+      positions.set(
+        id,
+        placeVector(model, vector) ?? this.#nearestPosition(vector),
       );
     }
-    toTransform.forEach(({ identity }, index) => {
-      const point = moved[index];
-      if (
-        point === undefined ||
-        !isFiniteNumber(point[0]) ||
-        !isFiniteNumber(point[1])
-      ) {
-        throw new ProjectionError(
-          "projection-failed",
-          "The fitted projection returned an unusable coordinate.",
-        );
-      }
-      positions.set(identity.id, { x: point[0], y: point[1] });
-    });
     const coordinates = new Map(
       toCoordinates(inputs, identities, positions).map((point) => [
         point.id,
@@ -497,6 +510,45 @@ export class ProjectionState {
       coordinates,
       vectors: new Map(inputs.map((input) => [input.id, input.vector])),
     });
+  }
+
+  /**
+   * The committed position of the stored vector closest to `vector` in original space. umap-js
+   * cannot place a query whose neighbors are all at zero cosine distance, which is exactly the
+   * case for a memory that repeats an equivalent stored vector; such a vector shares the position
+   * of its nearest committed memory instead of failing the refresh, and the fitted coordinate
+   * system stays untouched.
+   */
+  #nearestPosition(vector: readonly number[]): {
+    readonly x: number;
+    readonly y: number;
+  } {
+    let nearestId: string | undefined;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    let nearestPosition: { readonly x: number; readonly y: number } | undefined;
+    for (const [id, stored] of this.#vectors) {
+      const position = this.#coordinates.get(id);
+      if (position === undefined) {
+        continue;
+      }
+      const distance = cosineDistance(vector, stored);
+      if (
+        nearestId === undefined ||
+        distance < nearestDistance ||
+        (distance === nearestDistance && id < nearestId)
+      ) {
+        nearestId = id;
+        nearestDistance = distance;
+        nearestPosition = { x: position.x, y: position.y };
+      }
+    }
+    if (nearestPosition === undefined) {
+      throw new ProjectionError(
+        "projection-failed",
+        "The fitted projection holds no committed vector to place the changed one from.",
+      );
+    }
+    return nearestPosition;
   }
 
   /** Fit a fresh projection, or fall back to the labeled ring while the export is too small. */
@@ -513,16 +565,12 @@ export class ProjectionState {
       coordinates = ringCoordinates(inputs, identities);
     } else {
       layout = "umap";
-      const fitted = new UMAP({
-        nComponents: projectionParameters.nComponents,
-        nNeighbors: projectionParameters.nNeighbors,
-        minDist: projectionParameters.minDist,
-        random: mulberry32(projectionParameters.seed),
-        distanceFn: cosineDistance,
-      });
+      const fittedVectors = inputs.map(({ vector }) => vector);
+      let fitted: UMAP;
       let embedding: number[][];
       try {
-        embedding = fitted.fit(inputs.map(({ vector }) => vector));
+        fitted = fitProjectionModel(fittedVectors);
+        embedding = fitted.getEmbedding();
       } catch (cause) {
         throw new ProjectionError(
           "projection-failed",

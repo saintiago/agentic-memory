@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  fitProjectionModel,
   minProjectedNotes,
+  placeVector,
   ProjectionError,
   ProjectionState,
   projectionParameters,
@@ -101,6 +103,107 @@ describe("inspection projection", () => {
     expect(after.get(changed.id)).not.toEqual(before.get(changed.id));
     for (const input of addition) {
       expect(after.get(input.id)).not.toBeUndefined();
+    }
+  });
+
+  it("removes notes without refitting or moving the surviving coordinates", () => {
+    const state = new ProjectionState();
+    const fitted = state.project(request(inputs(20)));
+    const before = positions(fitted);
+
+    // A refresh that only removes notes transforms nothing: the survivors keep their coordinates
+    // and the fitted model stays available.
+    const removed = state.project(request(inputs(20).slice(0, 19)));
+    expect(removed.layout).toBe("umap");
+    expect(removed.projectionId).toBe(fitted.projectionId);
+    expect(removed.coordinates).toHaveLength(19);
+    for (const input of inputs(20).slice(0, 19)) {
+      expect(positions(removed).get(input.id)).toEqual(before.get(input.id));
+    }
+
+    // The model survived: the next addition is transformed into the same projection.
+    const grown = state.project(
+      request([...inputs(20).slice(0, 19), ...inputs(1, 500)]),
+    );
+    expect(grown.projectionId).toBe(fitted.projectionId);
+    expect(grown.coordinates).toHaveLength(20);
+    expectFinite(grown);
+
+    // Removing every note keeps the projection identity and its fitted model as well.
+    const emptied = state.project(request([]));
+    expect(emptied.coordinates).toEqual([]);
+    expect(emptied.projectionId).toBe(fitted.projectionId);
+    const revived = state.project(request(inputs(1, 700)));
+    expect(revived.projectionId).toBe(fitted.projectionId);
+    expectFinite(revived);
+  });
+
+  it("keeps the fitted anchors fixed when a refresh transforms as many vectors as the fit", () => {
+    const model = fitProjectionModel(
+      inputs(20).map((input) => [...input.vector]),
+    );
+    const anchors = model.getEmbedding().map((row) => [...row]);
+
+    // umap-js 1.4.0 moves its training coordinates when a transform batch is exactly as long as
+    // the training set; the integration places one vector per call, so the anchors cannot move.
+    const placed = inputs(20, 100).map((input) =>
+      placeVector(model, [...input.vector]),
+    );
+    expect(model.getEmbedding()).toEqual(anchors);
+    for (const point of placed) {
+      expect(point).not.toBeUndefined();
+      expect(Number.isFinite(point?.x)).toBe(true);
+      expect(Number.isFinite(point?.y)).toBe(true);
+    }
+
+    // An equal-sized batch of new vectors leaves the published anchors alone too.
+    const state = new ProjectionState();
+    const fitted = state.project(request(inputs(20)));
+    const before = positions(fitted);
+    const grown = state.project(request([...inputs(20), ...inputs(20, 100)]));
+    expect(grown.projectionId).toBe(fitted.projectionId);
+    expect(grown.coordinates).toHaveLength(40);
+    for (const input of inputs(20)) {
+      expect(positions(grown).get(input.id)).toEqual(before.get(input.id));
+    }
+  });
+
+  it("places repeated equivalent vectors in the existing projection", () => {
+    // Distinct notes may hold identical stored content; the shared vector is a realistic
+    // float32-rounded, normalized embedding-space vector.
+    const shared = (() => {
+      const values = Array.from({ length: 1_024 }, (_, index) =>
+        Math.sin(index * 0.37),
+      );
+      const norm = Math.sqrt(
+        values.reduce((sum, value) => sum + value * value, 0),
+      );
+      return Array.from(values, (value) => Math.fround(value / norm));
+    })();
+    const repeated = (count: number): ProjectionInput[] =>
+      Array.from({ length: count }, (_, index) => ({
+        id: uuid(index),
+        vector: [...shared],
+      }));
+
+    const state = new ProjectionState();
+    const fitted = state.project(request(repeated(20)));
+    expect(fitted.layout).toBe("umap");
+    const before = positions(fitted);
+
+    // The twenty-first equivalent vector is placed through the existing projection instead of
+    // failing the refresh, and it keeps the position of its nearest committed memory.
+    for (let extra = 1; extra <= 3; extra += 1) {
+      const grown = state.project(request(repeated(20 + extra)));
+      expect(grown.projectionId).toBe(fitted.projectionId);
+      expect(grown.coordinates).toHaveLength(20 + extra);
+      expectFinite(grown);
+      expect(positions(grown).get(uuid(20 + extra - 1))).toEqual(
+        before.get(uuid(0)),
+      );
+      for (const input of repeated(20)) {
+        expect(positions(grown).get(input.id)).toEqual(before.get(input.id));
+      }
     }
   });
 

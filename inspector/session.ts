@@ -9,7 +9,7 @@
  *
  * See docs/dashboard.md#refresh-and-projection-lifecycle and docs/dashboard.md#asynchronous-data-updates.
  */
-import type { Cursor, Note, NoteStore } from "../src/index.js";
+import type { Cursor, EmbeddedPage, Note, NoteStore } from "../src/index.js";
 import type { ProjectionArtifactStore } from "./artifacts.js";
 import { buildGraphView, type GraphView } from "./graph.js";
 import type { ProjectionArtifact, ProjectionInput } from "./projection.js";
@@ -66,6 +66,16 @@ interface QueuedJob {
 
 const defaultPageLimit = 100;
 
+const noViewMessage = "The host has no completed graph view yet.";
+
+/** The session stopped between export pages or before publishing; never a refresh failure. */
+class InspectionStopped extends Error {
+  constructor() {
+    super("The inspection session stopped.");
+    this.name = "InspectionStopped";
+  }
+}
+
 /** One host process's inspection state. */
 export class InspectionSession {
   #store: Pick<NoteStore, "pageEmbedded">;
@@ -81,6 +91,9 @@ export class InspectionSession {
   #error: string | undefined;
   #running = false;
   #stopped = false;
+  #stopping: Promise<void> | undefined;
+  #resolveStopped: (() => void) | undefined;
+  #stoppedSignal: Promise<void>;
   #queued: QueuedJob | undefined;
   #current: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
@@ -95,6 +108,9 @@ export class InspectionSession {
     this.#pollIntervalMs = options.pollIntervalMs;
     this.#pageLimit = options.pageLimit ?? defaultPageLimit;
     this.#now = options.now ?? (() => new Date());
+    this.#stoppedSignal = new Promise((resolve) => {
+      this.#resolveStopped = resolve;
+    });
   }
 
   /** Start the initial export and projection; periodic refresh starts once it completes. */
@@ -139,12 +155,17 @@ export class InspectionSession {
     leftId: string,
     rightId: string,
   ): Promise<{ readonly similarity: number; readonly capturedAt: string }> {
+    if (this.#view === undefined) {
+      throw new InspectionComparisonError("no-view", noViewMessage);
+    }
+    // Similarity, membership and capture time must describe one completed export. A refresh in
+    // flight would otherwise let the worker's vectors advance past the capture time of the view
+    // this request started from. Waiting for the job is enough: the worker applies messages in
+    // order, so a projection dispatched after this comparison cannot be observed by it.
+    await this.settled();
     const view = this.#view;
     if (view === undefined) {
-      throw new InspectionComparisonError(
-        "no-view",
-        "The host has no completed graph view yet.",
-      );
+      throw new InspectionComparisonError("no-view", noViewMessage);
     }
     const displayed = new Set(view.nodes.map((node) => node.id.toLowerCase()));
     if (
@@ -167,15 +188,27 @@ export class InspectionSession {
     }
   }
 
-  /** Stop periodic refresh and pending jobs, wait for the running one and release the worker. */
-  async stop(): Promise<void> {
+  /** Stop periodic refresh and pending jobs, cancel the running one and release the worker. */
+  stop(): Promise<void> {
+    if (this.#stopping === undefined) {
+      this.#stopping = this.#stop();
+    }
+    return this.#stopping;
+  }
+
+  /**
+   * Cancel pending work and release the worker. Further pages, projection dispatches and
+   * publications stop at once, and closing the runner rejects an outstanding projection or
+   * comparison. The running job is not awaited, so a stalled worker cannot delay shutdown.
+   */
+  async #stop(): Promise<void> {
     this.#stopped = true;
+    this.#resolveStopped?.();
     if (this.#timer !== undefined) {
       clearTimeout(this.#timer);
       this.#timer = undefined;
     }
     this.#queued = undefined;
-    await this.settled();
     await this.#runner.close();
   }
 
@@ -207,6 +240,9 @@ export class InspectionSession {
     try {
       exported = await this.#export();
     } catch (cause) {
+      if (this.#stopped) {
+        return;
+      }
       this.#recordFailure("The last inspection export failed.", cause);
       return;
     }
@@ -214,6 +250,7 @@ export class InspectionSession {
     let artifact: ProjectionArtifact;
     try {
       const cached = await this.#takeCachedProjection();
+      this.#throwIfStopped();
       artifact = await this.#runner.project({
         collection: this.#collection,
         embeddingSpaceId: this.#embeddingSpaceId,
@@ -221,6 +258,7 @@ export class InspectionSession {
         rebuild,
         ...(cached === undefined ? {} : { cached }),
       });
+      this.#throwIfStopped();
       this.#view = buildGraphView({
         capturedAt,
         embeddingSpaceId: this.#embeddingSpaceId,
@@ -229,7 +267,14 @@ export class InspectionSession {
       });
       this.#error = undefined;
     } catch (cause) {
+      if (this.#stopped) {
+        return;
+      }
       this.#recordFailure("The last inspection projection failed.", cause);
+      return;
+    }
+    // Shutdown writes nothing; the artifact is a disposable cache of the next run.
+    if (this.#stopped) {
       return;
     }
     try {
@@ -249,7 +294,8 @@ export class InspectionSession {
     const inputs: ProjectionInput[] = [];
     let cursor: Cursor | undefined;
     for (;;) {
-      const page = await this.#store.pageEmbedded(this.#pageLimit, cursor);
+      this.#throwIfStopped();
+      const page = await this.#page(cursor);
       for (const record of page.records) {
         notes.push(record.note);
         inputs.push({ id: record.note.id, vector: record.vector });
@@ -258,6 +304,25 @@ export class InspectionSession {
       if (cursor === undefined) {
         return { notes, inputs };
       }
+    }
+  }
+
+  /** One export page, abandoned when the session stops before it arrives. */
+  async #page(cursor: Cursor | undefined): Promise<EmbeddedPage> {
+    const page = await Promise.race([
+      this.#store.pageEmbedded(this.#pageLimit, cursor),
+      this.#stoppedSignal.then(() => undefined),
+    ]);
+    if (page === undefined) {
+      throw new InspectionStopped();
+    }
+    return page;
+  }
+
+  /** Fail a pending job as soon as the session stops; its run reports no failure for it. */
+  #throwIfStopped(): void {
+    if (this.#stopped) {
+      throw new InspectionStopped();
     }
   }
 
