@@ -54,6 +54,6 @@ const start = async (): Promise<void> => {
 await start().catch((cause: unknown) => {
   const message = cause instanceof Error ? cause.message : String(cause);
   console.error(`The memory inspection host could not start: ${message}`);
-  // Startup may already have opened provider resources that have no public disposal API.
+  // The host owns no provider resources; exiting releases any outstanding client requests.
   process.exit(1);
 });

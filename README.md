@@ -63,15 +63,22 @@ paid call; `npm run replay:live` is the explicit opt-in live run with a declared
 `npm run graph:inspect` renders the offline inspection graph from a saved run directory: one
 self-contained HTML report and the JSON evidence it shows, with no server or database.
 
-`npm run inspector` starts the separate local memory inspection host: it reads one explicitly
-configured collection through the public contracts, projects the stored vectors in a worker thread
-and serves the loopback browser API documented in [docs/dashboard.md](docs/dashboard.md). It needs
-no generation credential and never writes a memory; it builds and serves the Sigma dashboard in
-`inspector/ui`, which shows projected positions with directed links, freshness, real requests and
-their highlighted results. [inspector/README.md](inspector/README.md) lists its settings, the
-dashboard's behavior and the recorded responsive browser checks (`npm run inspector:responsive`):
-the required scale check against a synthetic 10,000-memory graph with about 50,000 directed links
-and the real-renderer check that an added outlier does not move already displayed memories.
+`npm run service` starts the separate local memory service documented in
+[docs/service.md](docs/service.md): it owns one configured collection, one durable ingestion queue
+and one shared pinned encoder, accepts observations durably over the versioned `/v1` HTTP API
+(published as [service/openapi.json](service/openapi.json)), and reports submission, retrieval and
+ingestion availability while providers load. [service/README.md](service/README.md) lists its
+settings, supervision example and the client boundary.
+
+`npm run inspector` starts the local memory inspection host, which consumes that service API — it
+opens no database and loads no encoder — projects the stored vectors in a worker thread and serves
+the loopback browser API documented in [docs/dashboard.md](docs/dashboard.md). It never writes a
+memory; it builds and serves the Sigma dashboard in `inspector/ui`, which shows projected positions
+with directed links, freshness, real requests and their highlighted results.
+[inspector/README.md](inspector/README.md) lists its settings, the dashboard's behavior and the
+recorded responsive browser checks (`npm run inspector:responsive`): the required scale check
+against a synthetic 10,000-memory graph with about 50,000 directed links and the real-renderer
+check that an added outlier does not move already displayed memories.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.
