@@ -33,14 +33,14 @@ not an encoder replacement or part of memory retrieval.
 
 ## Interface and data sources
 
-Use the public [Memory API](memory.md#interface) for note details and search, the
-[NoteStore contract](note-store.md#interface) for storage-owned inspection capabilities, and
-[embedding-space identity](embeddings.md#interface) to identify compatible vectors. The host owns
-configuration and credentials; the browser receives display data, not provider credentials.
+Use the [memory service API](service.md#api) for note details, search and paginated vector inspection,
+and [embedding-space identity](embeddings.md#interface) to identify compatible vectors. The service
+owns provider settings and credentials; the inspection host configures its service URL. The browser
+receives display data, not provider credentials.
 UI identity comparisons follow the NoteStore UUID contract; returned note and link spellings remain
 unchanged in displayed evidence.
 
-Search calls `AgenticMemory.search(query, { limit, linkedLimit })` against the selected collection
+Search calls `POST /v1/search` against the service-owned collection
 with the same configuration used by its consumer. Show the returned `via` classification and preserve
 result order. The dashboard does not reimplement search with browser distances or a second ranking.
 
@@ -69,21 +69,16 @@ last successful view with an error indication until refresh succeeds.
 
 ### Startup and composition
 
-Run a separate Node.js/TypeScript process under Linux/WSL. It serves the static Sigma UI and its
-same-origin HTTP API on `127.0.0.1`, independently of Nexus. Host configuration supplies port,
-collection connection settings, the exact encoder configuration/cache settings, polling interval,
-and an inspection-artifact directory. It does not discover or import Nexus configuration.
+Run a separate Node.js/TypeScript inspection process under Linux/WSL. It serves the static Sigma UI
+and same-origin browser API on `127.0.0.1`, independently of agent tasks. Configure the memory service
+URL, display port, polling interval and inspection-artifact directory. The host calls the service
+for note reads, search and paginated records; it does not initialize Qdrant, load an encoder or
+construct another Memory instance. Expose no insertion or mutation routes to the browser.
 
-Use the explicitly configured collection and the public storage initialization contract, including
-its compatibility checks and creation behavior. Initialize
-one matching embedder for queries and reuse it. Construct one `AgenticMemory` instance for public
-`get` and `search`. Its current constructor requires a `LanguageModel`; supply a host-local
-implementation that throws if invoked. Read operations must never call it, and the inspection
-process needs no generation-provider credentials. Expose no insertion or mutation routes.
-
-The host reads stored vectors through `pageEmbedded`, not through private provider imports. The
-library remains independent of this tool and its HTTP/projection dependencies. Keep the polling
-and projection lifecycle below in the host, not in the library or browser.
+Obtain collection and embedding identity through the service. Read stored vectors through
+`GET /v1/inspection/records`; keep polling and projection in the inspection host. The service's
+encoder is shared by agents and dashboard queries. Service outages retain the last completed view
+with an explicit error; do not silently fall back to direct database access.
 
 ### Browser API
 
@@ -137,7 +132,7 @@ reports a refresh error alongside the last successful view when available.
 
 ### Refresh and projection lifecycle
 
-On startup, traverse `pageEmbedded` to completion, fit the initial projection outside the HTTP
+On startup, traverse `/v1/inspection/records` to completion, fit the initial projection outside the HTTP
 request handler, then publish a completed view. Serve loading status while this happens. Start
 periodic refresh afterward; manual refresh uses the same path. Permit one export/projection job at
 a time and coalesce requests while it is running.
@@ -161,8 +156,7 @@ stop polling/jobs, close HTTP and release provider/projection resources.
 The host is a separate consumer process, outside the runtime library and its published package:
 
 ```bash
-export AMEM_QDRANT_URL=http://127.0.0.1:16333
-export AMEM_QDRANT_COLLECTION=amem-notes
+export AMEM_SERVICE_URL=http://127.0.0.1:4748
 npm run inspector
 ```
 
