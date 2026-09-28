@@ -8,6 +8,7 @@
 import type {
   Embedder,
   EmbeddedNote,
+  EmbeddedPage,
   LanguageModel,
   Match,
   ModelRequest,
@@ -605,6 +606,15 @@ export const instrumentStore = (
   async page(limit: number, cursor?: string | number): Promise<Page> {
     const started = now();
     const page = await store.page(limit, cursor);
+    recorder.recordStoreOperation("get", now() - started);
+    return page;
+  },
+  async pageEmbedded(
+    limit: number,
+    cursor?: string | number,
+  ): Promise<EmbeddedPage> {
+    const started = now();
+    const page = await store.pageEmbedded(limit, cursor);
     recorder.recordStoreOperation("get", now() - started);
     return page;
   },

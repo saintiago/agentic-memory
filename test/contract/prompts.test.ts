@@ -67,10 +67,14 @@ const documentedPrompts = (): DocumentedPrompts => {
 
 const documented = documentedPrompts();
 
+/** A persisted update time the model must never receive as semantic evidence. */
+const UPDATE_TIME = "2026-09-28T09:15:30.500Z";
+
 const INCOMING: Note = {
   id: "0d3f0be6-9a5e-4a58-a1a4-3a4a5a9b6c01",
   content: "A host reported an observed result.",
   timestamp: "2026-09-27T15:44:27Z",
+  updatedAt: UPDATE_TIME,
   context: "A host-reported observed result.",
   keywords: ["result"],
   tags: ["observation"],
@@ -82,6 +86,7 @@ const NEIGHBOR: Note = {
   id: "6f2bb0d4-1c1e-4a2b-8f43-1c9a3d4c5e02",
   content: "An earlier observation.",
   timestamp: "2026-09-26T09:00:00+02:00",
+  updatedAt: UPDATE_TIME,
   context: "An earlier observation about the same subject.",
   keywords: ["observation"],
   tags: ["history"],
@@ -201,6 +206,7 @@ describe("prompt assembly", () => {
     );
     expect(prompt).not.toContain("metadata");
     expect(prompt).not.toContain("similarity");
+    expect(prompt).not.toContain(UPDATE_TIME);
   });
 });
 

@@ -78,8 +78,9 @@ wrap the same public boundaries to record evidence and use separate disposable c
 
 A note contains a stable ID, immutable original content and timestamp, optional opaque provenance,
 generated context, keywords and tags, and directed links to other note IDs. NoteStore retains its
-embedding with the record. Evolution changes semantic attributes; it does not rewrite source content,
-identity, timestamp or provenance. Storage represents the current note, not a permanent revision log.
+embedding with the record, plus an optional persisted last-update time for inspection. Evolution
+changes semantic attributes and advances update time for actual changes; it does not rewrite source
+content, identity, timestamp or provenance. Storage represents the current note, not a permanent revision log.
 
 The embedding represents original content together with generated context, keywords and tags.
 Its dimensions come from the encoder, not from the number of tags. Provenance is returned to callers
@@ -145,3 +146,11 @@ an explicit re-embedding decision, not an unnoticed configuration swap.
 Insertion and retrieval work is bounded by neighborhood and result limits rather than total corpus
 size at the library boundary. Source length and selected-neighbor size still affect model cost;
 bounded note count is not a token or latency guarantee. Production scale requires measurement.
+
+## Local inspection tool
+
+The [Sigma dashboard](dashboard.md) is a separate local consumer process. It composes public Memory
+reads/search with NoteStore's paginated embedded-record export and a matching query embedder. The
+host projects stored vectors, serves display data and runs searches; the browser renders positions
+and real directed links. The tool never writes memories or becomes a Nexus/runtime dependency.
+Update-time storage and assignment remain owned by NoteStore and Memory respectively.

@@ -6,6 +6,7 @@ import {
   type Cursor,
   type Embedder,
   type EmbeddedNote,
+  type EmbeddedPage,
   type LanguageModel,
   type Match,
   type ModelRequest,
@@ -110,6 +111,15 @@ class ScriptedStore implements NoteStore {
       throw this.pageError;
     }
     return this.pageResult;
+  }
+
+  /**
+   * The vector-inspection operation of the NoteStore contract. Memory retrieval never calls it;
+   * the recorded call makes that observable.
+   */
+  async pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage> {
+    this.calls.push(`pageEmbedded:${limit}:${String(cursor)}`);
+    return { records: [] };
   }
 }
 
@@ -606,6 +616,26 @@ describe("detached records", () => {
 });
 
 describe("read-only guarantees", () => {
+  it("returns the persisted update time unchanged and never requests stored vectors", async () => {
+    const { store, model, memory } = createMemory();
+    const updatedAt = "2026-09-27T08:00:00.000Z";
+    const stored = note(MATCH_ONE);
+    stored.updatedAt = updatedAt;
+    store.seed(stored);
+    store.pageResult = { notes: [stored] };
+    store.nearestResults = [{ note: stored, score: 0.9 }];
+
+    expect((await memory.get(MATCH_ONE))?.updatedAt).toBe(updatedAt);
+    expect((await memory.page(10))?.notes[0]?.updatedAt).toBe(updatedAt);
+    const results = await memory.search("a query", { linkedLimit: 0 });
+    expect(results[0]?.note.updatedAt).toBe(updatedAt);
+
+    expect(store.calls.some((call) => call.startsWith("pageEmbedded"))).toBe(
+      false,
+    );
+    expect(model.requests).toEqual([]);
+  });
+
   it("never invokes the language model or writes during retrieval", async () => {
     const { store, model, memory } = createMemory();
     store.seed(note(LINK_ONE));

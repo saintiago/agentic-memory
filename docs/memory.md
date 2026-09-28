@@ -102,6 +102,23 @@ Finish all interpretation, validation and required vector preparation before iss
 write containing the changed neighbors and incoming note. Return the final incoming note only after
 the write is acknowledged. No construction-only note is published before evolution completes.
 
+## Update time
+
+After all interpretation and embedding work succeeds, immediately before the final batch write,
+sample the host wall clock once as a UTC ISO instant. Assign it as `updatedAt` to the incoming note
+and each actually changed neighbor in that batch. The input API does not accept an update time;
+it is runtime bookkeeping, not model output or source provenance.
+
+An omitted no-op evolution update preserves the neighbor's prior `updatedAt`, including absence
+on a legacy note. Reads, searches and inspection do not advance it. The first real evolution of a
+legacy note establishes its update time; insertion always supplies one. Do not alter the source
+`timestamp`. The field is excluded from model instructions as semantic evidence and from canonical
+embedding text, so setting it alone never requires re-embedding.
+
+A rejected write retains the existing uncertain-outcome contract. Its proposed timestamp does not
+prove a record was committed, nor that every record in a batch was applied. Wall-clock time is not
+an ordering or synchronization primitive; callers must not use it as a pagination/change cursor.
+
 ## Representation
 
 The exact canonical text, with LF separators and no extra prefix or final newline, is:
@@ -110,7 +127,7 @@ The exact canonical text, with LF separators and no extra prefix or final newlin
 `${content}\nKeywords: ${keywords.join(", ")}\nTags: ${tags.join(", ")}\nContext: ${context}`;
 ```
 
-Preserve attribute order. IDs, timestamps, links and metadata are excluded as separate fields;
+Preserve attribute order. IDs, `timestamp`, `updatedAt`, links and metadata are excluded as separate fields;
 identifiers or dates already in original content remain represented. Moving an identifier to
 metadata only reduces its embedding influence if it is also removed from embedded text. Keeping
 identifiers out of generated context merely avoids repeating them.
@@ -136,7 +153,7 @@ Do not follow links of linked additions, traverse reverse edges, rerank or apply
 Return at most `limit + linkedLimit` distinct full notes. A failed fetch is an operation error, not
 a missing-note result or a silently truncated success.
 
-Original content, context, keywords, tags, links, timestamp and metadata are available to the host.
+Original content, context, keywords, tags, links, timestamp, optional updatedAt and metadata are available to the host.
 The host chooses what goes into an agent's context. Similarity scores and links do not assert truth,
 applicability, supersession or independent verification. Reads can observe different points in an
 insertion's writes; no multi-note snapshot is promised.
@@ -164,5 +181,7 @@ exactly-once ingestion or reconstruction of an interrupted evolution plan.
 Apply [testing](testing.md#main-risks-and-ownership) to this contract. Include unchanged neighbors,
 tag-only changes, empty candidates, duplicate/unknown update IDs, a failed final embedding, copied
 pending input, queue continuation, and an uncertain write. Assert read-only retrieval and the exact
-one-hop budget/order behavior, including missing targets. Schema-valid prose is evaluated separately;
+one-hop budget/order behavior, including missing targets. With a controlled clock, verify insertion and actually changed neighbors
+receive the batch preparation time, no-op neighbors retain their time, legacy notes acquire it only
+on real evolution, and failures/reads do not invent successful updates. Schema-valid prose is evaluated separately;
 do not turn semantic preferences into hidden rejection rules.

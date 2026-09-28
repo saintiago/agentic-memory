@@ -12,6 +12,8 @@ import type {
   Cursor,
   Embedder,
   EmbeddingSpace,
+  EmbeddedNote,
+  EmbeddedPage,
   EvolutionResponse,
   EvolutionSource,
   EvolutionUpdate,
@@ -41,6 +43,7 @@ describe("package root exports", () => {
       "attributesSchema",
       "cursorSchema",
       "embeddedNoteSchema",
+      "embeddedPageSchema",
       "jsonValueSchema",
       "matchSchema",
       "noteIdSchema",
@@ -74,6 +77,14 @@ describe("package root exports", () => {
     >();
     expectTypeOf<NoteStore["nearest"]>().parameter(1).toEqualTypeOf<number>();
     expectTypeOf<NoteStore["page"]>().returns.toEqualTypeOf<Promise<Page>>();
+    expectTypeOf<NoteStore["pageEmbedded"]>().returns.toEqualTypeOf<
+      Promise<EmbeddedPage>
+    >();
+    expectTypeOf<NoteStore["pageEmbedded"]>()
+      .parameter(1)
+      .toEqualTypeOf<Cursor | undefined>();
+    expectTypeOf<EmbeddedPage["records"]>().toEqualTypeOf<EmbeddedNote[]>();
+    expectTypeOf<Note["updatedAt"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<AddInput["timestamp"]>().toEqualTypeOf<string | undefined>();
     expectTypeOf<MemoryOptions["neighbors"]>().toEqualTypeOf<
       number | undefined
@@ -205,6 +216,7 @@ describe("package root exports", () => {
       keywords: ["result"],
       tags: ["observation"],
       links: [],
+      updatedAt: "2026-09-27T15:45:00.000Z",
       metadata: { origin: "host", nested: { count: 1 } },
     } satisfies Note;
     const results: SearchResult[] = [
@@ -213,6 +225,9 @@ describe("package root exports", () => {
     ];
 
     expect(noteSchema.safeParse(note).success).toBe(true);
+    expect(
+      noteSchema.safeParse({ ...note, updatedAt: undefined }).success,
+    ).toBe(true);
     expect(results.map((result) => result.via)).toEqual(["match", "link"]);
   });
 });
