@@ -31,3 +31,14 @@ Implement the [Sigma dashboard](dashboard.md) in this dependency/queue order. Th
 | [AMEM-10](https://malton-family.atlassian.net/browse/AMEM-10) | Public vector inspection and persisted update times per [NoteStore](note-store.md) and [Memory](memory.md) | Existing library |
 | [AMEM-9](https://malton-family.atlassian.net/browse/AMEM-9)   | Local asynchronous inspection host and projection lifecycle                                                | AMEM-10          |
 | [AMEM-11](https://malton-family.atlassian.net/browse/AMEM-11) | Sigma UI, asynchronous live updates and complete inspector verification                                    | AMEM-9           |
+
+## Shared memory service
+
+Implement in this dependency and queue order. Both tasks use `memory-build`; Jira owns status.
+
+| Task                                                          | Scope                                                                                               | Prerequisites    |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------- |
+| [AMEM-12](https://malton-family.atlassian.net/browse/AMEM-12) | [Durable queue](ingestion-queue.md), public prepare/apply, receipt migration and crash recovery     | Existing library |
+| [AMEM-13](https://malton-family.atlassian.net/browse/AMEM-13) | [Local service API](service.md), shared encoder, lifecycle and [dashboard connection](dashboard.md) | AMEM-12          |
+
+Nexus consumer changes are outside these AMEM tasks.

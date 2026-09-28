@@ -68,7 +68,7 @@ be continued with the operation that produced them. An empty page may still have
 consumers stop only when the cursor is omitted. Missing or invalid vectors fail the operation,
 not silently skip a record or trigger re-embedding. It performs no writes, embeddings or generation.
 Ordinary `page`, `get` and `nearest` remain vector-free in their responses. Export `EmbeddedPage`
-through the public package boundary; the inspection host calls the supplied store directly.
+through the public package boundary; the service exposes it to inspection clients through its API.
 
 `put` replaces complete supplied records at their IDs. Empty input is a no-op. Validate the entire
 batch before dispatch; duplicate record IDs in one batch are invalid. Return only after acknowledged
@@ -76,19 +76,6 @@ application, or throw. This is an upsert primitive, not caller-content conflict 
 not promise a multi-record transaction or guaranteed rollback on failure. Reapplying the same complete
 records at the same identities preserves their supplied values, including vectors and update times;
 this is the storage property used by durable insertion-plan replay.
-
-## Update time
-
-`updatedAt`, when present, is an ISO 8601 instant with timezone recording when the current note
-version was prepared for persistence. It is distinct from the immutable observation `timestamp`.
-The writer supplies it; storage preserves it without replacing it with request or acknowledgment
-time. It is not a commit timestamp, revision counter, change cursor or evidence of acknowledgment.
-The writer owns assignment on actual note changes; the store does not infer those changes.
-
-The optional field permits existing records with unknown historical update time. Absence means
-unknown; do not infer a value from observation time, read time or collection opening. Reject null
-or malformed values. A supplied observation time may be later than `updatedAt`, so do not impose
-ordering between these two clocks.
 
 ## Update time
 
