@@ -16,6 +16,7 @@ src/
   index.ts        # supported package exports
 examples/         # host composition and provider transport example
 experiments/      # replay, evaluation and graph artifact consumers
+inspector/        # local inspection host: entry point, HTTP API and projection worker
 test/             # contract/integration/system fixtures and journeys
 docs/             # authoritative design
 ```
@@ -43,6 +44,7 @@ provide these npm scripts:
 | `demo:evaluation`  | Deterministic in-memory replay of the synthetic fixtures with its measurement report       |
 | `replay:live`      | Opt-in live replay with a declared call/token budget and recorded stopping reason          |
 | `graph:inspect`    | Offline HTML graph and JSON evidence rendered from one saved run directory                 |
+| `inspector`        | Local inspection host serving the loopback browser API for one configured collection       |
 | `build`            | Produce JavaScript ESM and type declarations                                               |
 | `validate`         | Formatting, lint, types, boundaries, deterministic tests and build                         |
 

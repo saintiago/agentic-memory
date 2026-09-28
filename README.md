@@ -58,5 +58,11 @@ paid call; `npm run replay:live` is the explicit opt-in live run with a declared
 `npm run graph:inspect` renders the offline inspection graph from a saved run directory: one
 self-contained HTML report and the JSON evidence it shows, with no server or database.
 
+`npm run inspector` starts the separate local memory inspection host: it reads one explicitly
+configured collection through the public contracts, projects the stored vectors in a worker thread
+and serves the loopback browser API documented in [docs/dashboard.md](docs/dashboard.md). It needs
+no generation credential and never writes a memory. [inspector/README.md](inspector/README.md)
+lists its settings.
+
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentic Memory inspection host</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 3rem auto;
+        max-width: 42rem;
+        line-height: 1.5;
+        padding: 0 1.5rem;
+      }
+      code {
+        background: #f2f2f2;
+        padding: 0.1rem 0.3rem;
+        border-radius: 0.2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Agentic Memory inspection host</h1>
+    <p>
+      The host is running and its local JSON API is available on this origin.
+      The Sigma inspection dashboard that renders these routes is implemented by
+      AMEM-11 and replaces this placeholder page.
+    </p>
+    <ul>
+      <li>
+        <code>GET /api/graph</code> — the most recent completed graph view
+      </li>
+      <li><code>GET /api/notes/:id</code> — one complete current note</li>
+      <li><code>POST /api/search</code> — a real memory search</li>
+      <li><code>POST /api/refresh</code> — one paginated inspection refresh</li>
+      <li>
+        <code>POST /api/projection/rebuild</code> — a fresh projection fit
+      </li>
+      <li><code>POST /api/compare</code> — stored-vector cosine similarity</li>
+    </ul>
+    <p>See <code>docs/dashboard.md</code> for the contract of every route.</p>
+  </body>
+</html>
