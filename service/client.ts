@@ -9,13 +9,12 @@
  */
 import type { z } from "zod";
 
-import {
-  noteSchema,
-  type Note,
-  type QueueObservation,
-  type QueueReceipt,
-  type SearchOptions,
-} from "../src/index.js";
+import type {
+  QueueObservation,
+  QueueReceipt,
+} from "../src/ingestion-queue/index.js";
+import type { SearchOptions } from "../src/memory/index.js";
+import { noteSchema, type Note } from "../src/note-store/index.js";
 import {
   inspectionPageSchema,
   notesPageSchema,

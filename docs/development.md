@@ -16,6 +16,7 @@ src/
   ingestion-queue/ # durable acceptance, writer ownership and restart recovery
   index.ts         # supported package exports
 service/           # local memory service: /v1 HTTP API, bundled dashboard, lifecycle, supervision and client
+mcp/               # memory MCP server: stdio tools delegating to the service API
 examples/         # host composition and provider transport example
 experiments/      # replay, evaluation and graph artifact consumers
 inspector/        # dashboard: routes, event channel, projection worker and browser UI, composed by the service
@@ -50,6 +51,7 @@ provide these npm scripts:
 | `inspector:build`      | Bundle the browser dashboard of the inspection UI                                                               |
 | `inspector:responsive` | Real-browser scale, responsiveness and camera-preservation checks of the dashboard                              |
 | `service`              | Local memory service: `/v1` HTTP API, bundled dashboard, durable queue, shared encoder and supervised lifecycle |
+| `mcp`                  | Memory MCP server: stdio memory tools delegating to the running service API                                     |
 | `build`                | Produce JavaScript ESM and type declarations                                                                    |
 | `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                                              |
 

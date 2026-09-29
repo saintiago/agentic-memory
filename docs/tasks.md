@@ -43,6 +43,13 @@ Implement in this dependency and queue order. Both tasks use `memory-build`; Jir
 
 Nexus consumer changes are outside these AMEM tasks.
 
+## Memory MCP server
+
+[AMEM-15](https://malton-family.atlassian.net/browse/AMEM-15) implements the
+[agent memory MCP tools](mcp.md): one stdio server that delegates search and durable save to the
+service API and publishes the launch command and tool schemas. Prerequisite: AMEM-13. It uses
+`memory-build`; Nexus consumer integration remains outside the AMEM tasks.
+
 ## Combined service and dashboard
 
 [AMEM-14](https://malton-family.atlassian.net/browse/AMEM-14) implements the

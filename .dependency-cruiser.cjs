@@ -89,6 +89,33 @@ module.exports = {
       to: { path: "^service/" },
     },
     {
+      name: "no-library-imports-mcp",
+      severity: "error",
+      comment:
+        "The memory MCP server is a separate host process; the library never depends on it.",
+      from: { path: "^src/" },
+      to: { path: "^mcp/" },
+    },
+    {
+      name: "no-mcp-imports-inspector",
+      severity: "error",
+      comment:
+        "The MCP server is a thin client of the memory service API; it does not compose the " +
+        "dashboard host or its projection.",
+      from: { path: "^mcp/" },
+      to: { path: "^inspector/" },
+    },
+    {
+      name: "no-mcp-embedding-runtime-imports",
+      severity: "error",
+      comment:
+        "Every MCP client session delegates embeddings to the shared service. The host imports " +
+        "the component contracts it uses, never the aggregate package root or the embedding " +
+        "runtime that root re-exports, so a session loads no encoder of its own.",
+      from: { path: "^mcp/" },
+      to: { path: ["^src/index\\.ts$", "^src/embeddings/"] },
+    },
+    {
       name: "only-service-dashboard-imports-inspector",
       severity: "error",
       comment:
