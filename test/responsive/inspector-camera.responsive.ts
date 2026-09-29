@@ -55,16 +55,14 @@ describe("inspection dashboard camera", () => {
     });
     const initial = memory.counts();
     const session = new InspectionSession({
-      collection: memory.collection,
-      embeddingSpaceId: memory.embeddingSpaceId,
-      store: memory.store,
+      source: memory.source,
       runner: memory.runner,
       artifacts: memory.artifacts,
       pollIntervalMs: 0,
       pageLimit: 500,
     });
     const server: InspectionServer = await startInspectionServer({
-      reads: memory.reads,
+      reads: memory.source,
       session,
       uiDirectory,
       port: 0,

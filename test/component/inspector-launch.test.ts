@@ -52,19 +52,18 @@ const runHost = (settings: Record<string, string>): Promise<Run> =>
   });
 
 describe("inspection host launch", () => {
-  it("fails on an incomplete configuration before opening a provider", async () => {
+  it("fails on an incomplete configuration before contacting the service", async () => {
     const run = await runHost({});
     expect(run.code).toBe(1);
     expect(run.stderr).toContain(
-      "AMEM_QDRANT_URL must be supplied by the host.",
+      "AMEM_SERVICE_URL must be supplied by the host.",
     );
     expect(run.stdout).not.toContain("listening");
   }, 60_000);
 
-  it("fails on a malformed host setting before opening a provider", async () => {
+  it("fails on a malformed host setting before contacting the service", async () => {
     const run = await runHost({
-      AMEM_QDRANT_URL: "http://127.0.0.1:1",
-      AMEM_QDRANT_COLLECTION: "notes",
+      AMEM_SERVICE_URL: "http://127.0.0.1:4748",
       AMEM_INSPECTOR_PORT: "not-a-port",
     });
     expect(run.code).toBe(1);

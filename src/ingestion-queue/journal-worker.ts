@@ -254,16 +254,19 @@ class JournalState {
    * Accept one observation durably. An identical resubmission returns the existing receipt without
    * changing it; the same source key with different content or provenance is a conflict.
    */
-  submit(observation: QueueObservation, now: string): JournalRecord {
+  submit(
+    observation: QueueObservation,
+    now: string,
+  ): { record: JournalRecord; created: boolean } {
     return this.#transaction(() => {
       const existing = this.#bySourceKey(observation.sourceKey);
       if (existing !== undefined) {
         if (!sameObservation(existing, observation)) {
           throw conflictProblem(observation.sourceKey);
         }
-        return existing;
+        return { record: existing, created: false };
       }
-      this.#db
+      const inserted = this.#db
         .prepare(
           "INSERT INTO receipts (id, source_key, note_id, status, content, timestamp, " +
             "provenance, accepted_at, updated_at, attempt_count) " +
@@ -281,7 +284,11 @@ class JournalState {
           now,
           now,
         );
-      return this.#requiredBySourceKey(observation.sourceKey);
+      // A unique source key makes the insert either create the receipt or lose a race to one.
+      return {
+        record: this.#requiredBySourceKey(observation.sourceKey),
+        created: inserted.changes === 1,
+      };
     });
   }
 

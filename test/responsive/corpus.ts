@@ -14,6 +14,7 @@ import type {
   NoteStore,
   SearchResult,
 } from "../../src/index.js";
+import type { InspectionSource } from "../../inspector/source.js";
 import type { ProjectionArtifactStore } from "../../inspector/artifacts.js";
 import type {
   ProjectionArtifact,
@@ -253,6 +254,31 @@ export class SyntheticMemory {
           },
         ]);
       },
+    };
+  }
+
+  /** The service-backed read surface the inspection host composes in these checks. */
+  get source(): InspectionSource {
+    const store = this.store;
+    const reads = this.reads;
+    return {
+      identity: () =>
+        Promise.resolve({
+          collection: this.collection,
+          embeddingSpaceId: this.embeddingSpaceId,
+        }),
+      pageEmbedded: async (limit, cursor) => {
+        const page = await store.pageEmbedded(
+          limit,
+          cursor === undefined ? undefined : Number(cursor),
+        );
+        return {
+          records: page.records,
+          ...(page.cursor === undefined ? {} : { cursor: String(page.cursor) }),
+        };
+      },
+      get: (id) => reads.get(id),
+      search: (query, options) => reads.search(query, options),
     };
   }
 

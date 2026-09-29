@@ -155,6 +155,11 @@ host owns server startup, backups and shutdown. Initialization may create a miss
 never deletes an existing one. A creation race must re-read and validate rather than claim ownership
 of incompatible state.
 
+These connection rules are available to a host as `parseQdrantNoteStoreOptions`, which validates
+them without contacting Qdrant. A host that binds durable state to a collection, such as the local
+memory service binding its ingestion journal, validates first so a malformed endpoint or credential
+is rejected before anything is bound to it.
+
 ## Verification
 
 Run contract cases against real isolated Qdrant. Prove complete records survive reopening, updates

@@ -59,8 +59,11 @@ Submission awaits only the queue's durable commit, never model generation or vec
 Disconnecting after acceptance does not cancel the observation. Lost responses are resolved by
 resubmitting the identical source key and payload; the service returns the existing receipt.
 Clients may poll receipt status; no streaming or notification protocol is required initially.
+The client classifies interrupted response bodies, including timeouts after headers, as retryable
+transport failures and preserves the received HTTP status and cause. Fully received malformed JSON
+is a separate protocol failure.
 
-The service loads the pinned encoder once and shares it between query and insertion requests.
+The service loads one pinned encoder and shares it between query and insertion requests.
 Use bounded scheduling of inference with fair admission so ingestion cannot indefinitely starve
 search and bursts cannot create unbounded in-memory work. Serialize model access when required by
 the encoder runtime; concurrent HTTP requests do not promise parallel inference. Run blocking
@@ -75,6 +78,14 @@ available while the encoder loads or the database/model is down; unavailable rea
 A dead service cannot acknowledge submissions: the client retains its source observation and retries
 the same identity after reconnection. Durability is guaranteed only after acceptance, including an
 acceptance whose response was lost. Do not claim that an unsent observation is already queued.
+Retain a known operation outage until that operation succeeds; unrelated reads or writes do not
+demonstrate recovery. Capability availability aggregates these operation outcomes without requiring
+health probes.
+
+The provider runtime supervises the encoder thread for its full lifetime, including idle exits.
+After a terminal failure it releases the failed encoder and replaces it through the bounded provider
+retry loop, retaining the shared scheduler, store and durable observations. Ordinary inference
+rejections report an outage without replacing a healthy thread.
 
 The host supervisor starts and restarts the service independently of Nexus task lifetimes. Acquire
 queue ownership before starting its worker and reject a second service using the same queue. On
@@ -92,10 +103,16 @@ model endpoint and credentials, HTTP port and request-size limit. Store durable 
 workspaces. Consumers configure only the service URL and their source identity; connection failures
 remain explicit. No Nexus-specific configuration discovery is part of the service.
 
+The concrete variables, launch command, supervision example and client usage are in
+[service/README.md](../service/README.md); the service publishes the route definition in
+[service/openapi.json](../service/openapi.json).
+
 Initial deployment is loopback-only and trusts local operating-system users. Do not enable permissive
-CORS. Reject browser requests with an untrusted Origin; state-changing requests require JSON. The
-dashboard host accesses the API server-side and exposes only its inspection routes to the browser.
-Remote binding, authentication for remote clients and multi-host service replicas are outside scope.
+CORS. Requests must name the bound loopback authority: reject a foreign `Host` header and a browser
+`Origin` that is not that authority, so a hostname rebound to the loopback address cannot reach the
+API. State-changing requests require JSON. The dashboard host accesses the API server-side and
+exposes only its inspection routes to the browser. Remote binding, authentication for remote clients
+and multi-host service replicas are outside scope.
 
 ## Migration and verification
 
@@ -106,6 +123,8 @@ run an old direct writer alongside the service or silently fall back to direct a
 Contract tests cover each endpoint, validation, duplicate/conflicting submissions, pagination and
 error classification. Integration tests exercise concurrent clients with one encoder and writer,
 submission during provider outage, reads during ingestion, lost HTTP acknowledgement, and service
-restart with accepted and partially applied work. Reuse queue recovery tests instead of redefining
-their algorithm. Verify dashboard refresh and query highlighting through the service API, and that
-an unavailable service does not turn a successful agent task into a false memory-storage success.
+restart with accepted and partially applied work. The pinned-artifact encoder check loads the
+pinned encoder through the service's own encoder thread and confirms it serves the same vectors as
+the in-process reference encoder. Reuse queue recovery tests instead of redefining their algorithm.
+Verify dashboard refresh and query highlighting through the service API, and that an unavailable
+service does not turn a successful agent task into a false memory-storage success.

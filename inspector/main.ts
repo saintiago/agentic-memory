@@ -1,13 +1,13 @@
 /**
  * Entry point of the local memory inspection host: read the explicit host settings, open the
- * public read stack, start the loopback HTTP server, begin the paginated export and projection
- * lifecycle and stop everything on SIGINT or SIGTERM.
+ * service-backed read surface, start the loopback HTTP server, begin the paginated export and
+ * projection lifecycle and stop everything on SIGINT or SIGTERM.
  *
  * Run it with `npm run inspector` from the repository root; see inspector/README.md and
  * docs/dashboard.md#local-inspection-host.
  */
 import { createProjectionArtifactStore } from "./artifacts.js";
-import { openInspectionMemory } from "./composition.js";
+import { openInspectionSource } from "./composition.js";
 import { createThreadProjectionRunner } from "./projection-runner.js";
 import { startInspectionServer } from "./server.js";
 import { installShutdownHandlers } from "./shutdown.js";
@@ -15,28 +15,25 @@ import { InspectionSession } from "./session.js";
 import { readInspectionSettings } from "./settings.js";
 
 const start = async (): Promise<void> => {
-  // Every setting is read and validated before an encoder download, a collection request or any
-  // other provider work.
+  // Every setting is read and validated before the service is contacted or a local file is read.
   const settings = readInspectionSettings(process.env);
-  const { embedder, store, memory } = await openInspectionMemory(settings);
+  const source = openInspectionSource(settings);
   const session = new InspectionSession({
-    collection: settings.qdrant.collection,
-    embeddingSpaceId: embedder.space.id,
-    store,
+    source,
     runner: createThreadProjectionRunner(),
     artifacts: createProjectionArtifactStore(settings.artifactsDirectory),
     pollIntervalMs: settings.pollIntervalMs,
   });
   try {
     const server = await startInspectionServer({
-      reads: memory,
+      reads: source,
       session,
       uiDirectory: settings.uiDirectory,
       port: settings.port,
     });
     session.start();
     console.log(
-      `Memory inspection host for collection "${settings.qdrant.collection}" listening on ` +
+      `Memory inspection host for the service at "${settings.service.url}" listening on ` +
         `http://127.0.0.1:${String(server.port)}/`,
     );
     console.log(
@@ -44,9 +41,8 @@ const start = async (): Promise<void> => {
         `"${settings.uiDirectory}".`,
     );
     console.log(
-      `Query embeddings use embedding space ${embedder.space.id} ` +
-        `(${String(embedder.space.dimensions)} dimensions); queries are embedded locally and no ` +
-        `language model is invoked.`,
+      "Note details, search and stored vectors come from the memory service; the host " +
+        "loads no encoder and opens no database.",
     );
     installShutdownHandlers(session, server);
   } catch (cause) {
@@ -58,6 +54,6 @@ const start = async (): Promise<void> => {
 await start().catch((cause: unknown) => {
   const message = cause instanceof Error ? cause.message : String(cause);
   console.error(`The memory inspection host could not start: ${message}`);
-  // Startup may already have opened provider resources that have no public disposal API.
+  // The host owns no provider resources; exiting releases any outstanding client requests.
   process.exit(1);
 });

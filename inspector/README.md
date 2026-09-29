@@ -1,28 +1,28 @@
 # Local memory inspection host
 
-The separate local host of the [Sigma memory dashboard](../docs/dashboard.md). It opens one
-explicitly configured collection through the public memory and storage contracts, projects the
-stored vectors, serves the same-origin browser API on loopback and keeps the last completed view
-interactive while work is pending. It never writes a memory, never calls a language model and
-holds no runtime persistence of its own. The browser UI lives in `ui/`: a host client, a view
-planner that parses and diffs served payloads in a worker, a Graphology display model, inert DOM
-panels and a thin Sigma v3 rendering adapter that is the only module the renderer touches.
+The separate local host of the [Sigma memory dashboard](../docs/dashboard.md). It reads the
+[memory service API](../docs/service.md#api) for note details, search results and paginated stored
+vectors, projects those vectors in its own worker thread, serves the same-origin browser API on
+loopback and keeps the last completed view interactive while work is pending. It never opens a
+database, loads an encoder, holds provider credentials or writes a memory. The browser UI lives in
+`ui/`: a host client, a view planner that parses and diffs served payloads in a worker, a Graphology
+display model, inert DOM panels and a thin Sigma v3 rendering adapter that is the only module the
+renderer touches.
 
 ## Launching
 
-From the repository root:
+Start the [memory service](../service/README.md) first, then from the repository root:
 
 ```bash
-export AMEM_QDRANT_URL=http://127.0.0.1:16333
-export AMEM_QDRANT_COLLECTION=amem-notes
+export AMEM_SERVICE_URL=http://127.0.0.1:4748
 npm run inspector
 ```
 
-The process prints the loopback URL it serves (`http://127.0.0.1:4747/` by default), starts the
-initial paginated export and projection in the background, and stops periodic refresh, pending jobs,
-HTTP and the projection worker on `SIGINT` or `SIGTERM` without waiting for an in-flight export or
-projection. It needs no generation-provider credential, starts no Qdrant server and imports no
-Nexus configuration.
+The process prints the loopback URL it serves (`http://127.0.0.1:4747/` by default), asks the
+service for the collection and embedding-space identity, starts the initial paginated export and
+projection in the background, and stops periodic refresh, pending jobs, HTTP and the projection
+worker on `SIGINT` or `SIGTERM`. A service outage keeps the last completed view with an explicit
+error; the host never falls back to direct database access.
 
 `npm run inspector` first builds the browser bundle of `ui/` into `ui/build/` (see
 `npm run inspector:build`) and then runs the TypeScript entry point through the pinned `tsx`
@@ -41,7 +41,7 @@ are an approximate embedding projection and labels a non-semantic fallback layou
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Map                      | Directed stored links, freshness fill from the fixed palette, zoom/pan through Sigma, **Fit all**, **Fit results**, **Focus selected** and all-links versus focused-links |
 | Freshness legend         | The labeled age ranges and the neutral unknown-update color, comparable between refreshes                                                                                 |
-| Query bar                | Real `AgenticMemory.search` through the host; results keep returned order, **Direct match** scores and **Linked addition** labels, and highlight exactly the returned IDs |
+| Query bar                | `POST /v1/search` through the host; results keep returned order, **Direct match** scores and **Linked addition** labels, and highlight exactly the returned IDs           |
 | Details                  | Original content, context, keywords, tags, provenance, the memory timestamp, the exact update time with its age (or `unknown`) and the capture time of the displayed view |
 | Stored-vector comparison | Original-space cosine similarity of the two most recently selected memories, with the capture time of the view that holds them and explicitly not a retrieval score       |
 
@@ -59,33 +59,29 @@ responsive with tens of thousands of links.
 ## Host settings
 
 Every setting comes from the host environment. A missing or malformed value fails before the
-encoder is opened or the collection is touched.
+service is contacted or a projection artifact is read.
 
-| Setting                           | Default            | Meaning                                                                               |
-| --------------------------------- | ------------------ | ------------------------------------------------------------------------------------- |
-| `AMEM_QDRANT_URL`                 | required           | Qdrant endpoint of the inspected collection                                           |
-| `AMEM_QDRANT_COLLECTION`          | required           | The one collection this host reads                                                    |
-| `AMEM_QDRANT_API_KEY`             | none               | Qdrant credential; never returned to the browser                                      |
-| `AMEM_QDRANT_TIMEOUT_MS`          | `120000`           | Qdrant request timeout                                                                |
-| `AMEM_EMBEDDING_CACHE`            | `.data/embeddings` | Pinned encoder artifact cache used for query embeddings                               |
-| `AMEM_ALLOW_EMBEDDING_DOWNLOADS`  | `true`             | Whether a missing pinned encoder artifact may be downloaded                           |
-| `AMEM_INSPECTOR_PORT`             | `4747`             | Loopback port; `0` selects a free port                                                |
-| `AMEM_INSPECTOR_POLL_INTERVAL_MS` | `30000`            | Delay between periodic refreshes; `0` keeps the host to explicit refreshes            |
-| `AMEM_INSPECTOR_ARTIFACTS_DIR`    | `.data/inspector`  | Directory of the disposable `projection.json` coordinates and their recorded identity |
-| `AMEM_INSPECTOR_UI_DIR`           | `inspector/ui`     | Static UI directory; it must exist, and `/` serves its `index.html`                   |
+| Setting                           | Default           | Meaning                                                                               |
+| --------------------------------- | ----------------- | ------------------------------------------------------------------------------------- |
+| `AMEM_SERVICE_URL`                | required          | Memory service base URL; the host owns no collection, provider or credential settings |
+| `AMEM_SERVICE_TIMEOUT_MS`         | `120000`          | Whole-request timeout of every service call                                           |
+| `AMEM_INSPECTOR_PORT`             | `4747`            | Loopback port; `0` selects a free port                                                |
+| `AMEM_INSPECTOR_POLL_INTERVAL_MS` | `30000`           | Delay between periodic refreshes; `0` keeps the host to explicit refreshes            |
+| `AMEM_INSPECTOR_ARTIFACTS_DIR`    | `.data/inspector` | Directory of the disposable `projection.json` coordinates and their recorded identity |
+| `AMEM_INSPECTOR_UI_DIR`           | `inspector/ui`    | Static UI directory; it must exist, and `/` serves its `index.html`                   |
 
-The Qdrant URL, credential and timeout rules belong to the NoteStore initialization contract, which
-validates them before the first request. The host opens the collection with the pinned encoder's
-declared embedding space, so an incompatible collection fails at startup instead of projecting
-foreign vectors.
+The service URL, timeouts and credentials belong to the service; the host configures none of them.
+The host obtains the collection and embedding-space identity from `GET /v1/status`, so an
+incompatible artifact or a reconfigured service is discarded instead of being projected as
+current.
 
 ## Browser API
 
 | Route                          | Behavior                                                                           |
 | ------------------------------ | ---------------------------------------------------------------------------------- |
 | `GET /api/graph`               | The most recent completed view, or loading/error status with the last one kept     |
-| `GET /api/notes/:id`           | The complete current note or 404                                                   |
-| `POST /api/search`             | `{ query, limit?, linkedLimit? }` through the public search, in returned order     |
+| `GET /api/notes/:id`           | `GET /v1/notes/:id`; the complete current note or 404                              |
+| `POST /api/search`             | `{ query, limit?, linkedLimit? }` through `POST /v1/search`, in returned order     |
 | `POST /api/refresh`            | One paginated inspection refresh; 202 while it runs and coalesced once running     |
 | `POST /api/projection/rebuild` | A fresh fit on the next complete export; 202 while it runs                         |
 | `POST /api/compare`            | `{ leftId, rightId }` stored-vector cosine similarity of the latest completed view |
@@ -100,7 +96,8 @@ instead of rendering an empty collection.
 
 ## Projection and inspection state
 
-The initial export traverses `pageEmbedded` to completion before anything is published, then fits a
+Every refresh asks the service for its current collection and embedding-space identity, then
+traverses `GET /v1/inspection/records` to completion before anything is published; it then fits a
 two-dimensional UMAP projection with cosine distance and the pinned umap-js 1.4.0 parameters
 (`nNeighbors: 15`, `minDist: 0.1`, seed `42`, library-default epochs, 2 components). Fewer than 16
 notes are shown in a clearly labeled non-semantic ring until a fit is possible. Later exports
@@ -116,9 +113,13 @@ displayed notes and are replaced only on a new fit.
 `projection.json` under the artifact directory records the collection, embedding-space ID, layout,
 projection ID, algorithm and parameters, build time, fit inputs and current coordinates with the
 vector identity each coordinate came from. On startup the host still obtains a fresh export before
-presenting anything as current: a stored projection is reused only when it belongs to the configured
+presenting anything as current: a stored projection is reused only when it belongs to the service's
 collection and embedding space and covers exactly that export, and an incompatible or malformed
-artifact is discarded. No stored vector or note text is written to the artifact directory.
+artifact is discarded. A service whose collection or embedding space changed is equally another
+identity for the live state: the fitted model, coordinates and artifact of the previous identity
+are discarded, so the next export is fitted for the new identity instead of being reused or
+transformed through the old model. No stored vector or note text is written to the artifact
+directory.
 
 A comparison always describes the completed export that holds its vectors: it waits for a refresh
 in flight instead of mixing similarity, membership and capture time from two exports.
@@ -130,11 +131,10 @@ reproduce. Within one run, later exports transform new or changed vectors and ke
 coordinate.
 
 On SIGINT or SIGTERM, the standalone host stops polling, cancels pending jobs, terminates the
-projection worker and disconnects all HTTP clients, including pending detail/search requests.
-It then exits explicitly: the public NoteStore and Embedder contracts expose no disposal API,
-so process termination releases outstanding provider sockets, SDK timers and encoder resources
-without waiting for provider timeouts. `InspectionSession.stop()` alone cancels inspection work;
-the process owns provider cleanup.
+projection worker and disconnects all HTTP clients, including pending detail/search requests. It
+then exits explicitly: terminating this dedicated process releases any client sockets and timers
+without waiting for their timeouts. `InspectionSession.stop()` alone cancels inspection work; the
+process owns its remaining resources.
 
 ## Checks
 
@@ -143,13 +143,17 @@ the build, including the host's component tests:
 
 - the HTTP contract of every route, its validation, missing-record and failure statuses, and the
   loading/ready/error graph states;
+- the composition: the host configures only the service URL and every read travels over `/v1`;
 - the refresh lifecycle: paginated traversal, coalesced requests, explicit rebuilds, retained views
   after failures, cancelled work on shutdown and the stored projection offered to a restarted host;
 - the real UMAP fit, transforms that keep the fitted anchors, removal-only refreshes, repeated
   equivalent vectors, the non-semantic fallback, comparisons of one completed export and
-  worker-thread execution;
+  worker-thread execution, and a changed collection or embedding space discarding the live
+  projection instead of reusing or transforming the previous identity's state;
 - responsiveness: while a CPU-bound projection occupies its worker thread, the graph route keeps
-  answering and the view is published once the worker finishes.
+  answering and the view is published once the worker finishes;
+- shutdown: stalled service reads are abandoned when the host exits instead of waiting for their
+  timeout.
 
 The dashboard's own tests are colocated with its modules under `ui/tests/` and run in the same
 deterministic scope. They exercise the real Graphology model, view planner and DOM panels with a
@@ -167,7 +171,7 @@ the browser bundle, so a broken bundle fails the aggregate check.
 
 `npm run inspector:responsive` builds the bundle and runs two checks in a real headless Chromium
 through `playwright-core`, against the real inspection session and HTTP server with a synthetic
-collection and projection.
+service-backed read surface and projection.
 
 The required scale check imports and refreshes 10,000 memories with 49,996 directed links (the
 refresh adds 500 memories and 2,500 links) and exercises zoom, pan, selection and a search while
@@ -190,16 +194,16 @@ the trajectory with identical input without a refresh, and verify that **Fit all
 added outlier. Mixed-case UUID component cases cover refresh reconciliation, result highlighting,
 link navigation and comparison selection while preserving returned evidence.
 
-Recorded run on the development machine (13th Gen Intel Core i7-13700KF, 24 cores, 16 GiB, WSL2;
-Chromium 153 with software WebGL through SwiftShader):
+Recorded run through the service-backed host on the development machine (13th Gen Intel Core
+i7-13700KF, 24 cores, 16 GiB, WSL2; Chromium 153 with software WebGL through SwiftShader):
 
 | Measurement                       | Value                                                                                                            |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                            |
-| Initial load                      | 2943 ms from navigation to the displayed view; 222 ms to apply it in 12 batches                                  |
-| Refresh, request to applied view  | 27765 ms wall clock including the held interaction window; 10 ms to apply the diff in 1 batch                    |
-| Interaction during the update     | search → results panel 3656 ms, click → panels 56 ms, wheel → camera 47 ms, drag → camera 4426 ms                |
-| Main thread                       | 46 long tasks, longest 1842 ms; frame gaps p95 1306 ms over 192 samples                                          |
+| Initial load                      | 2298 ms from navigation to the displayed view; 167 ms to apply it in 12 batches                                  |
+| Refresh, request to applied view  | 21177 ms wall clock including the held interaction window; 9 ms to apply the diff in 1 batch                     |
+| Interaction during the update     | search → results panel 2642 ms, click → panels 43 ms, wheel → camera 1260 ms, drag → camera 2833 ms              |
+| Main thread                       | 29 long tasks, longest 1370 ms; frame gaps p95 1321 ms over 94 samples                                           |
 | Preservation and failure handling | interaction ran while pending, viewport drift 0 px, camera and selection preserved, failed refresh kept the view |
 
 The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link

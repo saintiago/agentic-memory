@@ -1,30 +1,45 @@
 /** Use reachability, rather than a noisy heap-size threshold, to detect retained export pages. */
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
-import type { EmbeddedPage } from "../../../src/index.js";
 import { createThreadProjectionRunner } from "../../../inspector/projection-runner.js";
 import { InspectionSession } from "../../../inspector/session.js";
+import type {
+  InspectionPage,
+  InspectionSource,
+} from "../../../inspector/source.js";
 import { note, vector } from "../support/inspection.js";
 
 assert(global.gc, "Run this fixture with --expose-gc.");
-const pages: WeakRef<EmbeddedPage>[] = [];
-const session = new InspectionSession({
-  collection: "notes",
-  embeddingSpaceId: "retention-test",
-  store: {
-    async pageEmbedded(_limit, cursor) {
-      const start = cursor === undefined ? 0 : 10;
-      const page: EmbeddedPage = {
-        records: Array.from({ length: 10 }, (_, index) => ({
-          note: note(start + index),
-          vector: vector(start + index, 1_024),
-        })),
-        ...(start === 0 ? { cursor: 10 } : {}),
-      };
-      pages.push(new WeakRef(page));
-      return page;
-    },
+const pages: WeakRef<InspectionPage>[] = [];
+/** The two-page service export; every page must become collectible after it was consumed. */
+const source: InspectionSource = {
+  identity() {
+    return Promise.resolve({
+      collection: "notes",
+      embeddingSpaceId: "retention-test",
+    });
   },
+  async pageEmbedded(_limit: number, cursor?: string) {
+    const start = cursor === undefined ? 0 : 10;
+    const page: InspectionPage = {
+      records: Array.from({ length: 10 }, (_, index) => ({
+        note: note(start + index),
+        vector: vector(start + index, 1_024),
+      })),
+      ...(start === 0 ? { cursor: "page-2" } : {}),
+    };
+    pages.push(new WeakRef(page));
+    return page;
+  },
+  get() {
+    return Promise.resolve(undefined);
+  },
+  search() {
+    return Promise.resolve([]);
+  },
+};
+const session = new InspectionSession({
+  source,
   runner: createThreadProjectionRunner(),
   artifacts: {
     async load() {

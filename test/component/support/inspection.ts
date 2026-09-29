@@ -21,6 +21,11 @@ import type {
   SearchResult,
 } from "../../../src/index.js";
 import type {
+  InspectionIdentity,
+  InspectionPage,
+  InspectionSource,
+} from "../../../inspector/source.js";
+import type {
   ProjectionArtifact,
   ProjectionRequest,
 } from "../../../inspector/projection.js";
@@ -247,5 +252,53 @@ export class ScriptedReads implements InspectionReads {
       return Promise.reject(this.searchError);
     }
     return Promise.resolve(this.results);
+  }
+}
+
+/**
+ * The service-backed read surface the session and browser API compose. It combines the paged
+ * embedded export substitute with the scripted note and search reads under one service identity,
+ * as the real service does.
+ */
+export class ScriptedSource implements InspectionSource {
+  readonly store: PagedEmbeddedStore;
+  readonly reads: ScriptedReads;
+  readonly collection: string;
+  readonly embeddingSpaceId: string;
+
+  constructor(
+    store: PagedEmbeddedStore,
+    reads: ScriptedReads = new ScriptedReads(),
+    collection = "notes",
+    embeddingSpaceId = "space-1",
+  ) {
+    this.store = store;
+    this.reads = reads;
+    this.collection = collection;
+    this.embeddingSpaceId = embeddingSpaceId;
+  }
+
+  identity(): Promise<InspectionIdentity> {
+    return Promise.resolve({
+      collection: this.collection,
+      embeddingSpaceId: this.embeddingSpaceId,
+    });
+  }
+
+  pageEmbedded(limit: number, cursor?: string): Promise<InspectionPage> {
+    return this.store
+      .pageEmbedded(limit, cursor === undefined ? undefined : Number(cursor))
+      .then((page) => ({
+        records: page.records,
+        ...(page.cursor === undefined ? {} : { cursor: String(page.cursor) }),
+      }));
+  }
+
+  get(id: string): Promise<Note | undefined> {
+    return this.reads.get(id);
+  }
+
+  search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
+    return this.reads.search(query, options);
   }
 }

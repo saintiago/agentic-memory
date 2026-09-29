@@ -1,0 +1,566 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agentic Memory local service API",
+    "version": "1.0.0",
+    "description": "Versioned HTTP JSON API of the local memory service. One service instance owns one configured collection, one shared embedding runtime and one durable ingestion queue; requests cannot select another store, provider, model or filesystem path."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4748",
+      "description": "Loopback binding of the local memory service; the port is a host setting."
+    }
+  ],
+  "paths": {
+    "/v1/observations": {
+      "post": {
+        "operationId": "submitObservation",
+        "summary": "Durably accept one observation for ingestion",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Observation" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The observation was durably accepted by this submission.",
+            "headers": {
+              "Location": {
+                "schema": { "type": "string" },
+                "description": "The receipt route of the accepted observation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Receipt" }
+              }
+            }
+          },
+          "200": {
+            "description": "An identical resubmission found the existing receipt.",
+            "headers": {
+              "Location": {
+                "schema": { "type": "string" },
+                "description": "The receipt route of the accepted observation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Receipt" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/receipts/{receiptId}": {
+      "get": {
+        "operationId": "readReceipt",
+        "summary": "Read one accepted observation's current state",
+        "parameters": [
+          {
+            "name": "receiptId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current receipt.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Receipt" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "operationId": "searchMemories",
+        "summary": "Search stored memories through the shared encoder and store",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SearchRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked direct matches followed by bounded linked additions.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "429": { "$ref": "#/components/responses/Overloaded" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/notes/{noteId}": {
+      "get": {
+        "operationId": "readNote",
+        "summary": "Read one complete current note",
+        "parameters": [
+          {
+            "name": "noteId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The complete current note.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Note" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/notes": {
+      "get": {
+        "operationId": "listNotes",
+        "summary": "Inspect one page of current notes",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1 }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque continuation token returned by a previous page.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of current notes and an optional continuation cursor.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotePage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/inspection/records": {
+      "get": {
+        "operationId": "inspectRecords",
+        "summary": "Export one page of complete notes and stored vectors",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1 }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque continuation token returned by a previous page.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of stored records and the embedding-space identity they belong to.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InspectionPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "operationId": "readStatus",
+        "summary": "Report identity, capability availability and queue outcomes",
+        "responses": {
+          "200": {
+            "description": "Collection and embedding-space identity, availability and queue outcomes.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Status" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "The request does not satisfy the documented contract.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No record exists with the requested identity.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The source key already holds a different observation.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "The JSON request body exceeds the configured limit.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Overloaded": {
+        "description": "Temporary overload; the response carries Retry-After.",
+        "headers": {
+          "Retry-After": { "schema": { "type": "integer" } }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "The requested capability is not available right now.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Internal": {
+        "description": "An unexpected failure with a sanitized message.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Observation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceKey", "content"],
+        "properties": {
+          "sourceKey": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable, producer-owned identity of the source observation."
+          },
+          "content": { "type": "string", "minLength": 1 },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "provenance": { "type": "object" }
+        }
+      },
+      "Receipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sourceKey",
+          "status",
+          "acceptedAt",
+          "updatedAt",
+          "attemptCount"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "sourceKey": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": [
+              "queued",
+              "processing",
+              "retrying",
+              "stored",
+              "failed",
+              "blocked"
+            ]
+          },
+          "acceptedAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "attemptCount": { "type": "integer", "minimum": 0 },
+          "nextRetryAt": { "type": "string", "format": "date-time" },
+          "lastError": { "type": "string", "minLength": 1 },
+          "noteId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Present once the note is stored."
+          }
+        }
+      },
+      "SearchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1 },
+          "linkedLimit": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "SearchResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["note", "via", "score"],
+            "properties": {
+              "note": { "$ref": "#/components/schemas/Note" },
+              "via": { "const": "match" },
+              "score": { "type": "number" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["note", "via"],
+            "properties": {
+              "note": { "$ref": "#/components/schemas/Note" },
+              "via": { "const": "link" }
+            }
+          }
+        ]
+      },
+      "SearchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["searchedAt", "results"],
+        "properties": {
+          "searchedAt": { "type": "string", "format": "date-time" },
+          "results": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SearchResult" }
+          }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "content",
+          "timestamp",
+          "context",
+          "keywords",
+          "tags",
+          "links"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "content": { "type": "string", "minLength": 1 },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Omitted while the historical update time is unknown."
+          },
+          "context": { "type": "string", "minLength": 1 },
+          "keywords": { "type": "array", "items": { "type": "string" } },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "links": {
+            "type": "array",
+            "items": { "type": "string", "format": "uuid" }
+          },
+          "metadata": { "type": "object" }
+        }
+      },
+      "NotePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["notes"],
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Note" }
+          },
+          "cursor": {
+            "description": "Opaque continuation token; omitted when the traversal is complete.",
+            "oneOf": [{ "type": "string" }, { "type": "number" }]
+          }
+        }
+      },
+      "EmbeddedNote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["note", "vector"],
+        "properties": {
+          "note": { "$ref": "#/components/schemas/Note" },
+          "vector": { "type": "array", "items": { "type": "number" } }
+        }
+      },
+      "InspectionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["records", "embeddingSpaceId"],
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/EmbeddedNote" }
+          },
+          "cursor": {
+            "description": "Opaque continuation token; omitted when the traversal is complete.",
+            "oneOf": [{ "type": "string" }, { "type": "number" }]
+          },
+          "embeddingSpaceId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "EmbeddingSpace": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "dimensions", "distance"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "dimensions": { "type": "integer", "minimum": 1 },
+          "distance": { "const": "Cosine" }
+        }
+      },
+      "Availability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["submission", "retrieval", "ingestion"],
+        "properties": {
+          "submission": { "type": "boolean" },
+          "retrieval": { "type": "boolean" },
+          "ingestion": { "type": "boolean" }
+        }
+      },
+      "QueueStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["worker", "accepted", "backlog", "counts"],
+        "properties": {
+          "worker": { "enum": ["running", "stopped"] },
+          "accepted": { "type": "integer", "minimum": 0 },
+          "backlog": { "type": "integer", "minimum": 0 },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "queued",
+              "processing",
+              "retrying",
+              "stored",
+              "failed",
+              "blocked"
+            ],
+            "properties": {
+              "queued": { "type": "integer", "minimum": 0 },
+              "processing": { "type": "integer", "minimum": 0 },
+              "retrying": { "type": "integer", "minimum": 0 },
+              "stored": { "type": "integer", "minimum": 0 },
+              "failed": { "type": "integer", "minimum": 0 },
+              "blocked": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "oldestPendingAt": { "type": "string", "format": "date-time" },
+          "oldestPendingAgeMs": { "type": "integer", "minimum": 0 },
+          "lastError": { "type": "string", "minLength": 1 }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["collection", "embeddingSpace", "availability"],
+        "properties": {
+          "collection": { "type": "string", "minLength": 1 },
+          "embeddingSpace": { "$ref": "#/components/schemas/EmbeddingSpace" },
+          "availability": { "$ref": "#/components/schemas/Availability" },
+          "queue": { "$ref": "#/components/schemas/QueueStatus" },
+          "error": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A safe diagnostic of the condition that holds a capability."
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "message", "retryable"],
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid-request",
+                  "not-found",
+                  "conflict",
+                  "payload-too-large",
+                  "overloaded",
+                  "unavailable",
+                  "internal"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Sanitized explanation without credentials or source text."
+              },
+              "retryable": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
