@@ -4,8 +4,7 @@
 
 Provide a local, personal inspection dashboard to evaluate stored memories: explore semantic
 neighborhoods and explicit links together, see freshness, and run real memory requests with their
-results highlighted. This is an inspection-tool design, not an implemented feature or a Nexus
-production frontend. It does not change the memory algorithm or introduce memory editing.
+results highlighted. This is a personal inspection tool, not a Nexus production frontend. It does not change the memory algorithm or introduce memory editing.
 
 The dashboard complements the offline graph report in
 [evaluation](evaluation.md#graph-inspection). That report uses a topology layout with no semantic
@@ -17,9 +16,9 @@ still require reading evidence: clusters, freshness and connectivity do not esta
 Use **Sigma.js v3 with Graphology** for the browser graph. Pin exact compatible versions when
 implementing; this design uses the stable v3 API, not the v4 alpha. Both libraries use MIT licenses.
 Sigma owns rendering and camera interaction; Graphology holds the displayed nodes and directed edges.
-A small TypeScript inspection host runs locally under Linux/WSL and serves the browser UI on loopback.
+The local memory service serves the browser UI and inspection routes on its existing loopback listener.
 Keep its dependencies and entry point separate from the runtime library; no React requirement.
-In this repository that host lives in `inspector/` and is launched with `npm run inspector`; its
+The inspection module lives in `inspector/` and is composed by `npm run service`; its
 settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
 lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
 served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
@@ -35,7 +34,7 @@ not an encoder replacement or part of memory retrieval.
 
 Use the [memory service API](service.md#api) for note details, search and paginated vector inspection,
 and [embedding-space identity](embeddings.md#interface) to identify compatible vectors. The service
-owns provider settings and credentials; the inspection host configures its service URL. The browser
+owns provider settings and credentials and supplies inspection with its existing read capabilities. The browser
 receives display data, not provider credentials.
 UI identity comparisons follow the NoteStore UUID contract; returned note and link spellings remain
 unchanged in displayed evidence.
@@ -58,8 +57,7 @@ The display needs:
 The selected data contracts are `NoteStore.pageEmbedded(limit, cursor)` for stored-vector export
 and persisted `Note.updatedAt` for freshness. Their authoritative shapes, validation and legacy-record
 handling live in [NoteStore](note-store.md#interface); timestamp assignment lives in
-[Memory](memory.md#update-time). These are intended contracts to implement, not claims that the
-current runtime already exposes them. Unknown legacy update times remain visibly unknown.
+[Memory](memory.md#update-time). Unknown legacy update times remain visibly unknown.
 
 Inspection export follows existing pagination limitations: reads during writes are not an atomic
 snapshot. Display capture time and refresh status. A failure is not an empty collection. Retain the
@@ -69,16 +67,17 @@ last successful view with an error indication until refresh succeeds.
 
 ### Startup and composition
 
-Run a separate Node.js/TypeScript inspection process under Linux/WSL. It serves the static Sigma UI
-and same-origin browser API on `127.0.0.1`, independently of agent tasks. Configure the memory service
-URL, display port, polling interval and inspection-artifact directory. The host calls the service
-for note reads, search and paginated records; it does not initialize Qdrant, load an encoder or
-construct another Memory instance. Expose no insertion or mutation routes to the browser.
+Run inspection as a module of the [local service](service.md#bundled-dashboard), sharing its process,
+configuration, encoder and HTTP listener. The dashboard is available at `/`, memory clients use
+`/v1/...`, and browser inspection uses `/api/...` on the same origin, normally port 4748. No separate
+inspector process, display port or service-URL configuration is required for this deployment.
 
-Obtain collection and embedding identity through the service. Read stored vectors through
-`GET /v1/inspection/records`; keep polling and projection in the inspection host. The service's
-encoder is shared by agents and dashboard queries. Service outages retain the last completed view
-with an explicit error; do not silently fall back to direct database access.
+The service composition supplies public read/search and paginated vector capabilities in-process.
+Inspection does not initialize Qdrant, load an encoder, construct another Memory instance or make
+HTTP requests back to its own service. Obtain collection and embedding identity from that shared
+source. Keep projection off the HTTP event loop in a service-owned background worker. Preserve the
+last completed view on failure and never fall back to direct database access. The UI has no memory
+insertion or editing controls.
 
 ### Browser API
 
@@ -132,7 +131,7 @@ reports a refresh error alongside the last successful view when available.
 
 ### Refresh and projection lifecycle
 
-On startup, traverse `/v1/inspection/records` to completion, fit the initial projection outside the HTTP
+On startup, traverse the supplied paginated vector source to completion, fit the initial projection outside the HTTP
 request handler, then publish a completed view. Serve loading status while this happens. Start
 periodic refresh afterward; manual refresh uses the same path. Permit one export/projection job at
 a time and coalesce requests while it is running.
@@ -153,17 +152,10 @@ stop polling/jobs, close HTTP and release provider/projection resources.
 
 ### Launching the host
 
-The host is a separate consumer process, outside the runtime library and its published package:
-
-```bash
-export AMEM_SERVICE_URL=http://127.0.0.1:4748
-npm run inspector
-```
-
-`npm run inspector` builds the browser bundle of the UI and runs the TypeScript entry point through
-the pinned `tsx` loader; the projection worker thread uses the same loader. [inspector/README.md](../inspector/README.md)
-lists every host setting, the browser routes, the state the inspection process keeps and the
-commands that produce the acceptance-check evidence.
+Use `npm run service` for the combined service and dashboard; see
+[service deployment](service.md#bundled-dashboard). The launch/build path supplies the bundled
+`inspector/ui` assets and uses one port and supervised lifecycle. `npm run inspector` may remain a
+development entry point sharing the same inspection implementation, not a second required service.
 
 ## Visual behavior
 

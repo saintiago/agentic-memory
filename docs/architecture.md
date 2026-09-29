@@ -25,7 +25,7 @@ the public library, not part of its operating path.
 ```mermaid
 flowchart LR
     Host[Agent clients] --> Service[Local memory service API]
-    Dashboard[Inspection host] --> Service
+    Dashboard[Bundled dashboard] --> Service
     Service --> Queue[Ingestion queue]
     Queue --> Memory
     Service --> Memory
@@ -77,7 +77,8 @@ The [local service](service.md) is the shared access point for concurrent agents
 and collection, accepts durable submissions, and serves retrieval and paginated inspection. Its
 supervised process outlives client tasks. Clients configure the API URL; the service owns database
 and model credentials. The [queue](ingestion-queue.md) owns sequential writes and restart recovery.
-The inspection host uses the service API and owns projection, not another encoder or database client.
+The bundled inspection module shares the service listener and read capabilities; its background
+worker owns projection, not another encoder or database client.
 
 ## Library composition
 
@@ -172,8 +173,9 @@ bounded note count is not a token or latency guarantee. Production scale require
 
 ## Local inspection tool
 
-The [Sigma dashboard](dashboard.md) is a separate local consumer of the [service API](service.md).
-It requests note details, search results and paginated vectors without its own query encoder or
-database client. The host projects vectors and serves display data; the browser renders positions
-and real directed links. The tool never writes memories or becomes a Nexus/runtime dependency.
+The [Sigma dashboard](dashboard.md) is bundled into the [local service](service.md#bundled-dashboard).
+One process and listener serve the UI, inspection routes and memory API. Composition supplies
+inspection with shared public read/search and vector-export capabilities. Projection runs in a
+background worker. The browser renders positions and directed links without another encoder or
+database client; inspection neither edits memories nor becomes an agent workflow dependency.
 Update-time storage and assignment remain owned by NoteStore and Memory respectively.
