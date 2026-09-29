@@ -311,6 +311,75 @@ describe("inspection host", () => {
     ).toHaveLength(2);
   });
 
+  it("keeps a requested rebuild through a temporary export failure", async () => {
+    const store = new FlakyEmbeddedStore();
+    store.seed(record(0), record(1));
+    const runner = new RecordingRunner();
+    const host = await startHost({
+      store,
+      runner,
+      retryBaseMs: 20,
+      retryMaxMs: 40,
+    });
+    await host.session.settled();
+    expect(runner.projections.map((request) => request.rebuild)).toEqual([
+      false,
+    ]);
+
+    // The export of the requested rebuild fails once; the automatic retry must still fit fresh.
+    store.failures = 1;
+    host.session.rebuild();
+    await waitFor(
+      () => runner.projections.length === 2,
+      "the retried rebuild projection",
+    );
+    await host.session.settled();
+
+    expect(runner.projections.map((request) => request.rebuild)).toEqual([
+      false,
+      true,
+    ]);
+    const snapshot = host.session.snapshot();
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.error).toBeUndefined();
+    expect(snapshot.view?.projectionId).toContain(":rebuild");
+  });
+
+  it("keeps a requested rebuild through a temporary projection failure", async () => {
+    const runner = new RecordingRunner();
+    const host = await startHost({ runner, retryBaseMs: 20, retryMaxMs: 40 });
+    await host.session.settled();
+    expect(runner.projections.map((request) => request.rebuild)).toEqual([
+      false,
+    ]);
+
+    let failures = 0;
+    runner.control({
+      project: (request) => {
+        failures += 1;
+        return failures === 1
+          ? Promise.reject(new Error("the projection exploded"))
+          : Promise.resolve(scriptedArtifact(request));
+      },
+    });
+    host.session.rebuild();
+    await waitFor(
+      () => runner.projections.length === 3,
+      "the retried rebuild projection",
+    );
+    await host.session.settled();
+
+    expect(runner.projections.map((request) => request.rebuild)).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    const snapshot = host.session.snapshot();
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.error).toBeUndefined();
+    expect(snapshot.view?.projectionId).toContain(":rebuild");
+  });
+
   it("serves the graph notification channel on the same listener", async () => {
     const host = await startHost();
     await host.session.settled();

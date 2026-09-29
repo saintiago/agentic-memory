@@ -29,11 +29,12 @@ worker on `SIGINT` or `SIGTERM`. A service outage keeps the last completed view 
 error; the host never falls back to direct database access.
 
 `npm run inspector` first builds the browser bundle of `ui/` into `ui/build/` (see
-`npm run inspector:build`) and then runs the TypeScript entry point through the pinned `tsx`
-loader; the projection worker thread uses the same loader. The worker holds the fitted projection,
-the exported vectors, the coordinates and the comparison state for this process only. Open the
-printed loopback URL to use the dashboard; the page needs no build step of its own because the
-host serves the built bundle.
+`npm run inspector:build`; the build also writes the served entry page and its stylesheet next to
+the bundle) and then runs the TypeScript entry point through the pinned `tsx` loader; the
+projection worker thread uses the same loader. The worker holds the fitted projection, the exported
+vectors, the coordinates and the comparison state for this process only. Open the printed loopback
+URL to use the dashboard; the page needs no build step of its own because the host serves the built
+bundle.
 
 ## Browser dashboard
 
@@ -155,11 +156,11 @@ the build, including the host's component tests:
   loading/ready/error graph states;
 - the composition: the host configures only the service URL and every read travels over `/v1`;
 - the refresh lifecycle: paginated traversal, coalesced requests, explicit rebuilds, retained views
-  after failures, bounded-backoff recovery of a failed refresh, cancelled work on shutdown and the
-  stored projection offered to a restarted host;
+  after failures, bounded-backoff recovery of a failed refresh that keeps a requested rebuild,
+  cancelled work on shutdown and the stored projection offered to a restarted host;
 - the notification channel: the browser handshake, the resync of every connection, coalesced
-  `graph-changed` frames, bounded send buffers that disconnect a slow client, control frames and
-  the refusal of an untrusted handshake before the upgrade;
+  `graph-changed` frames, bounded outbound buffers for notifications and control frames that
+  disconnect a slow client, and the refusal of an untrusted handshake before the upgrade;
 - the real UMAP fit, transforms that keep the fitted anchors, removal-only refreshes, repeated
   equivalent vectors, the non-semantic fallback, comparisons of one completed export and
   worker-thread execution, and a changed collection or embedding space discarding the live
@@ -181,7 +182,8 @@ inline planner's fallback after a worker failure, atomic projection refits, came
 preservation across a refresh, notification-driven fetches with a coalesced rerun and bounded
 backoff, the reconnecting indication and resync after a reconnect, the event socket's own
 handshake/resync/reconnect behavior, and source text that stays inert. `npm run validate` also
-builds the browser bundle, so a broken bundle fails the aggregate check.
+builds the served dashboard (entry page, stylesheet and browser bundle), so a broken build fails
+the aggregate check.
 
 ### Responsive browser checks
 

@@ -22,10 +22,18 @@ class FakeSocket extends EventEmitter {
   destroyed = false;
   ended = false;
   holdWrites = false;
+  /** A blocked transport accepts writes into its buffer and never drains them. */
+  blocked = false;
   readonly held: Array<() => void> = [];
 
   write(chunk: unknown, callback?: () => void): boolean {
-    this.written.push(Buffer.from(chunk as Buffer));
+    const buffer = Buffer.from(chunk as Buffer);
+    this.written.push(buffer);
+    if (this.blocked) {
+      // The write stays buffered and no callback ever runs, like a peer that stopped reading.
+      this.writableLength += buffer.length;
+      return false;
+    }
     if (callback !== undefined) {
       if (this.holdWrites) {
         this.held.push(callback);
@@ -196,6 +204,45 @@ describe("graph event channel", () => {
     expect(hub.connections).toBe(0);
     // The notification was never queued behind the slow client.
     expect(serverFrames(socket)).toHaveLength(1);
+  });
+
+  it("disconnects a client that keeps pinging while its transport is blocked", () => {
+    const hub = createGraphEvents({
+      pingIntervalMs: 0,
+      maxBufferedBytes: 1_024,
+    });
+    const socket = connect(hub);
+    socket.blocked = true;
+    const ping = clientFrame(0x9, Buffer.from("ping"));
+
+    // The client keeps sending valid pings and never reads a pong answer: the outbound buffer
+    // must stay bounded instead of accumulating one frame per ping.
+    for (let index = 0; index < 1_000 && hub.connections > 0; index += 1) {
+      socket.emit("data", ping);
+    }
+
+    expect(hub.connections).toBe(0);
+    expect(socket.destroyed).toBe(true);
+    expect(socket.writableLength).toBeLessThanOrEqual(1_024 + 6);
+  });
+
+  it("drops a blocked connection on the liveness sweep instead of buffering pings", () => {
+    vi.useFakeTimers();
+    try {
+      const hub = createGraphEvents({
+        pingIntervalMs: 1_000,
+        maxBufferedBytes: 64,
+      });
+      const socket = connect(hub);
+      socket.writableLength = 100;
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(hub.connections).toBe(0);
+      expect(socket.destroyed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("answers a client close frame and drops the subscription", () => {

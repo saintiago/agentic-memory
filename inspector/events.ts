@@ -308,12 +308,7 @@ class Hub implements GraphEventHub {
       return;
     }
     const socket = connection.socket;
-    if (
-      socket.writableLength > this.#maxBufferedBytes ||
-      socket.writableNeedDrain
-    ) {
-      // The browser reconnects with bounded backoff and resyncs; a slow client is not queued.
-      this.#drop(connection);
+    if (!this.#hasOutboundRoom(connection)) {
       return;
     }
     connection.writing = true;
@@ -364,9 +359,26 @@ class Hub implements GraphEventHub {
     }
   }
 
-  /** Send one control frame; write failures are the socket's own error path. */
+  /**
+   * Whether the socket may accept one more frame. Notifications and control frames share the same
+   * bound: the browser reconnects with bounded backoff and resyncs, so a client that stops
+   * reading is disconnected instead of growing the shared service's buffer.
+   */
+  #hasOutboundRoom(connection: Connection): boolean {
+    const socket = connection.socket;
+    if (
+      socket.writableLength > this.#maxBufferedBytes ||
+      socket.writableNeedDrain
+    ) {
+      this.#drop(connection);
+      return false;
+    }
+    return true;
+  }
+
+  /** Send one control frame under the same outbound bound as notifications. */
   #writeControl(connection: Connection, frame: Buffer): void {
-    if (!connection.closed) {
+    if (!connection.closed && this.#hasOutboundRoom(connection)) {
       connection.socket.write(frame);
     }
   }

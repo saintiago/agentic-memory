@@ -22,8 +22,9 @@ The inspection module lives in `inspector/` and is composed by `npm run service`
 settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
 lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
 served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
-`npm run inspector:build` bundles them for the host to serve. Only those modules import Sigma, so
-the data access, projection and display contracts stay independent of the renderer.
+`npm run inspector:build` bundles them into the served directory together with the entry page and
+its stylesheet. Only those modules import Sigma, so the data access, projection and display
+contracts stay independent of the renderer.
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version

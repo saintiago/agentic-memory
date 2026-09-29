@@ -5,7 +5,8 @@
  *
  * All storage reads are asynchronous, projection work runs in the injected worker-backed runner,
  * one export/projection job runs at a time and further requests are coalesced. A failed refresh
- * keeps the last successful view; it never becomes an empty collection.
+ * keeps the last successful view; it never becomes an empty collection. A requested fresh fit
+ * stays due through failures and coalescing until one completes.
  *
  * See docs/dashboard.md#refresh-and-projection-lifecycle and docs/dashboard.md#asynchronous-data-updates.
  */
@@ -96,6 +97,8 @@ export class InspectionSession {
   #stopping: Promise<void> | undefined;
   #cancellation = new AbortController();
   #queued: QueuedJob | undefined;
+  /** A fresh fit is due: a failed rebuild keeps its intent for the retry and the next job. */
+  #rebuildRequested = false;
   #current: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
   #retryTimer: NodeJS.Timeout | undefined;
@@ -134,7 +137,7 @@ export class InspectionSession {
     this.#queue(false);
   }
 
-  /** Request a full fit for the next complete export. */
+  /** Request a full fit for the next complete export; it stays due until that fit completes. */
   rebuild(): void {
     this.#queue(true);
   }
@@ -227,20 +230,27 @@ export class InspectionSession {
     await this.#runner.close();
   }
 
-  /** Serialize refresh jobs and coalesce requests made while one is running. */
+  /**
+   * Serialize refresh jobs and coalesce requests made while one is running. A requested fresh fit
+   * is part of the session state, so a coalesced follow-up or a retry after a failure keeps it.
+   */
   #queue(rebuild: boolean): void {
     if (this.#stopped) {
       return;
     }
     // Any new trigger supersedes a pending retry of an earlier failure.
     this.#clearRetry();
+    const freshFit = rebuild || this.#rebuildRequested;
+    if (freshFit) {
+      this.#rebuildRequested = true;
+    }
     if (this.#running) {
-      this.#queued = { rebuild: rebuild || (this.#queued?.rebuild ?? false) };
+      this.#queued = { rebuild: freshFit || (this.#queued?.rebuild ?? false) };
       return;
     }
     this.#running = true;
     this.#notify();
-    this.#current = this.#run(rebuild).finally(() => {
+    this.#current = this.#run(freshFit).finally(() => {
       this.#running = false;
       this.#current = undefined;
       this.#notify();
@@ -292,6 +302,10 @@ export class InspectionSession {
       this.#error = undefined;
       this.#retryAttempt = 0;
       this.#clearRetry();
+      if (rebuild) {
+        // The requested fresh fit is fulfilled; the next job may transform instead of refitting.
+        this.#rebuildRequested = false;
+      }
     } catch (cause) {
       if (this.#stopped) {
         return;
@@ -408,7 +422,8 @@ export class InspectionSession {
 
   /**
    * Recover a failed refresh on the session's own bounded backoff instead of waiting for another
-   * memory write; a new trigger supersedes the pending retry.
+   * memory write; a new trigger supersedes the pending retry. The retry runs through `refresh()`,
+   * so a fresh fit that the failed job had requested stays due.
    */
   #scheduleRetry(): void {
     if (this.#stopped || this.#retryTimer !== undefined) {

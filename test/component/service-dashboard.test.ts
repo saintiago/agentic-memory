@@ -1,11 +1,17 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startMemoryService } from "../../service/lifecycle.js";
 import type { MemoryServiceRuntime } from "../../service/lifecycle.js";
+import {
+  defaultUiDirectory,
+  readServiceSettings,
+} from "../../service/settings.js";
 import { createThreadProjectionRunner } from "../../inspector/projection-runner.js";
 import type { ProjectionRunner } from "../../inspector/projection-runner.js";
 import { RecordingRunner } from "./support/inspection.js";
@@ -40,6 +46,7 @@ interface Bundled {
 
 const bundled: Bundled[] = [];
 const directories: string[] = [];
+const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 afterEach(async () => {
   for (const service of bundled.splice(0)) {
@@ -53,7 +60,27 @@ afterEach(async () => {
 const makeDirectory = (): Promise<string> =>
   mkdtemp(path.join(tmpdir(), "amem-bundled-"));
 
-/** Write a minimal but real built dashboard into the supplied directory. */
+/** Build the dashboard the way `npm run service` does, into the default served directory. */
+const buildDashboard = (): Promise<void> =>
+  new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ["scripts/build-inspector-ui.mjs"],
+      { cwd: repositoryRoot, timeout: 120_000 },
+      (error) => {
+        if (error === null) {
+          resolve();
+        } else {
+          reject(error);
+        }
+      },
+    );
+  });
+
+/**
+ * Write a minimal dashboard build into the supplied directory. One case serves the real build
+ * from the documented default directory; the other cases control their own assets.
+ */
 const writeBuild = async (uiDirectory: string): Promise<void> => {
   await mkdir(uiDirectory, { recursive: true });
   await writeFile(
@@ -285,6 +312,60 @@ describe("bundled dashboard service", () => {
       (graph.body as { status: string }).status,
     );
   }, 30_000);
+
+  it("serves the real build at / from the default asset directory with its assets", async () => {
+    // The documented launch builds the dashboard first; this case builds the same way and then
+    // serves the documented default directory instead of a fabricated index.html.
+    await buildDashboard();
+    const directory = await makeDirectory();
+    directories.push(directory);
+    const settings = readServiceSettings({
+      AMEM_SERVICE_PORT: "0",
+      AMEM_SERVICE_DATA_DIR: directory,
+      AMEM_EMBEDDING_CACHE: path.join(directory, "embeddings"),
+      AMEM_QDRANT_URL: "http://127.0.0.1:6333",
+      AMEM_QDRANT_COLLECTION: "service-tests",
+      AMEM_MODEL_ENDPOINT: "https://model.example/chat/completions",
+      AMEM_MODEL_ID: "test-model",
+    });
+    expect(settings.uiDirectory).toBe(defaultUiDirectory);
+    const providers = new ControlledProviders();
+    const runtime = await startMemoryService({
+      settings,
+      factories: providers.factories,
+      queuePollIntervalMs: 10,
+      dashboard: {
+        uiDirectory: settings.uiDirectory,
+        artifactsDirectory: path.join(directory, "projections"),
+        runner: new RecordingRunner(),
+      },
+    });
+    const baseUrl = `http://127.0.0.1:${String(runtime.port)}`;
+    try {
+      const root = await fetch(`${baseUrl}/`);
+      expect(root.status).toBe(200);
+      expect(root.headers.get("content-type")).toContain("text/html");
+      const html = await root.text();
+      expect(html).toContain('<div id="app">');
+      // The served entry page resolves its bundle and stylesheet inside the served directory.
+      expect(html).not.toContain("./build/app.js");
+      const references = [...html.matchAll(/(?:href|src)="(\.\/[^"]+)"/g)].map(
+        (match) => match[1] ?? "",
+      );
+      expect(references).toContain("./styles.css");
+      expect(references).toContain("./app.js");
+      for (const reference of references) {
+        const asset = await fetch(`${baseUrl}/${reference.slice(2)}`);
+        expect(asset.status, `${reference} must be served`).toBe(200);
+      }
+      // The bundle loads its parsing worker from the same served directory.
+      const worker = await fetch(`${baseUrl}/view-worker.js`);
+      expect(worker.status).toBe(200);
+      expect(worker.headers.get("content-type")).toContain("text/javascript");
+    } finally {
+      await runtime.stop();
+    }
+  }, 60_000);
 
   it("starts with unavailable providers and recovers the graph on its own backoff", async () => {
     const providers = new ControlledProviders();
