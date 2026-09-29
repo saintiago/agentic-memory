@@ -6,7 +6,8 @@ AMEM owns an MCP server exposing focused memory access to agents. It delegates t
 [service API](service.md#api); it does not create another Memory instance, encoder, queue or database
 writer. Nexus and other hosts configure this server using their coding provider's native MCP support.
 Use a stdio entry point configured with the service URL; stdout carries MCP protocol messages only.
-The shared service remains separately supervised. Publish the launch command and tool schemas.
+The shared service remains separately supervised. Publish the launch command and tool schemas;
+[mcp/README.md](../mcp/README.md) documents them for hosts.
 
 ## Tools
 

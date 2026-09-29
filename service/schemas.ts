@@ -9,12 +9,11 @@
 import { z } from "zod";
 
 import {
-  embeddedNoteSchema,
-  noteSchema,
   queueObservationSchema,
   queueReceiptSchema,
   queueStatusSchema,
-} from "../src/index.js";
+} from "../src/ingestion-queue/index.js";
+import { embeddedNoteSchema, noteSchema } from "../src/note-store/index.js";
 
 /** `POST /v1/observations`: one caller-owned observation. */
 export const observationRequestSchema = queueObservationSchema;

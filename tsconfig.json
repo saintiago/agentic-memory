@@ -25,6 +25,7 @@
   "include": [
     "src",
     "service",
+    "mcp",
     "inspector",
     "examples",
     "experiments",
