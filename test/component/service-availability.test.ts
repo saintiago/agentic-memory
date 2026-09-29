@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { referenceEmbeddingSpace } from "../../src/index.js";
 import { openWorkerEmbedder } from "../../service/encoder-host.js";
+import { ProviderRuntime } from "../../service/providers.js";
+import { FairScheduler } from "../../service/scheduler.js";
 import {
   ControlledProviders,
   postJson,
   requestJson,
+  serviceSettings,
   startServiceHarness,
   uuid,
   waitFor,
@@ -224,6 +227,80 @@ describe("provider startup", () => {
 });
 
 describe("operational availability", () => {
+  it("retains search and inspection outages until each failed operation recovers", async () => {
+    const providers = new ControlledProviders();
+    const harness = await openService({ providers });
+    const originalSource = providers.embedder.source;
+    providers.embedder.source = () => {
+      throw new Error("encoder down");
+    };
+    const search = () =>
+      postJson(harness.url("/v1/search"), { query: "query" });
+    expect((await search()).status).toBe(503);
+
+    for (const [route, status] of [
+      [`/v1/notes/${uuid(1)}`, 404],
+      ["/v1/notes", 200],
+      ["/v1/inspection/records", 200],
+    ] as const) {
+      expect((await requestJson(harness.url(route))).status).toBe(status);
+      expect((await statusOf(harness)).availability.retrieval).toBe(false);
+    }
+    expect((await search()).status).toBe(503);
+
+    providers.store.pageEmbeddedError = new Error("inspection unavailable");
+    expect(
+      (await requestJson(harness.url("/v1/inspection/records"))).status,
+    ).toBe(503);
+    providers.embedder.source = originalSource;
+    expect((await search()).status).toBe(200);
+    expect((await statusOf(harness)).availability.retrieval).toBe(false);
+    providers.store.pageEmbeddedError = undefined;
+    expect(
+      (await requestJson(harness.url("/v1/inspection/records"))).status,
+    ).toBe(200);
+    expect((await statusOf(harness)).availability.retrieval).toBe(true);
+    expect((await statusOf(harness)).error).toBeUndefined();
+  });
+
+  it("keeps preparation and application failures independent", async () => {
+    const providers = new ControlledProviders();
+    const runtime = new ProviderRuntime({
+      space: referenceEmbeddingSpace,
+      settings: serviceSettings("unused"),
+      scheduler: new FairScheduler(),
+      factories: providers.factories,
+    });
+    runtime.start();
+    try {
+      await waitFor(() => runtime.ready, "provider readiness");
+      const engine = await runtime.engine();
+      const input = {
+        noteId: uuid(1),
+        content: "source",
+        timestamp: "2026-09-29T00:00:00Z",
+      };
+      const plan = await engine.prepare(input);
+      providers.model.failAll = new Error("model down");
+      await expect(engine.prepare(input)).rejects.toThrow();
+      await engine.apply(plan);
+      expect(runtime.availability().ingestion).toBe(false);
+      providers.model.failAll = undefined;
+      await engine.prepare(input);
+      expect(runtime.availability().ingestion).toBe(true);
+
+      providers.store.putError = new Error("writes down");
+      await expect(engine.apply(plan)).rejects.toThrow();
+      await engine.prepare(input);
+      expect(runtime.availability().ingestion).toBe(false);
+      providers.store.putError = undefined;
+      await engine.apply(plan);
+      expect(runtime.availability().ingestion).toBe(true);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it("reports a failing retrieval capability and clears it when a read succeeds", async () => {
     const providers = new ControlledProviders();
     const harness = await openService({ providers });

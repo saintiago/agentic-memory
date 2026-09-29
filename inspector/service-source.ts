@@ -30,7 +30,9 @@ export interface ServiceInspectionSourceOptions {
 
 /** A request the service itself refuses as invalid is the browser caller's error. */
 const translate = (cause: unknown): unknown =>
-  cause instanceof ServiceClientError && cause.status === 400
+  cause instanceof ServiceClientError &&
+  cause.status === 400 &&
+  cause.code === "invalid-request"
     ? new InspectionInputError(cause)
     : cause;
 

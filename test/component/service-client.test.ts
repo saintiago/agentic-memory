@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -39,6 +39,134 @@ afterEach(async () => {
 });
 
 describe("memory service client", () => {
+  it.each(["disconnect", "timeout"] as const)(
+    "recovers an accepted submission after a body %s by resubmitting identically",
+    async (mode) => {
+      const harness = await startServiceHarness();
+      harnesses.push(harness);
+      let interrupted: ServerResponse | undefined;
+      let acceptedId: string | undefined;
+      // Forward to the real durable service, then lose its first acknowledgement body.
+      const proxy = createServer((request, response) => {
+        void (async () => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) {
+            chunks.push(Buffer.from(chunk as Buffer));
+          }
+          const upstream = await fetch(harness.url(request.url ?? "/"), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: Buffer.concat(chunks),
+          });
+          const body = await upstream.text();
+          response.writeHead(upstream.status, {
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(body),
+          });
+          if (interrupted === undefined) {
+            interrupted = response;
+            acceptedId = (JSON.parse(body) as { id: string }).id;
+            response.write(body.slice(0, 12));
+          } else {
+            response.end(body);
+          }
+        })().catch((cause: unknown) => response.destroy(cause as Error));
+      });
+      servers.push(proxy);
+      await new Promise<void>((resolve) =>
+        proxy.listen(0, "127.0.0.1", resolve),
+      );
+      const address = proxy.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("Missing proxy address");
+      }
+      let receivedHeaders = 0;
+      const client = createMemoryServiceClient({
+        url: `http://127.0.0.1:${String(address.port)}`,
+        timeoutMs: 1_000,
+        fetch: async (input, init) => {
+          const response = await fetch(input, init);
+          receivedHeaders += 1;
+          if (mode === "disconnect" && receivedHeaders === 1) {
+            interrupted?.destroy();
+          }
+          return response;
+        },
+      });
+      const observation = {
+        sourceKey: `lost-body-${mode}`,
+        content: "Retain this observation.",
+      };
+      const error: unknown = await client
+        .submit(observation)
+        .catch((cause: unknown) => cause);
+      expect(receivedHeaders).toBe(1);
+      expect(error).toBeInstanceOf(ServiceClientError);
+      expect(error).toMatchObject({
+        code: "unreachable",
+        status: 202,
+        retryable: true,
+        cause: expect.any(Error),
+      });
+      if (mode === "timeout") {
+        expect((error as ServiceClientError).cause).toMatchObject({
+          name: "TimeoutError",
+        });
+      }
+      const recovered = await client.submit(observation);
+      expect(recovered.created).toBe(false);
+      expect(recovered.receipt.id).toBe(acceptedId);
+      await waitFor(
+        async () => (await harness.runtime.queue.status()).counts.stored === 1,
+        "one stored observation",
+      );
+      expect(harness.providers.store.writes).toHaveLength(1);
+    },
+  );
+
+  it.each([200, 404, 503])(
+    "preserves body transport failures and their causes on reads with HTTP %s",
+    async (status) => {
+      const cause = new Error("body connection lost");
+      const client = createMemoryServiceClient({
+        url: "http://127.0.0.1:4748",
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(cause);
+              },
+            }),
+            { status },
+          ),
+      });
+      const failure: unknown = await client
+        .note(uuid(1))
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        status,
+        retryable: true,
+        code: "unreachable",
+      });
+      expect((failure as ServiceClientError).cause).toBe(cause);
+    },
+  );
+
+  it("keeps fully received malformed JSON distinct from transport failures", async () => {
+    const client = createMemoryServiceClient({
+      url: "http://127.0.0.1:4748",
+      fetch: async () => new Response('{"unfinished":', { status: 202 }),
+    });
+    await expect(
+      client.submit({ sourceKey: "malformed", content: "source" }),
+    ).rejects.toMatchObject({
+      status: 202,
+      retryable: false,
+      code: "invalid-response",
+      cause: expect.any(SyntaxError),
+    });
+  });
+
   it("submits durably and resolves a resubmission to the same receipt", async () => {
     const harness = await startServiceHarness();
     harnesses.push(harness);

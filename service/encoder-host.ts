@@ -26,6 +26,8 @@ export interface WorkerEmbedderOptions {
 
 /** A loaded encoder living in its own thread; closing terminates that thread. */
 export interface WorkerEmbedder extends Embedder {
+  /** Resolves on terminal failure (including idle exits); inference rejections are not terminal. */
+  readonly failed: Promise<EncoderWorkerError>;
   close(): Promise<void>;
 }
 
@@ -55,6 +57,10 @@ class ThreadEmbedder implements WorkerEmbedder {
   readonly #ready: Promise<EmbeddingSpace>;
   #resolveReady!: (space: EmbeddingSpace) => void;
   #rejectReady!: (cause: EncoderWorkerError) => void;
+  #resolveFailed!: (cause: EncoderWorkerError) => void;
+  readonly failed = new Promise<EncoderWorkerError>((resolve) => {
+    this.#resolveFailed = resolve;
+  });
 
   constructor(worker: Worker) {
     this.#worker = worker;
@@ -163,6 +169,7 @@ class ThreadEmbedder implements WorkerEmbedder {
   /** Reject every request still waiting when the worker fails or closes. */
   #fail(cause: EncoderWorkerError): void {
     this.#failure ??= cause;
+    this.#resolveFailed(this.#failure);
     // A failure before the startup handshake settles the open call as well.
     this.#rejectReady(this.#failure);
     for (const pending of this.#pending.values()) {

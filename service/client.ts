@@ -161,7 +161,19 @@ export const createMemoryServiceClient = (
       });
     }
 
-    const text = await response.text().catch(() => "");
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      throw new ServiceClientError({
+        status: response.status,
+        code: "unreachable",
+        message:
+          "The memory service response could not be received completely.",
+        retryable: true,
+        cause,
+      });
+    }
     if (response.status === 404 && options_.notFoundAsUndefined === true) {
       return undefined;
     }

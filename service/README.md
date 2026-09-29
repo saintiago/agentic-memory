@@ -151,19 +151,22 @@ deployment's DNS-rebinding guard, not a general remote-access boundary.
   body-size overflow, untrusted origins, missing records, method and route failures;
 - opaque cursor round-trips through the note and inspection pages;
 - availability: submission while the providers are unavailable, retrieval `503`, status reporting,
-  recovery once initialization succeeds, and capability outages reported until the capability
-  serves again (invalid input is never an outage);
+  recovery once initialization succeeds, and capability outages reported until each failed
+  operation serves again (unrelated successes and invalid input never clear an outage);
 - a blocking encoder hosted in its own worker thread: HTTP requests, receipts and status keep
   answering while inference occupies the thread, and the real worker entry reports a failed pinned
   load as a safe diagnostic;
 - bounded fair scheduling: ingestion does not starve a waiting search, and overload is an explicit
   `429` with `Retry-After`;
-- supervised lifecycle: worker restart after a stopped worker, graceful shutdown that stops
-  claiming queued work before it waits for in-flight requests and settles the active operation, and
+- supervised lifecycle: encoder replacement after a terminal thread failure, retained observations
+  completing after replacement, worker restart after a stopped ingestion worker, graceful shutdown
+  that stops claiming queued work before it waits for in-flight requests and settles the active operation, and
   a second service refusing the same queue;
 - transport and configuration guards: a rebound hostname with a matching Origin is refused without
   reaching the queue, and malformed provider endpoints or credentials are refused before the
   journal is created;
+- client recovery after disconnected or timed-out response bodies, preserving retryability, HTTP
+  status and cause, and resolving identical resubmission to the original durable receipt;
 - restart recovery through the service: accepted observations and partially applied plans are
   replayed by a new process over the same queue directory.
 

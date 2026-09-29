@@ -59,8 +59,11 @@ Submission awaits only the queue's durable commit, never model generation or vec
 Disconnecting after acceptance does not cancel the observation. Lost responses are resolved by
 resubmitting the identical source key and payload; the service returns the existing receipt.
 Clients may poll receipt status; no streaming or notification protocol is required initially.
+The client classifies interrupted response bodies, including timeouts after headers, as retryable
+transport failures and preserves the received HTTP status and cause. Fully received malformed JSON
+is a separate protocol failure.
 
-The service loads the pinned encoder once and shares it between query and insertion requests.
+The service loads one pinned encoder and shares it between query and insertion requests.
 Use bounded scheduling of inference with fair admission so ingestion cannot indefinitely starve
 search and bursts cannot create unbounded in-memory work. Serialize model access when required by
 the encoder runtime; concurrent HTTP requests do not promise parallel inference. Run blocking
@@ -75,6 +78,14 @@ available while the encoder loads or the database/model is down; unavailable rea
 A dead service cannot acknowledge submissions: the client retains its source observation and retries
 the same identity after reconnection. Durability is guaranteed only after acceptance, including an
 acceptance whose response was lost. Do not claim that an unsent observation is already queued.
+Retain a known operation outage until that operation succeeds; unrelated reads or writes do not
+demonstrate recovery. Capability availability aggregates these operation outcomes without requiring
+health probes.
+
+The provider runtime supervises the encoder thread for its full lifetime, including idle exits.
+After a terminal failure it releases the failed encoder and replaces it through the bounded provider
+retry loop, retaining the shared scheduler, store and durable observations. Ordinary inference
+rejections report an outage without replacing a healthy thread.
 
 The host supervisor starts and restarts the service independently of Nexus task lifetimes. Acquire
 queue ownership before starting its worker and reject a second service using the same queue. On

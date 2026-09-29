@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openInspectionSource } from "../../inspector/composition.js";
+import { openServiceInspectionSource } from "../../inspector/service-source.js";
+import { InspectionInputError } from "../../inspector/source.js";
 import { startInspectionServer } from "../../inspector/server.js";
 import { InspectionSession } from "../../inspector/session.js";
 import { readInspectionSettings } from "../../inspector/settings.js";
@@ -111,6 +113,45 @@ const startStubService = async (): Promise<{
 };
 
 describe("inspection host composition", () => {
+  it("preserves interrupted response bodies as transport failures instead of input errors", async () => {
+    const cause = new Error("response interrupted");
+    const source = openServiceInspectionSource({
+      url: "http://127.0.0.1:4748",
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(cause);
+            },
+          }),
+          { status: 400 },
+        ),
+    });
+    await expect(source.search("query")).rejects.toMatchObject({
+      name: "ServiceClientError",
+      code: "unreachable",
+      retryable: true,
+      cause,
+    });
+    const invalid = openServiceInspectionSource({
+      url: "http://127.0.0.1:4748",
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code: "invalid-request",
+              message: "Invalid input.",
+              retryable: false,
+            },
+          },
+          { status: 400 },
+        ),
+    });
+    await expect(invalid.search("query")).rejects.toBeInstanceOf(
+      InspectionInputError,
+    );
+  });
+
   it("serves identity, details, search and records over the configured service URL", async () => {
     const stub = await startStubService();
     const source = openInspectionSource(

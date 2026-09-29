@@ -2,8 +2,8 @@
  * Provider lifecycle of the local memory service: the committed collection identity and durable
  * queue exist before any provider is opened, the pinned encoder, note store and model transport
  * initialize in the background with bounded retries, and reads and ingestion work only through
- * the ready stack. Inference enters the shared fair scheduler; the encoder is loaded once and
- * shared by insertion and search.
+ * the ready stack. Inference enters the shared fair scheduler; one live encoder is shared by
+ * insertion and search and replaced only after terminal failure.
  *
  * See docs/service.md#availability-restart-and-shutdown and
  * docs/service.md#async-work-and-resource-sharing.
@@ -46,10 +46,11 @@ export interface ServiceEngine {
 
 /** How the service constructs its providers; tests substitute controlled implementations. */
 export interface ProviderFactories {
+  /** A hosted encoder exposes terminal lifetime failures as a resolving promise. */
   openEmbedder(options: {
     readonly cacheDir: string;
     readonly allowDownloads: boolean;
-  }): Promise<Embedder>;
+  }): Promise<Embedder & { readonly failed?: Promise<Error> }>;
   openStore(options: {
     readonly url: string;
     readonly collection: string;
@@ -146,9 +147,9 @@ const isProviderFailure = (cause: unknown): boolean => {
 
 /**
  * One service instance's provider stack. Initialization starts when the host asks and keeps
- * retrying with bounded exponential backoff until it succeeds or the service stops; a loaded
- * encoder is never discarded between attempts. Availability is reported per capability from both
- * initialization and the last provider outcome, and the failure detail stays on the host's stderr.
+ * retrying with bounded exponential backoff until the service stops. A healthy encoder is retained
+ * between attempts; terminal thread failures trigger replacement. Availability is reported per
+ * capability from initialization and each operation's outcome; failure detail stays on stderr.
  */
 export class ProviderRuntime {
   readonly #space: EmbeddingSpace;
@@ -163,8 +164,9 @@ export class ProviderRuntime {
   #store: NoteStore | undefined;
   #engine: ServiceEngine | undefined;
   #error: string | undefined;
-  /** Capabilities a ready stack failed to serve, cleared when the capability serves again. */
-  readonly #outages = new Map<ServiceCapability, string>();
+  /** Failed operations; only a success of the same operation demonstrates recovery. */
+  readonly #outages = new Map<keyof ServiceEngine, ServiceCapability>();
+  #encoderFailure: Error | undefined;
   #running = false;
   #stopped = false;
   #initialization: Promise<void> | undefined;
@@ -190,19 +192,24 @@ export class ProviderRuntime {
 
   /**
    * The current availability of each capability the provider stack serves. An observed outage
-   * keeps the capability unavailable until it serves again; initialization alone never clears it.
+   * keeps the capability unavailable until the failed operation serves again; initialization alone
+   * never clears it.
    */
   availability(): Record<ServiceCapability, boolean> {
     const ready = this.ready && !this.#stopped;
     return {
-      retrieval: ready && !this.#outages.has("retrieval"),
-      ingestion: ready && !this.#outages.has("ingestion"),
+      retrieval: ready && ![...this.#outages.values()].includes("retrieval"),
+      ingestion: ready && ![...this.#outages.values()].includes("ingestion"),
     };
   }
 
   /** The safe diagnostic of the condition that holds initialization or a capability, if any. */
   error(): string | undefined {
-    return this.#error ?? this.#outages.values().next().value;
+    const capability = this.#outages.values().next().value;
+    return (
+      this.#error ??
+      (capability === undefined ? undefined : outageReason[capability])
+    );
   }
 
   /** Begin loading providers in the background; repeated calls join the same attempt loop. */
@@ -219,10 +226,14 @@ export class ProviderRuntime {
     this.#running = false;
     this.#wake?.();
     await this.#initialization?.catch(() => undefined);
-    const embedder = this.#embedder;
-    this.#embedder = undefined;
     this.#store = undefined;
     this.#engine = undefined;
+    await this.#releaseEmbedder();
+  }
+
+  async #releaseEmbedder(): Promise<void> {
+    const embedder = this.#embedder;
+    this.#embedder = undefined;
     if (embedder !== undefined) {
       try {
         await this.#factories.closeEmbedder?.(embedder);
@@ -259,8 +270,25 @@ export class ProviderRuntime {
         if (this.#stopped) {
           return;
         }
+        if (this.#encoderFailure !== undefined) {
+          throw new ProviderStepError(
+            "The shared encoder stopped unexpectedly.",
+            this.#encoderFailure,
+          );
+        }
         this.#error = undefined;
-        return;
+        // Stay alive after readiness: a terminal encoder failure wakes this same retry loop.
+        await new Promise<void>((resolve) => {
+          this.#wake = resolve;
+        });
+        this.#wake = undefined;
+        if (this.#stopped) {
+          return;
+        }
+        throw new ProviderStepError(
+          "The shared encoder stopped unexpectedly.",
+          this.#encoderFailure,
+        );
       } catch (cause) {
         if (this.#stopped) {
           return;
@@ -277,6 +305,11 @@ export class ProviderRuntime {
             ? cause.message
             : "The memory providers could not be initialized.";
         console.error("[service] provider initialization failed:", cause);
+        if (this.#encoderFailure !== undefined) {
+          this.#engine = undefined;
+          await this.#releaseEmbedder();
+          this.#encoderFailure = undefined;
+        }
         attempt += 1;
         await this.#delay(
           Math.min(this.#retryBaseMs * 2 ** (attempt - 1), this.#retryMaxMs),
@@ -289,6 +322,12 @@ export class ProviderRuntime {
   async #open(): Promise<void> {
     const embedder = await this.#openEmbedder();
     const store = await this.#openStore(embedder.space);
+    if (this.#encoderFailure !== undefined) {
+      throw new ProviderStepError(
+        "The shared encoder stopped unexpectedly.",
+        this.#encoderFailure,
+      );
+    }
     if (this.#engine === undefined) {
       try {
         this.#engine = this.#compose(store, embedder);
@@ -301,14 +340,24 @@ export class ProviderRuntime {
     }
   }
 
-  /** Load the pinned encoder once and confirm it declares the space the queue owns. */
+  /** Load one encoder and confirm it declares the space the queue owns. */
   async #openEmbedder(): Promise<Embedder> {
     let embedder = this.#embedder;
     if (embedder === undefined) {
       try {
-        embedder = await this.#factories.openEmbedder({
+        const opened = await this.#factories.openEmbedder({
           cacheDir: this.#settings.embedding.cacheDir,
           allowDownloads: this.#settings.embedding.allowDownloads,
+        });
+        embedder = opened;
+        void opened.failed?.then((cause) => {
+          if (this.#stopped || this.#embedder !== opened) {
+            return;
+          }
+          this.#encoderFailure = cause;
+          this.#engine = undefined;
+          this.#error = "The shared encoder stopped unexpectedly.";
+          this.#wake?.();
         });
       } catch (cause) {
         throw new ProviderStepError(
@@ -363,39 +412,43 @@ export class ProviderRuntime {
     const memory = new AgenticMemory(store, embedder, model);
     const scheduler = this.#scheduler;
     return {
-      get: (id) => this.#serve("retrieval", () => memory.get(id)),
+      get: (id) => this.#serve("get", "retrieval", () => memory.get(id)),
       page: (limit, cursor) =>
-        this.#serve("retrieval", () => memory.page(limit, cursor)),
+        this.#serve("page", "retrieval", () => memory.page(limit, cursor)),
       pageEmbedded: (limit, cursor) =>
-        this.#serve("retrieval", () => store.pageEmbedded(limit, cursor)),
+        this.#serve("pageEmbedded", "retrieval", () =>
+          store.pageEmbedded(limit, cursor),
+        ),
       search: (query, options) =>
-        this.#serve("retrieval", () =>
+        this.#serve("search", "retrieval", () =>
           scheduler.run(() => memory.search(query, options)),
         ),
       prepare: (input) =>
-        this.#serve("ingestion", () =>
+        this.#serve("prepare", "ingestion", () =>
           scheduler.run(() => memory.prepare(input)),
         ),
-      apply: (plan) => this.#serve("ingestion", () => memory.apply(plan)),
+      apply: (plan) =>
+        this.#serve("apply", "ingestion", () => memory.apply(plan)),
     };
   }
 
   /**
    * Run one provider operation, recording whether the capability served it. A provider failure of
-   * a ready stack marks the capability as failing until a later operation succeeds; invalid input
+   * a ready stack marks the capability as failing until that same operation succeeds; invalid input
    * and scheduler overload leave availability alone.
    */
   async #serve<Value>(
+    operation: keyof ServiceEngine,
     capability: ServiceCapability,
     run: () => Promise<Value>,
   ): Promise<Value> {
     try {
       const value = await run();
-      this.#outages.delete(capability);
+      this.#outages.delete(operation);
       return value;
     } catch (cause) {
       if (this.ready && isProviderFailure(cause)) {
-        this.#outages.set(capability, outageReason[capability]);
+        this.#outages.set(operation, capability);
       }
       throw cause;
     }
