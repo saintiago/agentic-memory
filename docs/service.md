@@ -16,7 +16,7 @@ and availability reporting. The queue owns durability, writer exclusion, retry a
 Memory owns semantic construction, evolution and retrieval. Do not duplicate those rules here.
 
 Clients own source extraction and stable source identities. The dashboard is a read-only API
-consumer; its separate inspection host performs projection and serves the browser. Neither client
+consumer served by the same process and HTTP listener; its inspection module owns projection. Neither client
 nor dashboard receives provider credentials. The reusable library remains usable independently for
 separately owned collections; it must not be a competing writer to the service-owned collection.
 
@@ -58,7 +58,8 @@ returns `429` with `Retry-After`; unavailable capability returns `503`; unexpect
 Submission awaits only the queue's durable commit, never model generation or vector storage.
 Disconnecting after acceptance does not cancel the observation. Lost responses are resolved by
 resubmitting the identical source key and payload; the service returns the existing receipt.
-Clients may poll receipt status; no streaming or notification protocol is required initially.
+Clients may poll receipt status. Dashboard graph updates use the WebSocket notification channel
+defined in [dashboard updates](dashboard.md#websocket-updates).
 The client classifies interrupted response bodies, including timeouts after headers, as retryable
 transport failures and preserves the received HTTP status and cause. Fully received malformed JSON
 is a separate protocol failure.
@@ -68,7 +69,7 @@ Use bounded scheduling of inference with fair admission so ingestion cannot inde
 search and bursts cannot create unbounded in-memory work. Serialize model access when required by
 the encoder runtime; concurrent HTTP requests do not promise parallel inference. Run blocking
 inference and journal operations outside the HTTP event loop. Only the durable queue accumulates
-accepted ingestion work. Projection stays in the separate inspection process.
+accepted ingestion work. Projection runs in a background worker owned by the service, outside the HTTP event loop.
 
 ## Availability, restart and shutdown
 
@@ -96,6 +97,39 @@ On shutdown stop admitting new requests and claiming new work, settle active sub
 the current operation to finish within the host's shutdown grace period. A forced exit relies on the
 durable journal; it must not mark an interrupted write stored. Release owned providers on clean exit.
 
+## Bundled dashboard
+
+One service process, configuration and startup command serve both memory and inspection at the
+same loopback address (default `http://127.0.0.1:4748`). Serve the built Sigma dashboard at `/` and
+its assets from the same origin. Keep `/v1/...` memory API routes unchanged and mount the existing
+`/api/...` dashboard routes from [the dashboard contract](dashboard.md#browser-api) on that listener.
+Unknown API routes return API errors, never a successful HTML fallback.
+
+Compose the inspection module with the service's existing public read/search capabilities and
+paginated vector source in-process. Do not call the service through its own HTTP listener, create
+another Memory instance, load another encoder, or give inspection a separate database client.
+Preserve public boundaries: the service composition supplies focused contracts, not private imports.
+The browser remains a read-only consumer; projection, refresh and vector comparison stay server-side.
+
+Start the API without waiting for the first export or projection. Serve a loading graph until ready.
+Provider and projection failures preserve the last completed view with an explicit error, while
+submission and unrelated API operations remain available. Projection runs in a background worker;
+coalesce refreshes, retain asynchronous browser updates, and preserve camera and selection state.
+A missing dashboard build produces an explicit dashboard-unavailable response without disabling
+memory API access or returning a misleading empty graph.
+
+`npm run service` is the single launch command and must prepare or locate the bundled UI assets;
+the production installation guide includes the asset build. Service shutdown owns WebSocket connections, the projection
+worker, refresh/retry timers and HTTP listener in addition to memory resources. Document one supervised
+service, one port and one configuration. The standalone inspector command may remain for development,
+but it is not required for deployment. Avoid duplicating its route and projection implementations.
+
+Verify the root/assets, unchanged `/v1` responses and mounted `/api` routes on one listener; query
+highlighting and automatic refresh; one encoder instance; API responsiveness during projection;
+startup with unavailable providers; missing UI assets; WebSocket reconnect/resync; and clean shutdown
+of inspection workers. The service invalidates inspection after completed ingestion/recovery writes
+and exposes `/api/events` on the same listener, replacing steady-state dashboard polling.
+
 ## Configuration and local access
 
 The service owns database connection, collection identity, durable directory, pinned encoder/cache,
@@ -110,8 +144,8 @@ The concrete variables, launch command, supervision example and client usage are
 Initial deployment is loopback-only and trusts local operating-system users. Do not enable permissive
 CORS. Requests must name the bound loopback authority: reject a foreign `Host` header and a browser
 `Origin` that is not that authority, so a hostname rebound to the loopback address cannot reach the
-API. State-changing requests require JSON. The dashboard host accesses the API server-side and
-exposes only its inspection routes to the browser. Remote binding, authentication for remote clients
+API. State-changing requests require JSON. The bundled dashboard uses same-origin routes and exposes
+no memory-editing controls. Its UI is read-only; observation submission remains an API capability. Remote binding, authentication for remote clients
 and multi-host service replicas are outside scope.
 
 ## Migration and verification

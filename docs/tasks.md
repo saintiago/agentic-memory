@@ -42,3 +42,10 @@ Implement in this dependency and queue order. Both tasks use `memory-build`; Jir
 | [AMEM-13](https://malton-family.atlassian.net/browse/AMEM-13) | [Local service API](service.md), shared encoder, lifecycle and [dashboard connection](dashboard.md) | AMEM-12          |
 
 Nexus consumer changes are outside these AMEM tasks.
+
+## Combined service and dashboard
+
+[AMEM-14](https://malton-family.atlassian.net/browse/AMEM-14) implements the
+[bundled dashboard](service.md#bundled-dashboard): one listener and launch command, shared read
+capabilities, background projection, and lifecycle/responsiveness verification. Prerequisite:
+AMEM-13. It uses `memory-build`; Nexus consumer integration remains outside scope.
