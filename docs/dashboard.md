@@ -126,15 +126,17 @@ notes, so their evidence does not depend on a subsequent detail read.
 
 Validate HTTP inputs against the existing public constraints. Return validation, missing-record and
 operation errors distinctly (400, 404 and 500); sanitize error text. An empty successful search is
-`results: []`. Operation failures never become empty graph/search success. Polling the graph also
+`results: []`. Operation failures never become empty graph/search success. Fetching the graph also
 reports a refresh error alongside the last successful view when available.
 
 ### Refresh and projection lifecycle
 
 On startup, traverse the supplied paginated vector source to completion, fit the initial projection outside the HTTP
 request handler, then publish a completed view. Serve loading status while this happens. Start
-periodic refresh afterward; manual refresh uses the same path. Permit one export/projection job at
-a time and coalesce requests while it is running.
+event-driven refresh afterward: completed ingestion/recovery writes invalidate the view; manual
+refresh uses the same path. Permit one export/projection job at a time and coalesce requests. If a
+change arrives during export/projection, retain a dirty flag and run another pass afterward, so it
+cannot be lost when the current view publishes. No 30-second polling loop is required.
 
 On each refresh, stage pages separately, compare notes and vectors by ID, transform new or changed
 vectors with the fitted model, and publish only after the traversal and projection succeed. Retain
@@ -142,13 +144,40 @@ the previous view on failure. Do not use `updatedAt` alone to detect changes: it
 is not a unique revision. A refresh is observationally consistent with public pagination, not a
 transactional snapshot. Search remains independently available during refresh.
 
-The browser polls `GET /api/graph`, applies changes to its existing Graphology graph and preserves
+The browser fetches `GET /api/graph` on WebSocket notifications, applies changes to its existing Graphology graph and preserves
 camera/selection. A result missing from the current view remains in the result list and triggers a
 refresh; there is no invented vector-by-ID API. Cache vectors/coordinates and the fitted model as
 disposable inspection state, with collection and embedding-space identity. Do not persist a second
 runtime memory database. On restart, obtain a fresh export before presenting a cache as current;
 incompatible caches are discarded. Keep full fits explicit after the initial fit. On shutdown,
-stop polling/jobs, close HTTP and release provider/projection resources.
+stop refresh jobs, close WebSocket connections and HTTP, and release provider/projection resources.
+
+### WebSocket updates
+
+Expose `GET /api/events` as a WebSocket upgrade on the same service listener. This is a read-only
+notification channel, not a second memory API. Validate the handshake Host and browser Origin using
+the service's existing loopback rules. It does not accept observation submissions or graph edits.
+
+Send JSON `{ type: "graph-changed" }` when a completed graph view or its loading/refresh/error state
+changes. On every connection send `{ type: "resync" }`; the browser then fetches the latest
+`GET /api/graph`. Subscribe before the initial fetch, and keep a dirty flag for notifications received
+during a fetch so a newer state is retrieved afterward. Serialize fetches and discard obsolete
+responses. Payloads contain no vectors or full graph; HTTP remains the authoritative snapshot source.
+
+Automatically reconnect with bounded exponential backoff (1 second to 30 seconds). Display a
+reconnecting indication and retain the last view while disconnected. Every reconnect performs a
+fresh sync, including after a service restart; no persisted event log or replay guarantee is needed.
+The service also refreshes from storage on startup, so writes completed before a crash are discovered.
+If graph refresh failed temporarily, retry that refresh with bounded backoff until successful or
+superseded by a new trigger; do not wait for another memory write to recover. This is failure recovery,
+not steady-state polling. Keep freshness-color timers local to the browser.
+
+Use connection liveness checks, bounded send buffers and coalesced notifications. A slow or abandoned
+client must not block ingestion or accumulate graph payloads; disconnect it and allow resync. Keep
+manual Refresh graph and Rebuild projection actions. Test a write during a refresh, a notification
+during a fetch, idle connections, disconnect/reconnect, service restart, refresh failure recovery,
+and camera/selection preservation. Stored memories must appear without manual reload or periodic
+30-second polling; no timing guarantee may imply that queued observations are already stored.
 
 ### Launching the host
 
@@ -229,7 +258,7 @@ and apply successful refreshes to the existing Graphology instance; do not recre
 No runtime event bus or durable update stream is required for this first inspection tool.
 
 - Add/remove nodes and directed edges through Graphology mutations as they appear/disappear in a
-  completed export. Never infer deletion from an incomplete page traversal or failed poll.
+  completed export. Never infer deletion from an incomplete page traversal or failed refresh.
 - Update attributes for changed notes. Changed colors or links do not require re-projection.
 - Transform new or changed vectors through the existing fitted UMAP model, retaining other nodes'
   coordinates. Show pending projection explicitly instead of presenting stale coordinates as current.
@@ -260,7 +289,7 @@ function `async` does not make synchronous CPU work non-blocking. In the browser
 response parsing/diff work to a Web Worker and apply Graphology mutations in bounded batches that
 yield between animation frames. Coalesce Sigma refreshes; do not redraw once per changed node.
 
-Serialize refresh jobs, avoid overlapping polls, and ignore obsolete responses when a newer request
+Serialize refresh jobs, coalesce pending notifications, and ignore obsolete responses when a newer request
 or view supersedes them. A projection rebuild is a background job; swap the completed projection in
 without exposing a mixture of old and new coordinate systems. Release workers and cancel pending
 requests when closing the inspector. Errors leave the last successful graph interactive.

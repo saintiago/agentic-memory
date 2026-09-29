@@ -58,7 +58,8 @@ returns `429` with `Retry-After`; unavailable capability returns `503`; unexpect
 Submission awaits only the queue's durable commit, never model generation or vector storage.
 Disconnecting after acceptance does not cancel the observation. Lost responses are resolved by
 resubmitting the identical source key and payload; the service returns the existing receipt.
-Clients may poll receipt status; no streaming or notification protocol is required initially.
+Clients may poll receipt status. Dashboard graph updates use the WebSocket notification channel
+defined in [dashboard updates](dashboard.md#websocket-updates).
 The client classifies interrupted response bodies, including timeouts after headers, as retryable
 transport failures and preserves the received HTTP status and cause. Fully received malformed JSON
 is a separate protocol failure.
@@ -118,14 +119,16 @@ A missing dashboard build produces an explicit dashboard-unavailable response wi
 memory API access or returning a misleading empty graph.
 
 `npm run service` is the single launch command and must prepare or locate the bundled UI assets;
-the production installation guide includes the asset build. Service shutdown owns the projection
-worker, refresh timers and HTTP listener in addition to memory resources. Document one supervised
+the production installation guide includes the asset build. Service shutdown owns WebSocket connections, the projection
+worker, refresh/retry timers and HTTP listener in addition to memory resources. Document one supervised
 service, one port and one configuration. The standalone inspector command may remain for development,
 but it is not required for deployment. Avoid duplicating its route and projection implementations.
 
 Verify the root/assets, unchanged `/v1` responses and mounted `/api` routes on one listener; query
 highlighting and automatic refresh; one encoder instance; API responsiveness during projection;
-startup with unavailable providers; missing UI assets; and clean shutdown of inspection workers.
+startup with unavailable providers; missing UI assets; WebSocket reconnect/resync; and clean shutdown
+of inspection workers. The service invalidates inspection after completed ingestion/recovery writes
+and exposes `/api/events` on the same listener, replacing steady-state dashboard polling.
 
 ## Configuration and local access
 
