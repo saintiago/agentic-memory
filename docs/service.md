@@ -15,7 +15,8 @@ The service composes the public [Memory](memory.md), [NoteStore](note-store.md),
 and availability reporting. The queue owns durability, writer exclusion, retry and crash recovery;
 Memory owns semantic construction, evolution and retrieval. Do not duplicate those rules here.
 
-Clients own source extraction and stable source identities. The dashboard is a read-only API
+Clients own source extraction and stable source identities. The [AMEM MCP server](mcp.md) exposes
+agent tools as a thin service client; host completion analysis remains outside this service. The dashboard is a read-only API
 consumer served by the same process and HTTP listener; its inspection module owns projection. Neither client
 nor dashboard receives provider credentials. The reusable library remains usable independently for
 separately owned collections; it must not be a competing writer to the service-owned collection.
