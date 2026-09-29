@@ -15,10 +15,10 @@ src/
   language-model/  # host invocation contract
   ingestion-queue/ # durable acceptance, writer ownership and restart recovery
   index.ts         # supported package exports
-service/           # local memory service: /v1 HTTP API, lifecycle, supervision and client
+service/           # local memory service: /v1 HTTP API, bundled dashboard, lifecycle, supervision and client
 examples/         # host composition and provider transport example
 experiments/      # replay, evaluation and graph artifact consumers
-inspector/        # local inspection host: entry point, HTTP API and projection worker
+inspector/        # dashboard: routes, event channel, projection worker and browser UI, composed by the service
 test/             # contract/integration/system fixtures and journeys
 docs/             # authoritative design
 ```
@@ -34,24 +34,24 @@ be established before their concrete implementations without temporary methods t
 Follow [tech stack](tech-stack.md) and [testing](testing.md). Pin Node 24, lock dependencies, and
 provide these npm scripts:
 
-| Command                | Responsibility                                                                               |
-| ---------------------- | -------------------------------------------------------------------------------------------- |
-| `format:check`         | Check source and Markdown formatting without changing files                                  |
-| `lint`                 | ESLint                                                                                       |
-| `typecheck`            | TypeScript static checking                                                                   |
-| `boundaries`           | Dependency Cruiser public imports and dependency directions                                  |
-| `test`                 | Deterministic unit/component tests, no paid calls or external services                       |
-| `test:integration`     | Isolated real-Qdrant contract and system checks; clearly report unavailable infrastructure   |
-| `test:embeddings`      | Explicit pinned-artifact encoder integration check                                           |
-| `demo:evaluation`      | Deterministic in-memory replay of the synthetic fixtures with its measurement report         |
-| `replay:live`          | Opt-in live replay with a declared call/token budget and recorded stopping reason            |
-| `graph:inspect`        | Offline HTML graph and JSON evidence rendered from one saved run directory                   |
-| `inspector`            | Local inspection host serving the loopback browser API and the built Sigma dashboard         |
-| `inspector:build`      | Bundle the browser dashboard of the inspection UI                                            |
-| `inspector:responsive` | Real-browser scale, responsiveness and camera-preservation checks of the dashboard           |
-| `service`              | Local memory service: `/v1` HTTP API, durable queue, shared encoder and supervised lifecycle |
-| `build`                | Produce JavaScript ESM and type declarations                                                 |
-| `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                           |
+| Command                | Responsibility                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `format:check`         | Check source and Markdown formatting without changing files                                                     |
+| `lint`                 | ESLint                                                                                                          |
+| `typecheck`            | TypeScript static checking                                                                                      |
+| `boundaries`           | Dependency Cruiser public imports and dependency directions                                                     |
+| `test`                 | Deterministic unit/component tests, no paid calls or external services                                          |
+| `test:integration`     | Isolated real-Qdrant contract and system checks; clearly report unavailable infrastructure                      |
+| `test:embeddings`      | Explicit pinned-artifact encoder integration check                                                              |
+| `demo:evaluation`      | Deterministic in-memory replay of the synthetic fixtures with its measurement report                            |
+| `replay:live`          | Opt-in live replay with a declared call/token budget and recorded stopping reason                               |
+| `graph:inspect`        | Offline HTML graph and JSON evidence rendered from one saved run directory                                      |
+| `inspector`            | Development host of the dashboard, pointed at a separately running memory service                               |
+| `inspector:build`      | Bundle the browser dashboard of the inspection UI                                                               |
+| `inspector:responsive` | Real-browser scale, responsiveness and camera-preservation checks of the dashboard                              |
+| `service`              | Local memory service: `/v1` HTTP API, bundled dashboard, durable queue, shared encoder and supervised lifecycle |
+| `build`                | Produce JavaScript ESM and type declarations                                                                    |
+| `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                                              |
 
 Integrations must not silently skip and report success when requested. Separate expensive model
 loading and external-state checks from deterministic cacheable validation. The first foundation

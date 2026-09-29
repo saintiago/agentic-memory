@@ -16,16 +16,12 @@ import { clear, element } from "./dom.js";
 import { formatCount, formatDuration, formatScore } from "./format.js";
 import { freshnessLegend } from "./freshness.js";
 import { GraphModel, type ApplyReport } from "./graph-model.js";
-import {
-  browserScheduler,
-  createPollLoop,
-  type PollLoop,
-  type PollScheduler,
-} from "./poll.js";
+import { type GraphEventHandlers, type GraphEventStream } from "./events.js";
 import type { DashboardRenderer } from "./renderer.js";
 import { SearchResults, type SearchRequest } from "./results.js";
 import { installShell, type Shell } from "./shell.js";
 import type { LinkAttributes, NodeAttributes, StyleSource } from "./style.js";
+import { browserScheduler, type TimerScheduler } from "./timer.js";
 import type { ViewDiff, ViewDiffer, ViewSummary } from "./view-diff.js";
 
 /** One applied update, kept for the status line and the responsiveness check. */
@@ -79,19 +75,23 @@ export interface DashboardOptions {
   readonly now?: () => number;
   readonly yieldFrame?: () => Promise<void>;
   readonly batchSize?: number;
-  readonly pollIntervalMs?: number;
-  readonly refreshingPollIntervalMs?: number;
+  /** The same-origin `/api/events` subscription; the dashboard owns its start and stop. */
+  readonly events: (handlers: GraphEventHandlers) => GraphEventStream;
+  /** The first delay before a failed graph fetch is retried; the default is 1 second. */
+  readonly retryBaseMs?: number;
+  /** The longest delay between graph fetch retries; the default is 30 seconds. */
+  readonly retryMaxMs?: number;
   readonly freshnessIntervalMs?: number;
-  readonly scheduler?: PollScheduler;
+  readonly scheduler?: TimerScheduler;
 }
 
 export interface Dashboard {
   dispose(): void;
-  /** Poll the graph immediately, coalescing with a poll that is already running. */
+  /** Fetch the latest served graph now, coalescing with a fetch that is already running. */
   pollNow(): void;
-  /** Request one inspection refresh and poll for its result. */
+  /** Request one inspection refresh and fetch its result. */
   requestRefresh(): Promise<void>;
-  /** Request a full projection refit and poll for its result. */
+  /** Request a full projection refit and fetch its result. */
   requestRebuild(): Promise<void>;
   select(nodeId: string | undefined): void;
   diagnostics(): DashboardDiagnostics;
@@ -122,8 +122,8 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   const now = options.now ?? ((): number => Date.now());
   const yieldFrame = options.yieldFrame;
   const batchSize = options.batchSize;
-  const pollIntervalMs = options.pollIntervalMs ?? 2_000;
-  const refreshingPollIntervalMs = options.refreshingPollIntervalMs ?? 500;
+  const retryBaseMs = options.retryBaseMs ?? 1_000;
+  const retryMaxMs = options.retryMaxMs ?? 30_000;
   const freshnessIntervalMs = options.freshnessIntervalMs ?? 60_000;
   const scheduler = options.scheduler ?? browserScheduler;
 
@@ -187,8 +187,15 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   let detailsState: DetailsState = { kind: "empty" };
   let detailsToken = 0;
   let missingRequestRevision: number | undefined;
-  /** The notice text a failed poll wrote; a later successful poll clears exactly this one. */
-  let pollingNotice: string | undefined;
+  /** The notice text a failed graph fetch wrote; a later success clears exactly this one. */
+  let syncingNotice: string | undefined;
+  /** The live notification channel state, shown while it is disconnected. */
+  let connection: "connected" | "reconnecting" = "connected";
+  /** One graph fetch at a time; a notification during a fetch is remembered and rerun after. */
+  let syncing = false;
+  let syncQueued = false;
+  let retryTimer: number | undefined;
+  let retryAttempt = 0;
 
   const renderLegend = (): void => {
     clear(shell.legend);
@@ -242,6 +249,13 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
     if (refreshing || applying) {
       parts.push(refreshing ? "refreshing…" : "applying the completed view…");
+    }
+    if (connection === "reconnecting") {
+      parts.push(
+        view === undefined
+          ? "live updates reconnecting…"
+          : "live updates reconnecting; the displayed view stays until the connection returns",
+      );
     }
     if (lastApply !== undefined) {
       parts.push(
@@ -709,7 +723,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     });
   };
 
-  const pollGraph = async (): Promise<void> => {
+  const fetchGraph = async (): Promise<void> => {
     const text = await options.client.graphText();
     if (disposed) {
       return;
@@ -719,13 +733,13 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       return;
     }
     await applyDiff(diff);
-    if (pollingNotice !== undefined) {
+    if (syncingNotice !== undefined) {
       // The host answered and the completed view was applied, so a temporary outage is over.
-      // Only the notice this poll loop wrote is cleared; unrelated notices stay.
-      if (shell.notice.textContent === pollingNotice) {
+      // Only the notice this sync wrote is cleared; unrelated notices stay.
+      if (shell.notice.textContent === syncingNotice) {
         setNotice(undefined);
       }
-      pollingNotice = undefined;
+      syncingNotice = undefined;
     }
   };
 
@@ -734,23 +748,80 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
       return;
     }
     status = view === undefined ? "error" : status;
-    pollingNotice = `The inspection host could not be polled: ${sanitizedMessage(
+    syncingNotice = `The inspection host could not serve the latest graph: ${sanitizedMessage(
       cause,
     )}. ${view === undefined ? "" : "The last completed view is still displayed."}`;
-    setNotice(pollingNotice);
+    setNotice(syncingNotice);
     renderStatus();
   };
 
-  const poll: PollLoop = createPollLoop({
-    poll: pollGraph,
-    nextDelayMs: () => (refreshing ? refreshingPollIntervalMs : pollIntervalMs),
-    scheduler,
-    onError: fail,
+  const clearRetry = (): void => {
+    if (retryTimer !== undefined) {
+      scheduler.clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
+  };
+
+  /** Retry a failed fetch with bounded backoff until a newer trigger supersedes it. */
+  const scheduleRetry = (): void => {
+    if (disposed || retryTimer !== undefined) {
+      return;
+    }
+    const delay = Math.min(retryMaxMs, retryBaseMs * 2 ** retryAttempt);
+    retryAttempt += 1;
+    retryTimer = scheduler.setTimeout(() => {
+      retryTimer = undefined;
+      syncNow();
+    }, delay);
+  };
+
+  /** Serialize graph fetches; a notification during a fetch is applied by one later fetch. */
+  const runSync = async (): Promise<void> => {
+    syncing = true;
+    try {
+      await fetchGraph();
+      retryAttempt = 0;
+      clearRetry();
+    } catch (cause) {
+      // The notification channel replays nothing, so a failed fetch retries on its own.
+      fail(cause);
+      scheduleRetry();
+    } finally {
+      syncing = false;
+      if (syncQueued) {
+        syncQueued = false;
+        // A newer notification supersedes a pending retry of the failed fetch.
+        syncNow();
+      }
+    }
+  };
+
+  const syncNow = (): void => {
+    if (disposed) {
+      return;
+    }
+    // A newer trigger supersedes a pending retry, including a fresh manual request.
+    clearRetry();
+    if (syncing) {
+      syncQueued = true;
+      return;
+    }
+    void runSync();
+  };
+
+  const stream: GraphEventStream = options.events({
+    onResync: () => {
+      syncNow();
+    },
+    onStatus: (state) => {
+      connection = state;
+      renderStatus();
+    },
   });
 
   const requestRefresh = async (): Promise<void> => {
     await options.client.refresh();
-    poll.triggerNow();
+    syncNow();
   };
 
   const requestRebuild = async (): Promise<void> => {
@@ -758,7 +829,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     setNotice(
       "A full projection refit was requested; the map updates after the next complete export.",
     );
-    poll.triggerNow();
+    syncNow();
   };
 
   const submitSearch = async (event: SubmitEvent): Promise<void> => {
@@ -869,17 +940,19 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
 
   renderLegend();
   renderAll();
-  poll.start();
+  // Subscribe before the first fetch: the resync that every connection sends triggers it.
+  stream.start();
 
   return {
     dispose: (): void => {
       disposed = true;
-      poll.stop();
+      clearRetry();
+      stream.stop();
       options.differ.dispose();
       renderer?.dispose();
     },
     pollNow: (): void => {
-      poll.triggerNow();
+      syncNow();
     },
     requestRefresh,
     requestRebuild,

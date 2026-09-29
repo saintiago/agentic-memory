@@ -21,6 +21,10 @@ export const defaultServicePort = 4748;
 export const defaultBodyLimitBytes = 1_048_576;
 /** How long a graceful shutdown may take before the host forces the process to exit. */
 export const defaultShutdownGraceMs = 30_000;
+/** The built dashboard assets the bundled listener serves at `/`. */
+export const defaultUiDirectory = "inspector/ui/build";
+/** The disposable projection artifacts of the bundled dashboard. */
+export const defaultArtifactsDirectory = ".data/service-inspector";
 
 const optionalSetting = (
   env: Readonly<Record<string, string | undefined>>,
@@ -92,6 +96,12 @@ const settingsSchema = z.strictObject({
     .positive("AMEM_SERVICE_SHUTDOWN_GRACE_MS must be positive."),
   /** The durable queue directory; it must be outside temporary and task directories. */
   dataDirectory: z.string().min(1, "AMEM_SERVICE_DATA_DIR must be nonempty."),
+  /** The built dashboard assets; a missing build is an explicit dashboard-unavailable response. */
+  uiDirectory: z.string().min(1, "AMEM_SERVICE_UI_DIR must be nonempty."),
+  /** Disposable projection artifacts; never mixed with the durable journal. */
+  artifactsDirectory: z
+    .string()
+    .min(1, "AMEM_SERVICE_ARTIFACTS_DIR must be nonempty."),
   qdrant: z.strictObject({
     url: z.string().min(1, "AMEM_QDRANT_URL must be nonempty."),
     apiKey: z
@@ -207,6 +217,11 @@ export const readServiceSettings = (
     ),
     dataDirectory:
       optionalSetting(env, "AMEM_SERVICE_DATA_DIR") ?? ".data/service",
+    uiDirectory:
+      optionalSetting(env, "AMEM_SERVICE_UI_DIR") ?? defaultUiDirectory,
+    artifactsDirectory:
+      optionalSetting(env, "AMEM_SERVICE_ARTIFACTS_DIR") ??
+      defaultArtifactsDirectory,
     qdrant: {
       url: requiredSetting(env, "AMEM_QDRANT_URL"),
       collection: requiredSetting(env, "AMEM_QDRANT_COLLECTION"),

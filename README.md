@@ -67,15 +67,18 @@ self-contained HTML report and the JSON evidence it shows, with no server or dat
 [docs/service.md](docs/service.md): it owns one configured collection, one durable ingestion queue
 and one shared pinned encoder hosted in its own worker thread, accepts observations durably over
 the versioned `/v1` HTTP API (published as [service/openapi.json](service/openapi.json)), and
-reports submission, retrieval and ingestion availability while providers load or fail.
+reports submission, retrieval and ingestion availability while providers load or fail. The same
+process serves the read-only Sigma dashboard at `/`, its inspection API under `/api` and live
+`/api/events` updates on one listener; a completed write refreshes the projected view without
+polling.
 [service/README.md](service/README.md) lists its settings, supervision example and the client
 boundary.
 
-`npm run inspector` starts the local memory inspection host, which consumes that service API — it
-opens no database and loads no encoder — projects the stored vectors in a worker thread and serves
-the loopback browser API documented in [docs/dashboard.md](docs/dashboard.md). It never writes a
-memory; it builds and serves the Sigma dashboard in `inspector/ui`, which shows projected positions
-with directed links, freshness, real requests and their highlighted results.
+`npm run inspector` starts the development host of the same dashboard against a separately running
+service API — it opens no database and loads no encoder. The dashboard never writes a memory; it
+builds the Sigma UI in `inspector/ui`, which shows projected positions with directed links,
+freshness, real requests and their highlighted results, and keeps them current from same-origin
+WebSocket notifications documented in [docs/dashboard.md](docs/dashboard.md).
 [inspector/README.md](inspector/README.md) lists its settings, the dashboard's behavior and the
 recorded responsive browser checks (`npm run inspector:responsive`): the required scale check
 against a synthetic 10,000-memory graph with about 50,000 directed links and the real-renderer

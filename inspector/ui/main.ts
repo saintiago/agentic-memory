@@ -1,12 +1,14 @@
 /**
  * Browser entry point of the Sigma memory dashboard: it composes the host client, the graph view
- * differ, the Graphology model and the Sigma renderer into one dashboard, polls the local host
- * for completed views and exposes the read-only diagnostics the responsiveness check records.
+ * differ, the Graphology model, the same-origin event subscription and the Sigma renderer into one
+ * dashboard, keeps the served view in sync with the host's notifications and exposes the read-only
+ * diagnostics the responsiveness check records.
  *
  * See docs/dashboard.md and inspector/README.md.
  */
 import { createInspectorClient } from "./client.js";
 import { createDashboard, type Dashboard } from "./dashboard.js";
+import { createEventStream } from "./events.js";
 import { createSigmaRenderer } from "./renderer.js";
 import { createViewDiffer } from "./view-diff.js";
 
@@ -29,6 +31,7 @@ const dashboard = createDashboard({
   client: createInspectorClient(),
   differ: createViewDiffer(),
   createRenderer: createSigmaRenderer,
+  events: (handlers) => createEventStream({ handlers }),
 });
 
 const hook: InspectorPageHook = {

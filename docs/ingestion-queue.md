@@ -181,7 +181,8 @@ Expose backlog size, oldest pending age, worker availability and receipt outcome
 stored, retrying and blocked distinctly. Worker availability and the safe diagnostic that holds the
 backlog are properties of the queue, not of the handle that reports them, and a reopened queue still
 explains a durable block. The graph shows persisted notes; queued observations are not graph nodes.
-Dashboard polling discovers stored notes without a page reload.
+The service invalidates the projected dashboard view after a completed write, so stored notes
+appear without a page reload.
 
 Verify concurrent unique submissions and duplicate keys; acceptance during provider/worker outage;
 producer exit after acknowledgement; worker exclusion; and restart at every boundary above. Inject

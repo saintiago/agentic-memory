@@ -133,9 +133,10 @@ and exposes `/api/events` on the same listener, replacing steady-state dashboard
 ## Configuration and local access
 
 The service owns database connection, collection identity, durable directory, pinned encoder/cache,
-model endpoint and credentials, HTTP port and request-size limit. Store durable state outside task
-workspaces. Consumers configure only the service URL and their source identity; connection failures
-remain explicit. No Nexus-specific configuration discovery is part of the service.
+model endpoint and credentials, HTTP port, request-size limit and the bundled dashboard's asset and
+disposable projection-artifact directories. Store durable state outside task workspaces. Consumers
+configure only the service URL and their source identity; connection failures remain explicit. No
+Nexus-specific configuration discovery is part of the service.
 
 The concrete variables, launch command, supervision example and client usage are in
 [service/README.md](../service/README.md); the service publishes the route definition in

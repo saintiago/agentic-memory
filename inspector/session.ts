@@ -45,6 +45,10 @@ export interface InspectionSessionOptions {
   readonly artifacts: ProjectionArtifactStore;
   /** Milliseconds between periodic refreshes; zero keeps the host to explicit refreshes. */
   readonly pollIntervalMs: number;
+  /** The first delay before a failed export or projection is retried; 1 second by default. */
+  readonly retryBaseMs?: number;
+  /** The longest delay between failed-refresh retries; 30 seconds by default. */
+  readonly retryMaxMs?: number;
   readonly pageLimit?: number;
   readonly now?: () => Date;
 }
@@ -59,6 +63,8 @@ interface QueuedJob {
 }
 
 const defaultPageLimit = 100;
+const defaultRetryBaseMs = 1_000;
+const defaultRetryMaxMs = 30_000;
 
 const noViewMessage = "The host has no completed graph view yet.";
 
@@ -76,8 +82,12 @@ export class InspectionSession {
   #runner: ProjectionRunner;
   #artifacts: ProjectionArtifactStore;
   #pollIntervalMs: number;
+  #retryBaseMs: number;
+  #retryMaxMs: number;
   #pageLimit: number;
   #now: () => Date;
+  /** Observers of the observable graph state, such as a listener's event channel. */
+  readonly #listeners = new Set<() => void>();
 
   #view: GraphView | undefined;
   #error: string | undefined;
@@ -88,6 +98,8 @@ export class InspectionSession {
   #queued: QueuedJob | undefined;
   #current: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
+  #retryTimer: NodeJS.Timeout | undefined;
+  #retryAttempt = 0;
   #cacheTaken = false;
 
   constructor(options: InspectionSessionOptions) {
@@ -95,8 +107,21 @@ export class InspectionSession {
     this.#runner = options.runner;
     this.#artifacts = options.artifacts;
     this.#pollIntervalMs = options.pollIntervalMs;
+    this.#retryBaseMs = options.retryBaseMs ?? defaultRetryBaseMs;
+    this.#retryMaxMs = options.retryMaxMs ?? defaultRetryMaxMs;
     this.#pageLimit = options.pageLimit ?? defaultPageLimit;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * Observe every observable state change: a job starts, publishes a view or records a failure.
+   * The returned function unsubscribes.
+   */
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
   }
 
   /** Start the initial export and projection; periodic refresh starts once it completes. */
@@ -194,6 +219,10 @@ export class InspectionSession {
       clearTimeout(this.#timer);
       this.#timer = undefined;
     }
+    if (this.#retryTimer !== undefined) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = undefined;
+    }
     this.#queued = undefined;
     await this.#runner.close();
   }
@@ -203,14 +232,18 @@ export class InspectionSession {
     if (this.#stopped) {
       return;
     }
+    // Any new trigger supersedes a pending retry of an earlier failure.
+    this.#clearRetry();
     if (this.#running) {
       this.#queued = { rebuild: rebuild || (this.#queued?.rebuild ?? false) };
       return;
     }
     this.#running = true;
+    this.#notify();
     this.#current = this.#run(rebuild).finally(() => {
       this.#running = false;
       this.#current = undefined;
+      this.#notify();
       const queued = this.#queued;
       this.#queued = undefined;
       if (queued !== undefined) {
@@ -234,6 +267,7 @@ export class InspectionSession {
         return;
       }
       this.#recordFailure("The last inspection export failed.", cause);
+      this.#scheduleRetry();
       return;
     }
     const capturedAt = this.#now().toISOString();
@@ -256,11 +290,14 @@ export class InspectionSession {
         notes: exported.notes,
       });
       this.#error = undefined;
+      this.#retryAttempt = 0;
+      this.#clearRetry();
     } catch (cause) {
       if (this.#stopped) {
         return;
       }
       this.#recordFailure("The last inspection projection failed.", cause);
+      this.#scheduleRetry();
       return;
     }
     // Shutdown writes nothing; the artifact is a disposable cache of the next run.
@@ -367,5 +404,43 @@ export class InspectionSession {
       this.refresh();
     }, this.#pollIntervalMs);
     this.#timer.unref();
+  }
+
+  /**
+   * Recover a failed refresh on the session's own bounded backoff instead of waiting for another
+   * memory write; a new trigger supersedes the pending retry.
+   */
+  #scheduleRetry(): void {
+    if (this.#stopped || this.#retryTimer !== undefined) {
+      return;
+    }
+    const delay = Math.min(
+      this.#retryMaxMs,
+      this.#retryBaseMs * 2 ** this.#retryAttempt,
+    );
+    this.#retryAttempt += 1;
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = undefined;
+      this.refresh();
+    }, delay);
+    this.#retryTimer.unref();
+  }
+
+  #clearRetry(): void {
+    if (this.#retryTimer !== undefined) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = undefined;
+    }
+  }
+
+  /** Publish one observable state change; a listener failure never breaks the session. */
+  #notify(): void {
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener();
+      } catch (cause) {
+        console.error("[inspector] a graph change listener failed:", cause);
+      }
+    }
   }
 }

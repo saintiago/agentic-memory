@@ -2,8 +2,8 @@
  * The dashboard controller in a real DOM with the real Graphology model, view planner and panels:
  * first view and status, request highlighting and result order, selection evidence, refreshes
  * that keep the camera and selection, retained state on failure, the explicit comparison and the
- * disposal of the poll loop and renderer. Only the HTTP host and the WebGL renderer are
- * substituted.
+ * disposal of the notification subscription and renderer. Only the HTTP host, the event channel
+ * and the WebGL renderer are substituted.
  *
  * See docs/dashboard.md#acceptance-checks and docs/testing.md#choosing-scope.
  */
@@ -19,6 +19,8 @@ import {
 } from "../view-diff.js";
 import {
   FakeRenderer,
+  ManualScheduler,
+  ScriptedEvents,
   StubClient,
   graphEdge,
   graphNode,
@@ -30,11 +32,13 @@ import {
   snapshotText,
   waitFor,
 } from "./support.js";
+import type { TimerScheduler } from "../timer.js";
 
 interface Harness {
   readonly dashboard: Dashboard;
   readonly client: StubClient;
   readonly renderer: FakeRenderer;
+  readonly events: ScriptedEvents;
   readonly root: HTMLElement;
 }
 
@@ -46,10 +50,15 @@ const start = (
     readonly batchSize?: number;
     readonly yieldFrame?: () => Promise<void>;
     readonly differ?: ViewDiffer;
+    readonly events?: ScriptedEvents;
+    readonly scheduler?: TimerScheduler;
+    readonly retryBaseMs?: number;
+    readonly retryMaxMs?: number;
   } = {},
 ): Harness => {
   const client = options.client ?? new StubClient();
   const renderer = new FakeRenderer();
+  const events = options.events ?? new ScriptedEvents();
   const root = document.createElement("div");
   document.body.append(root);
   const dashboard = createDashboard({
@@ -57,7 +66,8 @@ const start = (
     client,
     differ: options.differ ?? createInlineViewDiffer(),
     createRenderer: () => renderer,
-    scheduler: {
+    events: events.subscribe,
+    scheduler: options.scheduler ?? {
       // The browser scheduler hands back numbers; Node's timer type is opaque here.
       setTimeout: (handler, delayMs) =>
         globalThis.setTimeout(handler, delayMs) as unknown as number,
@@ -65,8 +75,12 @@ const start = (
         globalThis.clearTimeout(handle);
       },
     },
-    pollIntervalMs: 30_000,
-    refreshingPollIntervalMs: 5,
+    ...(options.retryBaseMs === undefined
+      ? {}
+      : { retryBaseMs: options.retryBaseMs }),
+    ...(options.retryMaxMs === undefined
+      ? {}
+      : { retryMaxMs: options.retryMaxMs }),
     freshnessIntervalMs: 30_000,
     ...(options.batchSize === undefined
       ? {}
@@ -75,7 +89,7 @@ const start = (
       ? {}
       : { yieldFrame: options.yieldFrame }),
   });
-  const harness = { dashboard, client, renderer, root };
+  const harness = { dashboard, client, renderer, events, root };
   harnesses.push(harness);
   return harness;
 };
@@ -104,6 +118,12 @@ const submitSearch = (root: HTMLElement, query: string): void => {
     new Event("submit", { bubbles: true, cancelable: true }),
   );
 };
+
+/** Let the microtask queue and one timer turn settle between assertions. */
+const tick = (): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, 1);
+  });
 
 describe("dashboard", () => {
   it("loads the first completed view, fits once and describes the projection", async () => {
@@ -371,7 +391,149 @@ describe("dashboard", () => {
     expect(text(root, "#details")).toContain("Memory 1");
   });
 
-  it("keeps the last completed view when a poll fails", async () => {
+  it("fetches the latest graph on a notification and resyncs after a reconnect", async () => {
+    const { dashboard, client, events, root } = start();
+    client.graphHandler = () =>
+      Promise.resolve(
+        snapshotText(
+          graphSnapshot({ view: graphView({ nodes: [graphNode(0)] }) }),
+        ),
+      );
+    await waitFor(() => dashboard.diagnostics().nodes === 1, "the first view");
+
+    client.graphHandler = () =>
+      Promise.resolve(
+        snapshotText(
+          graphSnapshot({
+            view: graphView({
+              nodes: [graphNode(0), graphNode(1)],
+              capturedAt: "2026-09-28T12:15:00.000Z",
+            }),
+          }),
+        ),
+      );
+    const fetches = client.calls.graph;
+    events.changed();
+    await waitFor(
+      () => dashboard.diagnostics().nodes === 2,
+      "the notification",
+    );
+    expect(client.calls.graph).toBe(fetches + 1);
+
+    // A dropped connection keeps the displayed view and reports the reconnecting state.
+    events.reconnecting();
+    expect(text(root, "#view-status")).toContain("live updates reconnecting");
+    expect(dashboard.diagnostics().nodes).toBe(2);
+
+    // Every reconnect resynchronizes: the resync of the new connection fetches again.
+    client.graphHandler = () =>
+      Promise.resolve(
+        snapshotText(
+          graphSnapshot({
+            view: graphView({
+              nodes: [graphNode(0), graphNode(1), graphNode(2)],
+              capturedAt: "2026-09-28T12:16:00.000Z",
+            }),
+          }),
+        ),
+      );
+    events.connected();
+    events.resync();
+    await waitFor(() => dashboard.diagnostics().nodes === 3, "the reconnect");
+    expect(text(root, "#view-status")).not.toContain(
+      "live updates reconnecting",
+    );
+  });
+
+  it("coalesces notifications during a fetch and applies the newest state after it", async () => {
+    const { dashboard, client, events } = start();
+    let release: (() => void) | undefined;
+    client.graphHandler = () =>
+      new Promise<string>((resolve) => {
+        release = () => {
+          resolve(
+            snapshotText(
+              graphSnapshot({
+                view: graphView({ nodes: [graphNode(0)] }),
+              }),
+            ),
+          );
+        };
+      });
+    await waitFor(() => client.calls.graph === 1, "the pending fetch");
+
+    // Three notifications while the fetch is in flight are one follow-up fetch, not three.
+    events.changed();
+    events.changed();
+    events.changed();
+    expect(client.calls.graph).toBe(1);
+
+    client.graphHandler = () =>
+      Promise.resolve(
+        snapshotText(
+          graphSnapshot({
+            view: graphView({
+              nodes: [graphNode(0), graphNode(1)],
+              capturedAt: "2026-09-28T12:17:00.000Z",
+            }),
+          }),
+        ),
+      );
+    release?.();
+    await waitFor(() => dashboard.diagnostics().nodes === 2, "the newer state");
+    expect(client.calls.graph).toBe(2);
+  });
+
+  it("retries a failed fetch with bounded backoff until a newer trigger succeeds", async () => {
+    const scheduler = new ManualScheduler();
+    const { dashboard, client, events, root } = start({
+      scheduler,
+      retryBaseMs: 1_000,
+      retryMaxMs: 4_000,
+    });
+    client.graphHandler = () =>
+      Promise.reject(new Error("connect ECONNREFUSED"));
+    await waitFor(
+      () => text(root, "#notice").includes("could not serve the latest graph"),
+      "the failed fetch",
+    );
+    expect(client.calls.graph).toBe(1);
+    expect(scheduler.nextDelayMs).toBe(1_000);
+
+    scheduler.advance(999);
+    await tick();
+    expect(client.calls.graph).toBe(1);
+    scheduler.advance(1);
+    await waitFor(
+      () => scheduler.nextDelayMs === 2_000,
+      "the first retry to back off",
+    );
+    expect(client.calls.graph).toBe(2);
+
+    scheduler.advance(2_000);
+    // The delay is capped at the configured maximum.
+    await waitFor(
+      () => scheduler.nextDelayMs === 4_000,
+      "the second retry to cap the backoff",
+    );
+    expect(client.calls.graph).toBe(3);
+
+    // A fresh notification supersedes the pending retry and clears the failure notice.
+    client.graphHandler = () =>
+      Promise.resolve(
+        snapshotText(
+          graphSnapshot({ view: graphView({ nodes: [graphNode(0)] }) }),
+        ),
+      );
+    events.changed();
+    await waitFor(() => dashboard.diagnostics().nodes === 1, "the recovery");
+    expect(text(root, "#notice")).toBe("");
+    expect(dashboard.diagnostics().status).toBe("ready");
+    // Only the local freshness timer remains; the retry timer is gone.
+    expect(scheduler.timers.size).toBe(1);
+  });
+
+  it("keeps the last completed view when a fetch fails", async () => {
     const { dashboard, client, root } = start();
     client.graphHandler = () =>
       Promise.resolve(
@@ -390,8 +552,8 @@ describe("dashboard", () => {
       Promise.reject(new Error("connect ECONNREFUSED"));
     dashboard.pollNow();
     await waitFor(
-      () => text(root, "#notice").includes("could not be polled"),
-      "the poll failure",
+      () => text(root, "#notice").includes("could not serve the latest graph"),
+      "the fetch failure",
     );
 
     expect(text(root, "#notice")).toContain("ECONNREFUSED");
@@ -742,7 +904,7 @@ describe("dashboard", () => {
     expect(text(root, "#details")).toContain("<script>alert(1)</script>");
   });
 
-  it("stops polling and releases the renderer and planner on disposal", async () => {
+  it("stops syncing and releases the renderer and planner on disposal", async () => {
     const { dashboard, client, renderer }: Harness = start();
     client.graphHandler = () =>
       Promise.resolve(
@@ -780,13 +942,13 @@ describe("dashboard", () => {
     expect(text(root, "#details")).toContain("Select a memory");
   });
 
-  it("clears a polling failure notice once a poll succeeds again", async () => {
+  it("clears a sync failure notice once a fetch succeeds again", async () => {
     const { dashboard, client, root } = start();
     client.graphHandler = () =>
       Promise.reject(new Error("connect ECONNREFUSED"));
     await waitFor(
-      () => text(root, "#notice").includes("could not be polled"),
-      "the poll failure",
+      () => text(root, "#notice").includes("could not serve the latest graph"),
+      "the fetch failure",
     );
     expect(dashboard.diagnostics().status).toBe("error");
 
@@ -809,7 +971,7 @@ describe("dashboard", () => {
     expect(text(root, "#notice")).toBe("");
     expect(dashboard.diagnostics().status).toBe("ready");
 
-    // A notice another action wrote is not the poll loop's to clear.
+    // A notice another action wrote is not the sync's to clear.
     element<HTMLButtonElement>(root, "#rebuild").click();
     await waitFor(
       () =>

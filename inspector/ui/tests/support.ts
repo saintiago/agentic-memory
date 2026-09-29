@@ -15,8 +15,14 @@ import type {
   SearchOutcome,
 } from "../../payloads.js";
 import type { Comparison, InspectorClient } from "../client.js";
+import type {
+  EventSocket,
+  GraphEventHandlers,
+  GraphEventStream,
+} from "../events.js";
 import type { SearchRequest } from "../results.js";
 import type { CameraSnapshot, DashboardRenderer } from "../renderer.js";
+import type { TimerScheduler } from "../timer.js";
 
 /** A stable UUID-shaped identity for the supplied index. */
 export const nodeId = (index: number): string =>
@@ -202,6 +208,139 @@ export class StubClient implements InspectorClient {
   compare(leftId: string, rightId: string): Promise<Comparison> {
     this.calls.compare.push({ leftId, rightId });
     return this.comparisonHandler(leftId, rightId);
+  }
+}
+
+/**
+ * The event-channel substitute: the dashboard subscribes here and the case delivers connection
+ * state and notifications. Like the live channel, `start()` resyncs by default.
+ */
+export class ScriptedEvents {
+  handlers: GraphEventHandlers | undefined;
+  started = 0;
+  stopped = 0;
+  /** Whether starting the stream delivers the resync of a fresh connection. */
+  autoResync = true;
+  readonly stream: GraphEventStream = {
+    start: () => {
+      this.started += 1;
+      if (this.autoResync) {
+        this.resync();
+      }
+    },
+    stop: () => {
+      this.stopped += 1;
+    },
+  };
+
+  /** The factory the dashboard subscribes with. */
+  readonly subscribe = (handlers: GraphEventHandlers): GraphEventStream => {
+    this.handlers = handlers;
+    return this.stream;
+  };
+
+  /** Deliver the resync of a fresh connection. */
+  resync(): void {
+    this.handlers?.onResync();
+  }
+
+  /** Deliver a graph-changed notification. */
+  changed(): void {
+    this.handlers?.onResync();
+  }
+
+  connected(): void {
+    this.handlers?.onStatus?.("connected");
+  }
+
+  reconnecting(): void {
+    this.handlers?.onStatus?.("reconnecting");
+  }
+}
+
+/** A timer scheduler the case advances explicitly, for bounded-backoff assertions. */
+export class ManualScheduler implements TimerScheduler {
+  #next = 1;
+  #now = 0;
+  readonly timers = new Map<number, { at: number; handler: () => void }>();
+
+  setTimeout(handler: () => void, delayMs: number): number {
+    const handle = this.#next;
+    this.#next += 1;
+    this.timers.set(handle, { at: this.#now + delayMs, handler });
+    return handle;
+  }
+
+  clearTimeout(handle: number): void {
+    this.timers.delete(handle);
+  }
+
+  /** The delay of the earliest pending timer, or undefined when none waits. */
+  get nextDelayMs(): number | undefined {
+    let earliest: number | undefined;
+    for (const timer of this.timers.values()) {
+      const delay = timer.at - this.#now;
+      if (earliest === undefined || delay < earliest) {
+        earliest = delay;
+      }
+    }
+    return earliest;
+  }
+
+  /** Advance the clock and run every timer that becomes due, including newly scheduled ones. */
+  advance(ms: number): void {
+    this.#now += ms;
+    for (;;) {
+      let due:
+        | { handle: number; timer: { at: number; handler: () => void } }
+        | undefined;
+      for (const [handle, timer] of this.timers) {
+        if (
+          timer.at <= this.#now &&
+          (due === undefined || timer.at < due.timer.at)
+        ) {
+          due = { handle, timer };
+        }
+      }
+      if (due === undefined) {
+        return;
+      }
+      this.timers.delete(due.handle);
+      due.timer.handler();
+    }
+  }
+}
+
+/** A WebSocket substitute the event-stream test drives frame by frame. */
+export class FakeSocket implements EventSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+
+  close(): void {
+    this.closed = true;
+  }
+
+  /** Simulate the handshake completing. */
+  open(): void {
+    this.onopen?.();
+  }
+
+  /** Simulate one received JSON text message. */
+  message(body: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(body) });
+  }
+
+  /** Simulate a raw (possibly malformed) text message. */
+  raw(text: string): void {
+    this.onmessage?.({ data: text });
+  }
+
+  /** Simulate the connection dropping. */
+  drop(): void {
+    this.onclose?.();
   }
 }
 

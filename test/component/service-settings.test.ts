@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  defaultArtifactsDirectory,
   defaultBodyLimitBytes,
   defaultServicePort,
   defaultShutdownGraceMs,
+  defaultUiDirectory,
   readServiceSettings,
 } from "../../service/settings.js";
 
@@ -28,6 +30,8 @@ describe("memory service settings", () => {
       bodyLimitBytes: defaultBodyLimitBytes,
       shutdownGraceMs: defaultShutdownGraceMs,
       dataDirectory: ".data/service",
+      uiDirectory: defaultUiDirectory,
+      artifactsDirectory: defaultArtifactsDirectory,
       qdrant: {
         url: "http://127.0.0.1:16333",
         collection: "notes",
@@ -51,6 +55,8 @@ describe("memory service settings", () => {
         AMEM_SERVICE_BODY_LIMIT_BYTES: "2048",
         AMEM_SERVICE_SHUTDOWN_GRACE_MS: "5000",
         AMEM_SERVICE_DATA_DIR: "/var/lib/amem/service",
+        AMEM_SERVICE_UI_DIR: "/srv/amem/ui",
+        AMEM_SERVICE_ARTIFACTS_DIR: "/var/lib/amem/projections",
         AMEM_QDRANT_API_KEY: "qdrant-key",
         AMEM_QDRANT_TIMEOUT_MS: "1000",
         AMEM_EMBEDDING_CACHE: "/tmp/embeddings",
@@ -64,6 +70,8 @@ describe("memory service settings", () => {
       bodyLimitBytes: 2048,
       shutdownGraceMs: 5000,
       dataDirectory: "/var/lib/amem/service",
+      uiDirectory: "/srv/amem/ui",
+      artifactsDirectory: "/var/lib/amem/projections",
       qdrant: {
         url: "http://127.0.0.1:16333",
         collection: "notes",

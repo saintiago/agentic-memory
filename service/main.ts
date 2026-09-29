@@ -1,7 +1,8 @@
 /**
  * Entry point of the local memory service: read the explicit host settings, open the durable
  * queue and take worker ownership, start the loopback `/v1` API independently of provider
- * initialization and stop everything on SIGINT or SIGTERM.
+ * initialization, serve the bundled read-only dashboard on the same listener and stop everything
+ * on SIGINT or SIGTERM.
  *
  * Run it with `npm run service` from the repository root; see service/README.md and
  * docs/service.md.
@@ -13,7 +14,13 @@ import { installServiceShutdownHandlers } from "./shutdown.js";
 const start = async (): Promise<void> => {
   // Every setting is validated before the journal, the listener or a provider is touched.
   const settings = readServiceSettings(process.env);
-  const runtime = await startMemoryService({ settings });
+  const runtime = await startMemoryService({
+    settings,
+    dashboard: {
+      uiDirectory: settings.uiDirectory,
+      artifactsDirectory: settings.artifactsDirectory,
+    },
+  });
   // Install signal handling before announcing readiness, so a supervisor that stops the service
   // as soon as it sees the listening line still gets the graceful path.
   installServiceShutdownHandlers(runtime, settings.shutdownGraceMs);
@@ -25,6 +32,10 @@ const start = async (): Promise<void> => {
   console.log(
     "Submissions are durable as soon as the API answers; retrieval and ingestion report " +
       "their availability through GET /v1/status.",
+  );
+  console.log(
+    `The dashboard is served at http://127.0.0.1:${String(runtime.port)}/ with live updates ` +
+      "on /api/events; the memory API stays available while providers or projection fail.",
   );
 };
 

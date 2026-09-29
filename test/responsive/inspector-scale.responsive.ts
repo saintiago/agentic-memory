@@ -8,8 +8,8 @@
  * Qdrant or UMAP.
  *
  * The next export is held open while the interactions run, so the update window is explicit
- * instead of racing the poll loop, and the preservation baseline is taken while the held export
- * proves the update has not been applied yet.
+ * instead of racing the notification-driven fetch, and the preservation baseline is taken while
+ * the held export proves the update has not been applied yet.
  *
  * A run without a browser or a built dashboard bundle fails with instructions instead of
  * reporting a pass.

@@ -1,6 +1,8 @@
 # Local memory inspection host
 
-The separate local host of the [Sigma memory dashboard](../docs/dashboard.md). It reads the
+The development host of the [Sigma memory dashboard](../docs/dashboard.md); deployment serves the
+same routes from the [bundled service](../service/README.md#bundled-dashboard) on the service's own
+listener. This host reads the
 [memory service API](../docs/service.md#api) for note details, search results and paginated stored
 vectors, projects those vectors in its own worker thread, serves the same-origin browser API on
 loopback and keeps the last completed view interactive while work is pending. It never opens a
@@ -11,7 +13,9 @@ renderer touches.
 
 ## Launching
 
-Start the [memory service](../service/README.md) first, then from the repository root:
+Deployment uses `npm run service`, which serves this dashboard and the memory API from one process
+on one port. To develop the dashboard against a separately running service, start that service
+first and then run, from the repository root:
 
 ```bash
 export AMEM_SERVICE_URL=http://127.0.0.1:4748
@@ -45,30 +49,35 @@ are an approximate embedding projection and labels a non-semantic fallback layou
 | Details                  | Original content, context, keywords, tags, provenance, the memory timestamp, the exact update time with its age (or `unknown`) and the capture time of the displayed view |
 | Stored-vector comparison | Original-space cosine similarity of the two most recently selected memories, with the capture time of the view that holds them and explicitly not a retrieval score       |
 
-Updates are asynchronous: the page polls `GET /api/graph`, parses and diffs each payload in a
-worker, applies the mutations to the existing Graphology graph in bounded batches and never
-recreates Sigma, so the camera and selection survive a refresh. The status line reports a running
-refresh and an in-progress application of a completed view. A failed poll or refresh keeps the last
-completed view and shows the error instead of an empty map. Returned memories the current view does
-not contain stay in the result list, are marked as not in the current map and request one paginated
-inspection refresh. Ages are recomputed without re-embedding or moving nodes. The map renders the
-graph after the first completed view is applied, so a large initial import costs one draw rather
-than one draw per batch, and it skips the link layer while the camera moves to keep zoom and pan
-responsive with tens of thousands of links.
+Updates are asynchronous: the page subscribes to the same-origin `/api/events` WebSocket channel
+before the first fetch, fetches `GET /api/graph` on every resync or `graph-changed` notification
+(serializing fetches and coalescing notifications that arrive during one), parses and diffs each
+payload in a worker, applies the mutations to the existing Graphology graph in bounded batches and
+never recreates Sigma, so the camera and selection survive a refresh. A disconnected channel is
+retried with bounded exponential backoff (1 to 30 seconds) and shown as reconnecting while the last
+displayed view stays put; every reconnect resyncs. The status line reports a running refresh and an
+in-progress application of a completed view. A failed fetch or refresh keeps the last completed
+view and shows the error instead of an empty map, and a failed fetch is retried on bounded backoff
+until a newer trigger supersedes it. Returned memories the current view does not contain stay in
+the result list, are marked as not in the current map and request one paginated inspection refresh.
+Ages are recomputed without re-embedding or moving nodes. The map renders the graph after the first
+completed view is applied, so a large initial import costs one draw rather than one draw per batch,
+and it skips the link layer while the camera moves to keep zoom and pan responsive with tens of
+thousands of links.
 
 ## Host settings
 
 Every setting comes from the host environment. A missing or malformed value fails before the
 service is contacted or a projection artifact is read.
 
-| Setting                           | Default           | Meaning                                                                               |
-| --------------------------------- | ----------------- | ------------------------------------------------------------------------------------- |
-| `AMEM_SERVICE_URL`                | required          | Memory service base URL; the host owns no collection, provider or credential settings |
-| `AMEM_SERVICE_TIMEOUT_MS`         | `120000`          | Whole-request timeout of every service call                                           |
-| `AMEM_INSPECTOR_PORT`             | `4747`            | Loopback port; `0` selects a free port                                                |
-| `AMEM_INSPECTOR_POLL_INTERVAL_MS` | `30000`           | Delay between periodic refreshes; `0` keeps the host to explicit refreshes            |
-| `AMEM_INSPECTOR_ARTIFACTS_DIR`    | `.data/inspector` | Directory of the disposable `projection.json` coordinates and their recorded identity |
-| `AMEM_INSPECTOR_UI_DIR`           | `inspector/ui`    | Static UI directory; it must exist, and `/` serves its `index.html`                   |
+| Setting                           | Default           | Meaning                                                                                                                                                  |
+| --------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AMEM_SERVICE_URL`                | required          | Memory service base URL; the host owns no collection, provider or credential settings                                                                    |
+| `AMEM_SERVICE_TIMEOUT_MS`         | `120000`          | Whole-request timeout of every service call                                                                                                              |
+| `AMEM_INSPECTOR_PORT`             | `4747`            | Loopback port; `0` selects a free port                                                                                                                   |
+| `AMEM_INSPECTOR_POLL_INTERVAL_MS` | `30000`           | Delay between this development host's periodic refreshes; `0` keeps it to explicit refreshes. The bundled service refreshes on completed writes instead. |
+| `AMEM_INSPECTOR_ARTIFACTS_DIR`    | `.data/inspector` | Directory of the disposable `projection.json` coordinates and their recorded identity                                                                    |
+| `AMEM_INSPECTOR_UI_DIR`           | `inspector/ui`    | Static UI directory; it must exist, and `/` serves its `index.html`                                                                                      |
 
 The service URL, timeouts and credentials belong to the service; the host configures none of them.
 The host obtains the collection and embedding-space identity from `GET /v1/status`, so an
@@ -77,14 +86,15 @@ current.
 
 ## Browser API
 
-| Route                          | Behavior                                                                           |
-| ------------------------------ | ---------------------------------------------------------------------------------- |
-| `GET /api/graph`               | The most recent completed view, or loading/error status with the last one kept     |
-| `GET /api/notes/:id`           | `GET /v1/notes/:id`; the complete current note or 404                              |
-| `POST /api/search`             | `{ query, limit?, linkedLimit? }` through `POST /v1/search`, in returned order     |
-| `POST /api/refresh`            | One paginated inspection refresh; 202 while it runs and coalesced once running     |
-| `POST /api/projection/rebuild` | A fresh fit on the next complete export; 202 while it runs                         |
-| `POST /api/compare`            | `{ leftId, rightId }` stored-vector cosine similarity of the latest completed view |
+| Route                          | Behavior                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `GET /api/graph`               | The most recent completed view, or loading/error status with the last one kept                   |
+| `GET /api/notes/:id`           | `GET /v1/notes/:id`; the complete current note or 404                                            |
+| `POST /api/search`             | `{ query, limit?, linkedLimit? }` through `POST /v1/search`, in returned order                   |
+| `POST /api/refresh`            | One paginated inspection refresh; 202 while it runs and coalesced once running                   |
+| `POST /api/projection/rebuild` | A fresh fit on the next complete export; 202 while it runs                                       |
+| `POST /api/compare`            | `{ leftId, rightId }` stored-vector cosine similarity of the latest completed view               |
+| `GET /api/events`              | WebSocket upgrade; `resync` on connect and `graph-changed` notifications; a plain request is 426 |
 
 Validation failures are 400, a note that the latest view or the collection does not contain is 404,
 a comparison before the first completed view is 409, and operation failures are 500 with a fixed
@@ -130,11 +140,11 @@ is fitted fresh (that process's initial fit) instead of transforming into a layo
 reproduce. Within one run, later exports transform new or changed vectors and keep every other
 coordinate.
 
-On SIGINT or SIGTERM, the standalone host stops polling, cancels pending jobs, terminates the
-projection worker and disconnects all HTTP clients, including pending detail/search requests. It
-then exits explicitly: terminating this dedicated process releases any client sockets and timers
-without waiting for their timeouts. `InspectionSession.stop()` alone cancels inspection work; the
-process owns its remaining resources.
+On SIGINT or SIGTERM, the standalone host stops its periodic refresh, closes the WebSocket
+subscriptions, cancels pending jobs, terminates the projection worker and disconnects all HTTP
+clients, including pending detail/search requests. It then exits explicitly: terminating this
+dedicated process releases any client sockets and timers without waiting for their timeouts.
+`InspectionSession.stop()` alone cancels inspection work; the process owns its remaining resources.
 
 ## Checks
 
@@ -145,7 +155,11 @@ the build, including the host's component tests:
   loading/ready/error graph states;
 - the composition: the host configures only the service URL and every read travels over `/v1`;
 - the refresh lifecycle: paginated traversal, coalesced requests, explicit rebuilds, retained views
-  after failures, cancelled work on shutdown and the stored projection offered to a restarted host;
+  after failures, bounded-backoff recovery of a failed refresh, cancelled work on shutdown and the
+  stored projection offered to a restarted host;
+- the notification channel: the browser handshake, the resync of every connection, coalesced
+  `graph-changed` frames, bounded send buffers that disconnect a slow client, control frames and
+  the refusal of an untrusted handshake before the upgrade;
 - the real UMAP fit, transforms that keep the fitted anchors, removal-only refreshes, repeated
   equivalent vectors, the non-semantic fallback, comparisons of one completed export and
   worker-thread execution, and a changed collection or embedding space discarding the live
@@ -164,8 +178,10 @@ classifications, a zero-result search, a superseded request, retained views afte
 unmapped results and their returned evidence, the details and comparison panels, details that are
 re-read when a completed view changes them, comparison answers a later selection supersedes, the
 inline planner's fallback after a worker failure, atomic projection refits, camera and selection
-preservation across a refresh, and source text that stays inert. `npm run validate` also builds
-the browser bundle, so a broken bundle fails the aggregate check.
+preservation across a refresh, notification-driven fetches with a coalesced rerun and bounded
+backoff, the reconnecting indication and resync after a reconnect, the event socket's own
+handshake/resync/reconnect behavior, and source text that stays inert. `npm run validate` also
+builds the browser bundle, so a broken bundle fails the aggregate check.
 
 ### Responsive browser checks
 
@@ -200,10 +216,10 @@ i7-13700KF, 24 cores, 16 GiB, WSL2; Chromium 153 with software WebGL through Swi
 | Measurement                       | Value                                                                                                            |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Corpus and update                 | 10,000 memories and 49,996 directed links; refresh adds 500 and 2,500                                            |
-| Initial load                      | 2298 ms from navigation to the displayed view; 167 ms to apply it in 12 batches                                  |
-| Refresh, request to applied view  | 21177 ms wall clock including the held interaction window; 9 ms to apply the diff in 1 batch                     |
-| Interaction during the update     | search → results panel 2642 ms, click → panels 43 ms, wheel → camera 1260 ms, drag → camera 2833 ms              |
-| Main thread                       | 29 long tasks, longest 1370 ms; frame gaps p95 1321 ms over 94 samples                                           |
+| Initial load                      | 2029 ms from navigation to the displayed view; 165 ms to apply it in 12 batches                                  |
+| Refresh, request to applied view  | 14818 ms wall clock including the held interaction window; 9 ms to apply the diff in 1 batch                     |
+| Interaction during the update     | search → results panel 2627 ms, click → panels 43 ms, wheel → camera 1284 ms, drag → camera 2396 ms              |
+| Main thread                       | 23 long tasks, longest 1346 ms; frame gaps p95 1253 ms over 96 samples                                           |
 | Preservation and failure handling | interaction ran while pending, viewport drift 0 px, camera and selection preserved, failed refresh kept the view |
 
 The browser fell back to software WebGL in this environment, so one full redraw of the 50,000-link

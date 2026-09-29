@@ -104,12 +104,30 @@ class GatedEmbeddedStore extends PagedEmbeddedStore {
   }
 }
 
+/** An export that fails a controlled number of times before serving the stored records. */
+class FlakyEmbeddedStore extends PagedEmbeddedStore {
+  failures = 0;
+
+  override async pageEmbedded(
+    limit: number,
+    cursor?: Cursor,
+  ): Promise<EmbeddedPage> {
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("The collection is temporarily unavailable.");
+    }
+    return super.pageEmbedded(limit, cursor);
+  }
+}
+
 const startHost = async (
   options: {
     store?: PagedEmbeddedStore;
     runner?: RecordingRunner;
     reads?: ScriptedReads;
     pollIntervalMs?: number;
+    retryBaseMs?: number;
+    retryMaxMs?: number;
     pageLimit?: number;
     start?: boolean;
     artifactsDirectory?: string;
@@ -138,6 +156,12 @@ const startHost = async (
       options.artifactsDirectory ?? path.join(directory, "artifacts"),
     ),
     pollIntervalMs: options.pollIntervalMs ?? 0,
+    ...(options.retryBaseMs === undefined
+      ? {}
+      : { retryBaseMs: options.retryBaseMs }),
+    ...(options.retryMaxMs === undefined
+      ? {}
+      : { retryMaxMs: options.retryMaxMs }),
     ...(options.pageLimit === undefined
       ? {}
       : { pageLimit: options.pageLimit }),
@@ -267,6 +291,47 @@ describe("inspection host", () => {
       { limit: 2, cursor: 2 },
       { limit: 2, cursor: 4 },
     ]);
+  });
+
+  it("retries a failed refresh on its own bounded backoff until it succeeds", async () => {
+    const store = new FlakyEmbeddedStore();
+    store.seed(record(0), record(1));
+    store.failures = 2;
+    const host = await startHost({ store, retryBaseMs: 20, retryMaxMs: 40 });
+
+    // No manual refresh and no memory write: the session recovers the failed export itself.
+    await waitFor(
+      () => host.session.snapshot().status === "ready",
+      "the recovered view",
+    );
+    expect(store.failures).toBe(0);
+    const graph = await getGraph(host);
+    expect(
+      (graph.body.view as { nodes: unknown[] } | undefined)?.nodes,
+    ).toHaveLength(2);
+  });
+
+  it("serves the graph notification channel on the same listener", async () => {
+    const host = await startHost();
+    await host.session.settled();
+
+    const first = await new Promise<string>((resolve, reject) => {
+      const socket = new WebSocket(
+        `ws://127.0.0.1:${String(host.server.port)}/api/events`,
+      );
+      socket.addEventListener("message", (event: MessageEvent) => {
+        resolve(String(event.data));
+        socket.close();
+      });
+      socket.addEventListener("error", () => {
+        reject(new Error("The event channel refused the connection."));
+      });
+    });
+    expect(JSON.parse(first)).toEqual({ type: "resync" });
+
+    // A plain request cannot read the notification channel instead of an upgrade.
+    const plain = await fetch(`${host.baseUrl}/api/events`);
+    expect(plain.status).toBe(426);
   });
 
   it("answers details, searches and comparisons over the public read surface", async () => {
