@@ -61,6 +61,7 @@ experiment or existing ticket does not establish a requirement.
 - [Memory operations and failures](docs/memory.md)
 - [Durable ingestion queue and crash recovery](docs/ingestion-queue.md)
 - [Local memory service and HTTP API](docs/service.md)
+- [Agent memory MCP tools](docs/mcp.md)
 - [NoteStore and Qdrant](docs/note-store.md)
 - [Embeddings](docs/embeddings.md)
 - [LanguageModel boundary](docs/language-model.md)
