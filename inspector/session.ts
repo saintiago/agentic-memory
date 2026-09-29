@@ -60,6 +60,7 @@ interface Export {
 }
 
 interface QueuedJob {
+  /** Only a new explicit request, not the running job's unfulfilled rebuild intent. */
   readonly rebuild: boolean;
 }
 
@@ -231,8 +232,9 @@ export class InspectionSession {
   }
 
   /**
-   * Serialize refresh jobs and coalesce requests made while one is running. A requested fresh fit
-   * is part of the session state, so a coalesced follow-up or a retry after a failure keeps it.
+   * Serialize refresh jobs and coalesce requests made while one is running. Queued requests keep
+   * only explicit rebuild intent; unfinished intent is inherited when the next job starts, after
+   * the current job has either fulfilled it or failed.
    */
   #queue(rebuild: boolean): void {
     if (this.#stopped) {
@@ -240,14 +242,12 @@ export class InspectionSession {
     }
     // Any new trigger supersedes a pending retry of an earlier failure.
     this.#clearRetry();
-    const freshFit = rebuild || this.#rebuildRequested;
-    if (freshFit) {
-      this.#rebuildRequested = true;
-    }
     if (this.#running) {
-      this.#queued = { rebuild: freshFit || (this.#queued?.rebuild ?? false) };
+      this.#queued = { rebuild: rebuild || (this.#queued?.rebuild ?? false) };
       return;
     }
+    const freshFit = rebuild || this.#rebuildRequested;
+    this.#rebuildRequested = freshFit;
     this.#running = true;
     this.#notify();
     this.#current = this.#run(freshFit).finally(() => {

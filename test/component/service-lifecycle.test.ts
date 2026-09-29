@@ -2,10 +2,12 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createGraphEvents } from "../../inspector/events.js";
 import { startMemoryService } from "../../service/lifecycle.js";
 import type { ServiceSettings } from "../../service/settings.js";
+import { RecordingRunner } from "./support/inspection.js";
 import {
   ControlledProviders,
   postJson,
@@ -110,15 +112,33 @@ describe("service lifecycle", () => {
   it("refuses a second service that names the same queue", async () => {
     const harness = await openService();
     const providers = new ControlledProviders();
-    await expect(
-      startMemoryService({
-        settings: {
-          ...serviceSettings(harness.directory, { port: 0 }),
-        },
-        factories: providers.factories,
-        queuePollIntervalMs: 10,
-      }),
-    ).rejects.toThrow(/already owns the ingestion queue/);
+    const runner = new RecordingRunner();
+    const events = createGraphEvents({});
+    const closeEvents = vi.spyOn(events, "close");
+    try {
+      await expect(
+        startMemoryService({
+          settings: serviceSettings(harness.directory, { port: 0 }),
+          factories: providers.factories,
+          queuePollIntervalMs: 10,
+          dashboard: {
+            uiDirectory: harness.directory,
+            artifactsDirectory: path.join(harness.directory, "artifacts"),
+            runner,
+            events,
+          },
+        }),
+      ).rejects.toThrow(/already owns the ingestion queue/);
+      expect(runner.closed).toBe(true);
+      expect(closeEvents).toHaveBeenCalledOnce();
+      expect(runner.projections).toEqual([]);
+      // Rejecting the duplicate must leave the original owner usable.
+      expect((await requestJson(harness.url("/v1/status"))).status).toBe(200);
+    } finally {
+      await runner.close();
+      await events.close();
+      closeEvents.mockRestore();
+    }
   });
 
   it("restarts a stopped ingestion worker without a new handoff", async () => {

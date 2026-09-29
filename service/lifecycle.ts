@@ -135,6 +135,7 @@ export const startMemoryService = async (
     // Worker ownership is acquired before the listener is exposed.
     await queue.start();
   } catch (cause) {
+    await dashboard?.stop();
     await queue.close();
     if (cause instanceof QueueWorkerLockedError) {
       throw new Error(

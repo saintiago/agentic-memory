@@ -9,6 +9,7 @@ import {
   type EmbeddedPage,
 } from "../../src/index.js";
 import { createProjectionArtifactStore } from "../../inspector/artifacts.js";
+import { createGraphEvents } from "../../inspector/events.js";
 import { createThreadProjectionRunner } from "../../inspector/projection-runner.js";
 import {
   startInspectionServer,
@@ -635,6 +636,100 @@ describe("inspection host", () => {
     expect(runner.projections).toHaveLength(2);
     expect(runner.projections[0]?.rebuild).toBe(false);
     expect(runner.projections[1]?.rebuild).toBe(true);
+  });
+
+  it.each([false, true])(
+    "runs ordinary queued refreshes without refitting after a rebuild (explicit follow-up: %s)",
+    async (explicitFollowUp) => {
+      const runner = new RecordingRunner();
+      const host = await startHost({ runner });
+      await host.session.settled();
+      let release: (() => void) | undefined;
+      runner.control({
+        project: (request) =>
+          new Promise((resolve) => {
+            release = () => resolve(scriptedArtifact(request));
+          }),
+      });
+
+      host.session.rebuild();
+      await waitFor(() => runner.projections.length === 2, "the rebuild");
+      host.session.refresh();
+      if (explicitFollowUp) host.session.rebuild();
+      host.session.refresh();
+      release?.();
+      await waitFor(() => runner.projections.length === 3, "the queued job");
+      // A write/manual invalidation during the follow-up must also stay an ordinary refresh.
+      host.session.refresh();
+      host.session.refresh();
+      release?.();
+      await waitFor(() => runner.projections.length === 4, "the next refresh");
+      release?.();
+      await host.session.settled();
+
+      expect(runner.projections.map((request) => request.rebuild)).toEqual([
+        false,
+        true,
+        explicitFollowUp,
+        false,
+      ]);
+      expect(host.session.snapshot().error).toBeUndefined();
+    },
+  );
+
+  it("keeps a failed rebuild due for an ordinary queued refresh, then clears it", async () => {
+    const runner = new RecordingRunner();
+    const host = await startHost({ runner });
+    await host.session.settled();
+    let fail: (() => void) | undefined;
+    runner.control({
+      project: () =>
+        new Promise((_resolve, reject) => {
+          fail = () => reject(new Error("temporary projection failure"));
+        }),
+    });
+    host.session.rebuild();
+    await waitFor(() => runner.projections.length === 2, "the rebuild");
+    host.session.refresh();
+    runner.control({ project: async (request) => scriptedArtifact(request) });
+    fail?.();
+    await host.session.settled();
+    host.session.refresh();
+    await host.session.settled();
+
+    expect(runner.projections.map((request) => request.rebuild)).toEqual([
+      false,
+      true,
+      true,
+      false,
+    ]);
+    expect(host.session.snapshot().error).toBeUndefined();
+  });
+
+  it("closes events and unsubscribes when the development listener cannot bind", async () => {
+    const host = await startHost();
+    await host.session.settled();
+    const events = createGraphEvents({});
+    const closeEvents = vi.spyOn(events, "close");
+    const notify = vi.spyOn(events, "notify");
+    try {
+      await expect(
+        startInspectionServer({
+          reads: host.reads,
+          session: host.session,
+          uiDirectory: path.join(host.directory, "ui"),
+          port: host.server.port,
+          events,
+        }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(closeEvents).toHaveBeenCalledOnce();
+      host.session.refresh();
+      await host.session.settled();
+      expect(notify).not.toHaveBeenCalled();
+      expect((await getGraph(host)).status).toBe(200);
+    } finally {
+      await events.close();
+    }
   });
 
   it("stops an in-flight export before its next page or projection", async () => {

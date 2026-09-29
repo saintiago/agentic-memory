@@ -137,13 +137,19 @@ export const startInspectionServer = async (
       socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
     }
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, boundHost, () => {
-      server.off("error", reject);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, boundHost, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (cause) {
+    unsubscribe();
+    await events.close();
+    throw cause;
+  }
   const address = server.address();
   const port =
     typeof address === "object" && address !== null
