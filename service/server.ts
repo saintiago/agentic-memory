@@ -2,20 +2,29 @@
  * The HTTP surface of the local memory service: the documented `/v1` JSON routes on loopback.
  * Requests and responses are validated against the owned schemas, browser origins and hosts must
  * match the bound service authority, state-changing requests must be JSON, and failures become
- * one sanitized error body.
+ * one sanitized error body. The optional bundled dashboard mounts the read-only inspection routes
+ * and its static UI on the same listener; `/v1` stays unchanged next to them.
  *
- * See docs/service.md#api and docs/service.md#configuration-and-local-access.
+ * See docs/service.md#api, docs/service.md#bundled-dashboard and
+ * docs/service.md#configuration-and-local-access.
  */
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import type { Duplex } from "node:stream";
 import { z } from "zod";
 
 import { noteIdSchema, noteSchema, type Cursor } from "../src/index.js";
 import { decodeCursor, InvalidCursorError } from "./cursor.js";
 import { invalidRequest, payloadTooLarge, ServiceFailure } from "./errors.js";
+import {
+  assertTrustedAuthority,
+  bindAuthority,
+  UntrustedAuthorityError,
+  type BoundAuthority,
+} from "./loopback-authority.js";
 import {
   inspectionPageSchema,
   notesPageSchema,
@@ -52,6 +61,19 @@ export interface MemoryServiceServerOptions {
   readonly bodyLimitBytes: number;
   /** The bound host; loopback only unless a future deployment review changes it. */
   readonly host?: string;
+  /**
+   * The bundled read-only dashboard, mounted on this listener. It claims every path outside
+   * `/v1`, so unknown API routes stay API errors and a browser never sees an HTML fallback.
+   */
+  readonly dashboard?: BundledDashboardSurface;
+}
+
+/** The dashboard surface one listener mounts next to the memory API. */
+export interface BundledDashboardSurface {
+  /** Serve one dashboard request (browser API or static UI); only called for non-`/v1` paths. */
+  handle(request: IncomingMessage, response: ServerResponse): Promise<boolean>;
+  /** Claim one WebSocket upgrade; returns false when the request names another path. */
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean;
 }
 
 /** A running service listener. */
@@ -61,14 +83,6 @@ export interface MemoryServiceServer {
   close(): Promise<void>;
   /** Resolve once no accepted request is still being handled. */
   settled(): Promise<void>;
-}
-
-/** The bound authority requests are resolved with and validated against. */
-interface BoundAuthority {
-  /** The lowercase `host:port` the listener owns. */
-  readonly authority: string;
-  /** Every authority trusted as this service. */
-  readonly trusted: ReadonlySet<string>;
 }
 
 const uuidSchema = z.uuid();
@@ -127,52 +141,22 @@ const sendFailure = (
   sendJson(response, failure.status, serviceErrorSchema, body, headers);
 };
 
-/** Loopback host spellings a local browser may legitimately use to reach the service. */
-const loopbackHosts = ["127.0.0.1", "::1", "localhost"] as const;
-
-/** One lowercase `host:port` authority key; IPv6 hosts stay bracketed as URLs spell them. */
-const authorityKey = (host: string, port: number): string =>
-  `${host.includes(":") ? `[${host}]` : host}:${String(port)}`.toLowerCase();
-
-/** The authorities trusted as this service: the bound host and, on loopback, its aliases. */
-const trustedAuthorities = (
-  host: string,
-  port: number,
-): ReadonlySet<string> => {
-  const trusted = new Set([authorityKey(host, port)]);
-  if ((loopbackHosts as readonly string[]).includes(host)) {
-    for (const alias of loopbackHosts) {
-      trusted.add(authorityKey(alias, port));
-    }
-  }
-  return trusted;
-};
-
-/**
- * Refuse a request that does not name this service. The Host header must be the bound loopback
- * authority, so a hostname rebound to the loopback address never matches; a browser Origin must
- * name a trusted authority as well, instead of whatever Host the request itself supplied.
- */
-const assertTrustedAuthority = (
+/** Refuse a request that does not name the bound loopback authority. */
+const assertTrustedRequest = (
   request: IncomingMessage,
-  trusted: ReadonlySet<string>,
+  bound: BoundAuthority,
 ): void => {
-  const host = request.headers.host;
-  if (host === undefined || !trusted.has(host.toLowerCase())) {
-    throw invalidRequest("The request host is not the local memory service.");
-  }
-  const origin = request.headers.origin;
-  if (origin === undefined) {
-    return;
-  }
-  let parsed: URL;
   try {
-    parsed = new URL(origin);
-  } catch {
-    throw invalidRequest("The request Origin is not trusted.");
-  }
-  if (parsed.protocol !== "http:" || !trusted.has(parsed.host.toLowerCase())) {
-    throw invalidRequest("The request Origin is not trusted.");
+    assertTrustedAuthority(request, bound);
+  } catch (cause) {
+    if (cause instanceof UntrustedAuthorityError) {
+      throw invalidRequest(
+        cause.reason === "origin"
+          ? "The request Origin is not trusted."
+          : "The request host is not the local memory service.",
+      );
+    }
+    throw cause;
   }
 };
 
@@ -311,7 +295,17 @@ const handleRequest = async (
   const method = request.method ?? "GET";
   const url = new URL(request.url ?? "/", `http://${bound.authority}`);
   const pathname = url.pathname;
-  assertTrustedAuthority(request, bound.trusted);
+  assertTrustedRequest(request, bound);
+
+  if (
+    options.dashboard !== undefined &&
+    pathname !== "/v1" &&
+    !pathname.startsWith("/v1/")
+  ) {
+    // The dashboard owns `/`, its assets and `/api`; unknown routes there stay API errors.
+    await options.dashboard.handle(request, response);
+    return;
+  }
 
   if (pathname === "/v1/observations") {
     if (method !== "POST") {
@@ -446,6 +440,54 @@ export const startMemoryServiceServer = async (
     inflight.add(handled);
     void handled.finally(() => inflight.delete(handled));
   });
+  if (options.dashboard !== undefined) {
+    const dashboard = options.dashboard;
+    server.on("upgrade", (request, socket, head) => {
+      try {
+        // The loopback authority rules hold for the handshake exactly as for an HTTP request.
+        assertTrustedRequest(request, bound);
+      } catch (cause) {
+        const failure =
+          cause instanceof ServiceFailure
+            ? cause
+            : new ServiceFailure({
+                status: 500,
+                code: "internal",
+                message: "The memory service could not serve the request.",
+                retryable: false,
+                cause,
+              });
+        const body = JSON.stringify({
+          error: {
+            code: failure.code,
+            message: failure.message,
+            retryable: failure.retryable,
+          },
+        });
+        socket.end(
+          `HTTP/1.1 ${String(failure.status)} ` +
+            `${failure.status === 400 ? "Bad Request" : "Internal Server Error"}\r\n` +
+            "content-type: application/json; charset=utf-8\r\n" +
+            "connection: close\r\n" +
+            `content-length: ${String(Buffer.byteLength(body))}\r\n\r\n${body}`,
+        );
+        return;
+      }
+      let claimed = false;
+      try {
+        claimed = dashboard.upgrade(request, socket, head);
+      } catch (cause) {
+        console.error(
+          `[service] ${request.method ?? "GET"} ${request.url ?? ""} upgrade failed:`,
+          cause,
+        );
+      }
+      if (!claimed) {
+        // An upgrade the dashboard does not know is refused instead of left half-open.
+        socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n");
+      }
+    });
+  }
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(options.port, boundHost, () => {
@@ -458,10 +500,7 @@ export const startMemoryServiceServer = async (
     typeof address === "object" && address !== null
       ? address.port
       : options.port;
-  const bound = {
-    authority: authorityKey(boundHost, port),
-    trusted: trustedAuthorities(boundHost, port),
-  } satisfies BoundAuthority;
+  const bound = bindAuthority(boundHost, port);
   return {
     port,
     close: async () => {

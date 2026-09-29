@@ -22,8 +22,9 @@ The inspection module lives in `inspector/` and is composed by `npm run service`
 settings and checks are documented in [inspector/README.md](../inspector/README.md). The browser UI
 lives in `inspector/ui/` as TypeScript modules — a host client, a worker that parses and diffs
 served payloads, a Graphology display model, inert DOM panels and the Sigma adapter — and
-`npm run inspector:build` bundles them for the host to serve. Only those modules import Sigma, so
-the data access, projection and display contracts stay independent of the renderer.
+`npm run inspector:build` bundles them into the served directory together with the entry page and
+its stylesheet. Only those modules import Sigma, so the data access, projection and display
+contracts stay independent of the renderer.
 
 Projection runs outside the rendering thread. Use a maintained UMAP implementation with cosine
 metric and support for transforming new vectors into an existing fitted projection. Pin its version
@@ -253,9 +254,10 @@ request takes precedence over an older request that finishes afterward.
 
 ## Live updates with Sigma
 
-Begin with manual refresh and periodic polling of the public inspection export. Diff by stable IDs
-and apply successful refreshes to the existing Graphology instance; do not recreate Sigma each time.
-No runtime event bus or durable update stream is required for this first inspection tool.
+Consume the completed views delivered over the [WebSocket channel](#websocket-updates) and the
+manual refresh actions. Diff by stable IDs and apply successful refreshes to the existing
+Graphology instance; do not recreate Sigma each time. The channel carries notifications, not an
+event log: `GET /api/graph` stays the authoritative snapshot source and every reconnect resyncs.
 
 - Add/remove nodes and directed edges through Graphology mutations as they appear/disappear in a
   completed export. Never infer deletion from an incomplete page traversal or failed refresh.

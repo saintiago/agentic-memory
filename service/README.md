@@ -2,28 +2,32 @@
 
 The separate local process of the [documented memory service](../docs/service.md). It owns one
 configured collection, one durable [ingestion queue](../docs/ingestion-queue.md), one shared pinned
-encoder and the loopback `/v1` HTTP API. Producers submit observations over HTTP; the service
-accepts them durably and its supervised worker applies them through Memory's public prepare/apply
-contract. Clients never open the queue files, load an encoder or write the collection.
+encoder and the loopback `/v1` HTTP API, and it serves the read-only
+[Sigma dashboard](../docs/dashboard.md) at `/` on the same listener. Producers submit observations
+over HTTP; the service accepts them durably and its supervised worker applies them through Memory's
+public prepare/apply contract. Clients never open the queue files, load an encoder or write the
+collection.
 
 The implementation lives here:
 
-| Module                | Responsibility                                                                         |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `main.ts`             | Entry point: settings, startup, signal handling                                        |
-| `settings.ts`         | Every `AMEM_*` host setting, validated before the journal or a provider is opened      |
-| `lifecycle.ts`        | Composition: journal and worker ownership first, provider initialization in background |
-| `providers.ts`        | Lazy provider stack with bounded retries and per-capability availability               |
-| `scheduler.ts`        | Bounded, fair admission of inference shared by ingestion and search                    |
-| `encoder-host.ts`     | Host side of the shared encoder thread: load, inference requests and release           |
-| `encoder-worker.ts`   | Worker entry that loads the pinned encoder and serves inference off the HTTP loop      |
-| `encoder-protocol.ts` | The inference message protocol and its pure handler                                    |
-| `service.ts`          | Submission, retrieval, inspection and availability behavior behind the HTTP layer      |
-| `server.ts`           | The `/v1` routes, request/response validation, origin and body rules, error mapping    |
-| `client.ts`           | The typed, validating client boundary consumers and the dashboard host use             |
-| `supervisor.ts`       | Restarts a stopped ingestion worker inside the service process                         |
-| `openapi.json`        | The published OpenAPI 3.1 definition of exactly the implemented routes                 |
-| `model-transport.ts`  | The OpenAI-compatible LanguageModel transport the service composes                     |
+| Module                  | Responsibility                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `main.ts`               | Entry point: settings, startup, signal handling                                              |
+| `settings.ts`           | Every `AMEM_*` host setting, validated before the journal or a provider is opened            |
+| `lifecycle.ts`          | Composition: journal and worker ownership first, provider initialization in background       |
+| `providers.ts`          | Lazy provider stack with bounded retries and per-capability availability                     |
+| `scheduler.ts`          | Bounded, fair admission of inference shared by ingestion and search                          |
+| `encoder-host.ts`       | Host side of the shared encoder thread: load, inference requests and release                 |
+| `encoder-worker.ts`     | Worker entry that loads the pinned encoder and serves inference off the HTTP loop            |
+| `encoder-protocol.ts`   | The inference message protocol and its pure handler                                          |
+| `service.ts`            | Submission, retrieval, inspection and availability behavior behind the HTTP layer            |
+| `server.ts`             | The `/v1` routes, request/response validation, origin, body and upgrade rules, error mapping |
+| `dashboard.ts`          | The bundled dashboard: in-process inspection composition, routes and event channel           |
+| `loopback-authority.ts` | The `Host`/`Origin` loopback rules the HTTP API and the event handshake share                |
+| `client.ts`             | The typed, validating client boundary consumers and the dashboard host use                   |
+| `supervisor.ts`         | Restarts a stopped ingestion worker inside the service process                               |
+| `openapi.json`          | The published OpenAPI 3.1 definition of exactly the implemented routes                       |
+| `model-transport.ts`    | The OpenAI-compatible LanguageModel transport the service composes                           |
 
 ## Launching
 
@@ -52,8 +56,10 @@ or shutdown timers, and one loaded encoder still serves both ingestion and searc
 scheduler serializes inference; `GET /v1/status` reports a capability as unavailable from the
 moment a provider failure is observed until that capability serves again.
 
-`npm run service` runs `service/main.ts` through the pinned `tsx` loader. The process stops on
-`SIGINT` or `SIGTERM`: it stops admitting requests, settles accepted requests and the active
+`npm run service` first builds the served dashboard (`npm run inspector:build`) and then runs
+`service/main.ts` through the pinned `tsx` loader, so one process, one port and one configuration
+serve the memory API and the dashboard. The process stops on `SIGINT` or `SIGTERM`: it stops
+admitting requests, settles accepted requests and the active
 operation, closes the journal and exits. If it does not stop within
 `AMEM_SERVICE_SHUTDOWN_GRACE_MS`, the host forces the exit; the durable journal holds every accepted
 observation and the next start replays interrupted insertion plans before later mutations.
@@ -85,6 +91,34 @@ The service also supervises the pieces a crash would otherwise strand: a failed 
 initialization keeps retrying with bounded backoff, and a stopped ingestion worker is restarted
 inside the process.
 
+## Bundled dashboard
+
+The same process, port and configuration serve the dashboard; a separate inspection process is not
+required for deployment.
+
+| Route              | Served                                                                                                   |
+| ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `/` and its assets | The built Sigma dashboard (`AMEM_SERVICE_UI_DIR`, built by `npm run inspector:build`)                    |
+| `/api/...`         | The [browser API](../docs/dashboard.md#browser-api) and the `/api/events` WebSocket notification channel |
+| `/v1/...`          | The unchanged memory API; unknown routes answer API errors and never an HTML fallback                    |
+
+The dashboard composes the service's own public read, search and paginated vector capabilities
+in-process: it does not call the service over HTTP, open another database client, load another
+encoder or write a memory. Projection runs in a service-owned background worker, and the listener
+answers while the first export and projection are still running. A failed export or projection
+keeps the last completed view and an explicit error, while submission and the rest of the API stay
+available; a failed refresh is retried on bounded backoff and every completed ingestion or recovery
+write invalidates the projected view, so stored notes appear without polling. A browser subscribes
+to `/api/events` (resync on connect, coalesced `graph-changed` notifications, bounded send buffers)
+and reconnects with bounded backoff while keeping the last displayed view; the README of the
+[development host](../inspector/README.md) describes the UI behavior.
+
+A missing dashboard build only affects `/`: it answers an explicit dashboard-unavailable response
+while the memory API keeps serving. `npm run service` builds the assets first, so a production
+install has them; set `AMEM_SERVICE_UI_DIR` when the dashboard lives elsewhere. Shutdown owns the
+WebSocket connections, the projection worker, the refresh timers and the HTTP listener in addition
+to the queue and providers.
+
 ## Settings
 
 Every setting comes from the host environment; nothing is discovered from Nexus. A missing or
@@ -94,23 +128,25 @@ model ID, credential and request bounds are validated before the durable journal
 bound, so a corrected configuration starts a fresh queue instead of a journal already owned by an
 unusable endpoint.
 
-| Setting                          | Default            | Meaning                                                                 |
-| -------------------------------- | ------------------ | ----------------------------------------------------------------------- |
-| `AMEM_SERVICE_PORT`              | `4748`             | Loopback port; `0` selects a free port                                  |
-| `AMEM_SERVICE_DATA_DIR`          | `.data/service`    | Durable queue directory; keep it outside temporary and task directories |
-| `AMEM_SERVICE_BODY_LIMIT_BYTES`  | `1048576`          | Maximum JSON body size in UTF-8 bytes                                   |
-| `AMEM_SERVICE_SHUTDOWN_GRACE_MS` | `30000`            | Grace period before the host forces an exit                             |
-| `AMEM_QDRANT_URL`                | required           | Qdrant endpoint of the service-owned collection                         |
-| `AMEM_QDRANT_COLLECTION`         | required           | The one collection this service owns                                    |
-| `AMEM_QDRANT_API_KEY`            | none               | Qdrant credential; never returned to clients                            |
-| `AMEM_QDRANT_TIMEOUT_MS`         | `120000`           | Qdrant request timeout                                                  |
-| `AMEM_EMBEDDING_CACHE`           | `.data/embeddings` | Pinned encoder artifact cache shared by ingestion and search            |
-| `AMEM_ALLOW_EMBEDDING_DOWNLOADS` | `true`             | Whether a missing pinned encoder artifact may be downloaded             |
-| `AMEM_MODEL_ENDPOINT`            | required           | Full chat-completions URL of the model the service invokes              |
-| `AMEM_MODEL_ID`                  | required           | Provider model ID                                                       |
-| `AMEM_MODEL_API_KEY`             | none               | Model credential; never returned to clients                             |
-| `AMEM_MODEL_TIMEOUT_MS`          | `120000`           | Model request timeout                                                   |
-| `AMEM_MODEL_MAX_OUTPUT_TOKENS`   | `6000`             | Provider output-token budget for one request                            |
+| Setting                          | Default                   | Meaning                                                                                                       |
+| -------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `AMEM_SERVICE_PORT`              | `4748`                    | Loopback port; `0` selects a free port                                                                        |
+| `AMEM_SERVICE_DATA_DIR`          | `.data/service`           | Durable queue directory; keep it outside temporary and task directories                                       |
+| `AMEM_SERVICE_BODY_LIMIT_BYTES`  | `1048576`                 | Maximum JSON body size in UTF-8 bytes                                                                         |
+| `AMEM_SERVICE_SHUTDOWN_GRACE_MS` | `30000`                   | Grace period before the host forces an exit                                                                   |
+| `AMEM_SERVICE_UI_DIR`            | `inspector/ui/build`      | The complete built dashboard (entry page, stylesheet, bundle) served at `/`; a missing build only affects `/` |
+| `AMEM_SERVICE_ARTIFACTS_DIR`     | `.data/service-inspector` | Disposable projection artifacts of the bundled dashboard                                                      |
+| `AMEM_QDRANT_URL`                | required                  | Qdrant endpoint of the service-owned collection                                                               |
+| `AMEM_QDRANT_COLLECTION`         | required                  | The one collection this service owns                                                                          |
+| `AMEM_QDRANT_API_KEY`            | none                      | Qdrant credential; never returned to clients                                                                  |
+| `AMEM_QDRANT_TIMEOUT_MS`         | `120000`                  | Qdrant request timeout                                                                                        |
+| `AMEM_EMBEDDING_CACHE`           | `.data/embeddings`        | Pinned encoder artifact cache shared by ingestion and search                                                  |
+| `AMEM_ALLOW_EMBEDDING_DOWNLOADS` | `true`                    | Whether a missing pinned encoder artifact may be downloaded                                                   |
+| `AMEM_MODEL_ENDPOINT`            | required                  | Full chat-completions URL of the model the service invokes                                                    |
+| `AMEM_MODEL_ID`                  | required                  | Provider model ID                                                                                             |
+| `AMEM_MODEL_API_KEY`             | none                      | Model credential; never returned to clients                                                                   |
+| `AMEM_MODEL_TIMEOUT_MS`          | `120000`                  | Model request timeout                                                                                         |
+| `AMEM_MODEL_MAX_OUTPUT_TOKENS`   | `6000`                    | Provider output-token budget for one request                                                                  |
 
 The queue directory holds the SQLite journal and the worker lock; back up the journal together with
 the collection. The encoder cache and the journal stay outside the repository's published package.
@@ -167,6 +203,14 @@ deployment's DNS-rebinding guard, not a general remote-access boundary.
   journal is created;
 - client recovery after disconnected or timed-out response bodies, preserving retryability, HTTP
   status and cause, and resolving identical resubmission to the original durable receipt;
+- the bundled dashboard on the same listener: the real build served at `/` from the documented
+  default asset directory together with its referenced assets, unchanged `/v1` responses next to
+  the mounted `/api` routes, unknown routes that stay API errors, one shared encoder, a projection
+  that projects the service's own reads, a completed write that refreshes the view without polling,
+  `/api/events` resync and `graph-changed` notifications with bounded outbound buffers for
+  notifications and control frames, an untrusted handshake refusal, the explicit missing-build
+  response, responsiveness while a projection worker is busy and clean shutdown of the WebSocket
+  subscriptions and projection worker;
 - restart recovery through the service: accepted observations and partially applied plans are
   replayed by a new process over the same queue directory.
 

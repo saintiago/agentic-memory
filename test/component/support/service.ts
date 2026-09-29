@@ -359,6 +359,8 @@ export const serviceSettings = (
   bodyLimitBytes: 1_048_576,
   shutdownGraceMs: 5_000,
   dataDirectory,
+  uiDirectory: path.join(dataDirectory, "ui"),
+  artifactsDirectory: path.join(dataDirectory, "inspector"),
   qdrant: {
     url: "http://127.0.0.1:6333",
     collection: "service-tests",

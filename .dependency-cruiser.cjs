@@ -89,12 +89,13 @@ module.exports = {
       to: { path: "^service/" },
     },
     {
-      name: "no-service-imports-inspector",
+      name: "only-service-dashboard-imports-inspector",
       severity: "error",
       comment:
-        "The service and the local inspection host are separate consumer processes; the " +
-        "service never depends on the dashboard host.",
-      from: { path: "^service/" },
+        "The bundled dashboard is composed by one service module, which mounts the " +
+        "inspection routes, event channel and projection worker on the service listener; " +
+        "the rest of the service stays independent of the dashboard host.",
+      from: { path: "^service/", pathNot: "^service/dashboard\\.ts$" },
       to: { path: "^inspector/" },
     },
   ],
