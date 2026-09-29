@@ -25,10 +25,11 @@ import {
 } from "../service/schemas.js";
 
 /**
- * A JSON object at this boundary: the provenance of a submitted observation and the metadata of a
- * stored note. The service's own provenance schema transforms its input to detach it, which JSON
- * Schema cannot describe; this declaration keeps the same value domain and the service remains
- * the validating authority.
+ * The published result schema of one stored note's metadata: a plain JSON object. The persisted
+ * metadata schema clones its input with a transform, which JSON Schema cannot express in the
+ * output direction; this declaration stands in for it in the result contract, and the service has
+ * already validated the stored record. Output validation never replaces the returned result, so
+ * the same note reaches the caller.
  */
 const jsonObjectSchema = z.record(z.string(), z.json());
 
@@ -67,12 +68,15 @@ export const saveInputSchema = queueObservationSchema.extend({
     "Optional ISO 8601 instant with timezone of the observation; the service records the time " +
       "the queued insertion starts when it is omitted.",
   ),
-  provenance: jsonObjectSchema
-    .optional()
-    .describe(
-      "Optional opaque JSON object recorded with the observation, for example task, repository, " +
-        "file or URL references.",
-    ),
+  // The service's own provenance contract rather than a copy of it: it validates the complete
+  // JSON value domain and rebuilds the submitted object from its own entries, so every own key
+  // survives this boundary, including `__proto__` and nested special keys. Anything that dropped
+  // a key would break identical retries and payload-conflict detection, which rely on the exact
+  // value the caller submitted.
+  provenance: queueObservationSchema.shape.provenance.describe(
+    "Optional opaque JSON object recorded with the observation, for example task, repository, " +
+      "file or URL references.",
+  ),
 });
 
 /**
@@ -143,8 +147,8 @@ const saveDescription =
   "same key with different content or provenance fails explicitly instead of creating another " +
   "note, and duplicate submissions return the existing receipt. The receipt confirms durable " +
   "acceptance by the ingestion queue only: the note may not be embedded, stored or searchable " +
-  "yet. A failed call is not an accepted save; when the outcome is unknown, retry the " +
-  "identical source key and payload, which resolves an acceptance that was already durable.";
+  "yet. A call the service refuses was not accepted; when the outcome is unknown instead, retry " +
+  "the identical source key and payload, which resolves an acceptance that was already durable.";
 
 /** One status description of a service failure, without the transport's own cause. */
 const failureDetail = (error: ServiceClientError): string => {
@@ -166,18 +170,33 @@ const searchFailure = (failure: unknown): unknown => {
   );
 };
 
-/** The tool error of a save that was not acknowledged. Retrying resolves a lost acceptance. */
+/**
+ * The tool error of a save whose acceptance was not established. A received `4xx` answer is a
+ * refusal the service decides before accepting durable work, so the identical call must not be
+ * repeated blindly; every other failure (no answer, an interrupted answer, a `5xx` answer or an
+ * unusable success body) leaves acceptance unknown, and only an identical resubmission resolves
+ * it. Retryability alone cannot tell the two apart: a fully received but malformed success body is
+ * not retryable, yet the observation may already be durably accepted.
+ */
 const saveFailure = (failure: unknown): unknown => {
   if (!(failure instanceof ServiceClientError)) {
     return failure;
   }
-  const guidance = failure.retryable
-    ? " The observation may already be durably accepted under that source key; retry the " +
-      "identical sourceKey, content, timestamp and provenance once the service is reachable."
-    : " Repeating the identical call fails the same way; correct the observation, and use a " +
-      "new sourceKey for a different observation.";
+  const detail = failureDetail(failure);
+  if (failure.status >= 400 && failure.status < 500) {
+    return new Error(
+      failure.retryable
+        ? `The memory service refused the submission (${detail}). The observation was not ` +
+            "accepted; retry the identical sourceKey, content, timestamp and provenance when the " +
+            "service is ready again."
+        : `The memory service rejected the observation (${detail}). It was not accepted; ` +
+            "correct it before resubmitting and use a new sourceKey for a different observation.",
+    );
+  }
   return new Error(
-    `The memory save was not acknowledged (${failureDetail(failure)}).${guidance}`,
+    `The memory save was not acknowledged (${detail}). The observation may already be durably ` +
+      "accepted under that source key; retry the identical sourceKey, content, timestamp and " +
+      "provenance, which resolves an acceptance that was already durable.",
   );
 };
 

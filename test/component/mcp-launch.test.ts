@@ -31,6 +31,13 @@ import {
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 /** The published start command; package.json and mcp/README.md must agree with it. */
 const launchArguments = ["--import", "tsx", "mcp/main.ts"];
+/** The launch command mcp/README.md documents for a host that starts the server through npm. */
+const npmLaunchArguments = ["run", "--silent", "mcp"];
+/** Provenance with own `__proto__` keys: valid JSON that must cross the stdio boundary unchanged. */
+const specialProvenance = JSON.parse(
+  '{"task":"AMEM-15","__proto__":{"marker":"stdio"},' +
+    '"evidence":{"__proto__":"nested"}}',
+) as Record<string, unknown>;
 const loadLogFixture = path.join(
   repositoryRoot,
   "test/component/fixtures/mcp-load-log.mjs",
@@ -110,6 +117,120 @@ const waitForExit = (
     });
   });
 
+/**
+ * Run one raw JSON-RPC session over the given stdio command: initialize, list the tools, save one
+ * observation, then close stdin. Every stdout line must be one complete JSON-RPC message, because
+ * the host parses that stream.
+ */
+const runRawSession = async (options: {
+  command: string;
+  args: string[];
+  baseUrl: string;
+  sourceKey: string;
+}): Promise<void> => {
+  const child = spawn(options.command, options.args, {
+    cwd: repositoryRoot,
+    env: { ...process.env, AMEM_MCP_SERVICE_URL: options.baseUrl },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  children.push(child);
+  const lines: string[] = [];
+  const pending = new Map<number, (frame: Record<string, unknown>) => void>();
+  let buffer = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    buffer += chunk;
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) {
+        break;
+      }
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      lines.push(line);
+      const frame = JSON.parse(line) as { id?: number };
+      const settle = frame.id === undefined ? undefined : pending.get(frame.id);
+      if (frame.id !== undefined && settle !== undefined) {
+        pending.delete(frame.id);
+        settle(frame);
+      }
+    }
+  });
+  const request = (
+    id: number,
+    method: string,
+    params: unknown,
+  ): Promise<Record<string, unknown>> =>
+    new Promise((resolve) => {
+      pending.set(id, resolve);
+      child.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
+      );
+    });
+  const notify = (method: string, params: unknown): void => {
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`,
+    );
+  };
+
+  const initialized = await request(1, "initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "raw-host", version: "0.0.0" },
+  });
+  expect(initialized.result).toMatchObject({
+    serverInfo: { name: "amem-memory" },
+  });
+  notify("notifications/initialized", {});
+  const listed = await request(2, "tools/list", {});
+  expect(
+    (listed.result as { tools: Array<{ name: string }> }).tools.map(
+      (tool) => tool.name,
+    ),
+  ).toEqual(["memory_search", "memory_save"]);
+  const called = await request(3, "tools/call", {
+    name: "memory_save",
+    arguments: {
+      sourceKey: options.sourceKey,
+      content: "Saved through the raw JSON-RPC session.",
+      provenance: specialProvenance,
+    },
+  });
+  const callResult = called.result as {
+    structuredContent: { id: string; status: string };
+    content: Array<{ type: string; text: string }>;
+  };
+  expect(callResult.structuredContent).toMatchObject({
+    sourceKey: options.sourceKey,
+    created: true,
+  });
+  expect(JSON.parse(callResult.content[0]?.text ?? "")).toEqual(
+    callResult.structuredContent,
+  );
+
+  // Every stdout line is one complete JSON-RPC 2.0 message; no npm banner or log line reaches it.
+  expect(lines.length).toBeGreaterThanOrEqual(3);
+  for (const line of lines) {
+    expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
+  }
+
+  child.stdin.end();
+  expect(await waitForExit(child)).toBe(0);
+};
+
+/** Assert that the one stored note carries exactly the provenance the host submitted. */
+const expectStoredProvenance = async (
+  harness: ServiceHarness,
+  provenance: Record<string, unknown>,
+): Promise<void> => {
+  await waitFor(
+    () => harness.providers.store.records.size === 1,
+    "the session's observation to be stored",
+  );
+  const stored = [...harness.providers.store.records.values()][0]?.note;
+  expect(JSON.stringify(stored?.metadata)).toBe(JSON.stringify(provenance));
+};
+
 describe("launched AMEM memory MCP server", () => {
   it("publishes the start command of the repository", () => {
     expect(packageJson.scripts.mcp).toBe(`node ${launchArguments.join(" ")}`);
@@ -165,98 +286,27 @@ describe("launched AMEM memory MCP server", () => {
   it("keeps stdout to protocol messages and exits when the host closes stdin", async () => {
     const harness = await startServiceHarness();
     harnesses.push(harness);
-    const child = spawn(process.execPath, launchArguments, {
-      cwd: repositoryRoot,
-      env: { ...process.env, AMEM_MCP_SERVICE_URL: harness.baseUrl },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    children.push(child);
-    const lines: string[] = [];
-    const pending = new Map<number, (frame: Record<string, unknown>) => void>();
-    let buffer = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buffer += chunk;
-      for (;;) {
-        const newline = buffer.indexOf("\n");
-        if (newline < 0) {
-          break;
-        }
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        lines.push(line);
-        const frame = JSON.parse(line) as { id?: number };
-        const settle =
-          frame.id === undefined ? undefined : pending.get(frame.id);
-        if (frame.id !== undefined && settle !== undefined) {
-          pending.delete(frame.id);
-          settle(frame);
-        }
-      }
-    });
-    const request = (
-      id: number,
-      method: string,
-      params: unknown,
-    ): Promise<Record<string, unknown>> =>
-      new Promise((resolve) => {
-        pending.set(id, resolve);
-        child.stdin.write(
-          `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
-        );
-      });
-    const notify = (method: string, params: unknown): void => {
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`,
-      );
-    };
-
-    const initialized = await request(1, "initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "raw-host", version: "0.0.0" },
-    });
-    expect(initialized.result).toMatchObject({
-      serverInfo: { name: "amem-memory" },
-    });
-    notify("notifications/initialized", {});
-    const listed = await request(2, "tools/list", {});
-    expect(
-      (listed.result as { tools: Array<{ name: string }> }).tools.map(
-        (tool) => tool.name,
-      ),
-    ).toEqual(["memory_search", "memory_save"]);
-    const called = await request(3, "tools/call", {
-      name: "memory_save",
-      arguments: {
-        sourceKey: "amem-15/raw-protocol",
-        content: "Saved through the raw JSON-RPC session.",
-      },
-    });
-    const callResult = called.result as {
-      structuredContent: { id: string; status: string };
-      content: Array<{ type: string; text: string }>;
-    };
-    expect(callResult.structuredContent).toMatchObject({
+    await runRawSession({
+      command: process.execPath,
+      args: launchArguments,
+      baseUrl: harness.baseUrl,
       sourceKey: "amem-15/raw-protocol",
-      created: true,
     });
-    expect(JSON.parse(callResult.content[0]?.text ?? "")).toEqual(
-      callResult.structuredContent,
-    );
+    await expectStoredProvenance(harness, specialProvenance);
+  });
 
-    // Every stdout line is one complete JSON-RPC 2.0 message; no log line may reach stdout.
-    expect(lines.length).toBeGreaterThanOrEqual(3);
-    for (const line of lines) {
-      expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
-    }
-
-    child.stdin.end();
-    expect(await waitForExit(child)).toBe(0);
-    await waitFor(
-      () => harness.providers.store.records.size === 1,
-      "the raw session's observation to be stored",
-    );
+  it("serves the documented npm launch command with protocol-clean stdout", async () => {
+    const harness = await startServiceHarness();
+    harnesses.push(harness);
+    // The exact `npm run --silent mcp` invocation mcp/README.md publishes for a host. npm's own
+    // lifecycle banner would break every host that parses stdout as JSON-RPC.
+    await runRawSession({
+      command: "npm",
+      args: npmLaunchArguments,
+      baseUrl: harness.baseUrl,
+      sourceKey: "amem-15/npm-launch",
+    });
+    await expectStoredProvenance(harness, specialProvenance);
   });
 
   it("serves several MCP clients from one service queue and encoder", async () => {

@@ -5,7 +5,7 @@
  * goes to stderr. The process stops on SIGINT or SIGTERM and whenever the host closes stdin, and
  * closing an agent session does not stop the separately supervised service or its ingestion.
  *
- * Run it with `npm run mcp` from the repository root; see mcp/README.md and docs/mcp.md.
+ * Run it with `npm run --silent mcp` from the repository root; see mcp/README.md and docs/mcp.md.
  */
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 

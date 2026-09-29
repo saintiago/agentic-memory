@@ -84,10 +84,11 @@ recorded responsive browser checks (`npm run inspector:responsive`): the require
 against a synthetic 10,000-memory graph with about 50,000 directed links and the real-renderer
 check that an added outlier does not move already displayed memories.
 
-`npm run mcp` starts the stdio MCP server documented in [docs/mcp.md](docs/mcp.md): a thin client
-of the running service that exposes `memory_search` and `memory_save` to agent sessions. It opens
-no database and loads no encoder, so concurrent sessions share the service's queue and encoder;
-[mcp/README.md](mcp/README.md) publishes the launch command, settings, tool schemas and behavior.
+`npm run --silent mcp` starts the stdio MCP server documented in [docs/mcp.md](docs/mcp.md): a thin
+client of the running service that exposes `memory_search` and `memory_save` to agent sessions. It
+opens no database and loads no encoder, so concurrent sessions share the service's queue and
+encoder; [mcp/README.md](mcp/README.md) publishes the launch command, settings, tool schemas and
+behavior.
 
 See [development and delivery](docs/development.md) for the commands and the build plan, and the
 [implementation tasks](docs/tasks.md) for the backlog.

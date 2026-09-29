@@ -24,12 +24,13 @@ From the repository root:
 
 ```bash
 export AMEM_MCP_SERVICE_URL=http://127.0.0.1:4748
-npm run mcp
+npm run --silent mcp
 ```
 
-The equivalent published command, for a host that configures an MCP server directly, is
-`node --import tsx mcp/main.ts` with the repository as the working directory. A host's native MCP
-configuration passes the same command and the service URL in the child environment:
+`--silent` keeps npm's own lifecycle banner off stdout, which carries MCP protocol messages only.
+The same entry point launches directly, without npm, as `node --import tsx mcp/main.ts` with the
+repository as the working directory; a host's native MCP configuration passes that command and the
+service URL in the child environment:
 
 ```json
 {
@@ -94,8 +95,10 @@ observation.
 
 Every service or transport failure is a tool error (`isError`), never an empty successful search
 and never a claim that an unacknowledged save succeeded. The message carries the service's error
-code, HTTP status, retryability and, for a save, the reminder that a retry of the identical source
-key and payload resolves an acceptance that was already durable.
+code, HTTP status and retryability. A save separates a refusal (`4xx`) that was decided before
+acceptance — correct the observation, or retry it identically when the refusal is temporary — from
+every other failure, whose outcome is unknown: there the reminder is that a retry of the identical
+source key and payload resolves an acceptance that was already durable.
 
 ## Checks
 
@@ -105,10 +108,10 @@ key and payload resolves an acceptance that was already durable.
 - real delegation to a running service: complete attributed search results, accepted receipts,
   duplicate resolution and explicit conflicts for a changed payload under an existing key;
 - durable acceptance before embedding or storage, retrieval and submission outages as tool errors,
-  and a lost acknowledgement resolved by an identical retry;
-- the launched `npm run mcp` command over real stdio: protocol-clean stdout, clean exit when the
-  host closes stdin, startup refusal without stdout output, and several hosts sharing one service
-  queue and encoder;
+  an unusable acceptance answer and a lost acknowledgement, both resolved by an identical retry;
+- the launched `npm run --silent mcp` command over real stdio: protocol-clean stdout, clean exit
+  when the host closes stdin, startup refusal without stdout output, and several hosts sharing one
+  service queue and encoder;
 - the module graph of one session: the MCP process loads no embedding runtime, so no session
   registers an encoder of its own.
 
