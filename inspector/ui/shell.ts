@@ -9,7 +9,19 @@
 export const shellMarkup = String.raw`
 <header class="topbar">
   <div class="title">
-    <h1>Agentic Memory inspection</h1>
+    <div class="title-heading">
+      <h1>Agentic Memory inspection</h1>
+      <div
+        class="connection-status"
+        id="connection-status"
+        data-state="connecting"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Connecting</span>
+      </div>
+    </div>
     <p class="caption" id="graph-caption">
       Positions are an approximate embedding projection: screen distance is not an
       exact cosine distance.
@@ -71,6 +83,8 @@ export const shellMarkup = String.raw`
 /** The elements the dashboard controller reads and writes. */
 export interface Shell {
   readonly root: HTMLElement;
+  readonly connectionStatus: HTMLElement;
+  readonly connectionLabel: HTMLElement;
   readonly viewStatus: HTMLElement;
   readonly notice: HTMLElement;
   readonly graphStage: HTMLElement;
@@ -107,6 +121,8 @@ export const installShell = (root: HTMLElement): Shell => {
   root.innerHTML = shellMarkup;
   return {
     root,
+    connectionStatus: require(root, "#connection-status"),
+    connectionLabel: require(root, "#connection-label"),
     viewStatus: require(root, "#view-status"),
     notice: require(root, "#notice"),
     graphStage: require(root, "#graph-stage"),

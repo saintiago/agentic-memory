@@ -393,6 +393,9 @@ describe("dashboard", () => {
 
   it("fetches the latest graph on a notification and resyncs after a reconnect", async () => {
     const { dashboard, client, events, root } = start();
+    const connection = element<HTMLElement>(root, "#connection-status");
+    expect(connection.dataset.state).toBe("connecting");
+    expect(connection.textContent).toContain("Connecting");
     client.graphHandler = () =>
       Promise.resolve(
         snapshotText(
@@ -400,6 +403,9 @@ describe("dashboard", () => {
         ),
       );
     await waitFor(() => dashboard.diagnostics().nodes === 1, "the first view");
+    events.connected();
+    expect(connection.dataset.state).toBe("online");
+    expect(connection.textContent).toContain("Online");
 
     client.graphHandler = () =>
       Promise.resolve(
@@ -422,7 +428,8 @@ describe("dashboard", () => {
 
     // A dropped connection keeps the displayed view and reports the reconnecting state.
     events.reconnecting();
-    expect(text(root, "#view-status")).toContain("live updates reconnecting");
+    expect(connection.dataset.state).toBe("offline");
+    expect(connection.textContent).toContain("Offline · reconnecting");
     expect(dashboard.diagnostics().nodes).toBe(2);
 
     // Every reconnect resynchronizes: the resync of the new connection fetches again.
@@ -440,9 +447,8 @@ describe("dashboard", () => {
     events.connected();
     events.resync();
     await waitFor(() => dashboard.diagnostics().nodes === 3, "the reconnect");
-    expect(text(root, "#view-status")).not.toContain(
-      "live updates reconnecting",
-    );
+    expect(connection.dataset.state).toBe("online");
+    expect(connection.textContent).toContain("Online");
   });
 
   it("coalesces notifications during a fetch and applies the newest state after it", async () => {

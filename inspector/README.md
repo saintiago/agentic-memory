@@ -45,6 +45,7 @@ are an approximate embedding projection and labels a non-semantic fallback layou
 | Part                     | Behavior                                                                                                                                                                  |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Map                      | Directed stored links, freshness fill from the fixed palette, zoom/pan through Sigma, **Fit all**, **Fit results**, **Focus selected** and all-links versus focused-links |
+| Connection indicator     | **Connecting**, **Online**, or **Offline · reconnecting** from the `/api/events` WebSocket lifecycle, with text and a state-colored dot                                   |
 | Freshness legend         | The labeled age ranges and the neutral unknown-update color, comparable between refreshes                                                                                 |
 | Query bar                | `POST /v1/search` through the host; results keep returned order, **Direct match** scores and **Linked addition** labels, and highlight exactly the returned IDs           |
 | Details                  | Original content, context, keywords, tags, provenance, the memory timestamp, the exact update time with its age (or `unknown`) and the capture time of the displayed view |
@@ -55,8 +56,9 @@ before the first fetch, fetches `GET /api/graph` on every resync or `graph-chang
 (serializing fetches and coalescing notifications that arrive during one), parses and diffs each
 payload in a worker, applies the mutations to the existing Graphology graph in bounded batches and
 never recreates Sigma, so the camera and selection survive a refresh. A disconnected channel is
-retried with bounded exponential backoff (1 to 30 seconds) and shown as reconnecting while the last
-displayed view stays put; every reconnect resyncs. The status line reports a running refresh and an
+retried with bounded exponential backoff (1 to 30 seconds) and shown as offline by the connection
+indicator while reconnecting; the last displayed view stays put and every reconnect resyncs. The
+status line reports a running refresh and an
 in-progress application of a completed view. A failed fetch or refresh keeps the last completed
 view and shows the error instead of an empty map, and a failed fetch is retried on bounded backoff
 until a newer trigger supersedes it. Returned memories the current view does not contain stay in
@@ -180,7 +182,8 @@ unmapped results and their returned evidence, the details and comparison panels,
 re-read when a completed view changes them, comparison answers a later selection supersedes, the
 inline planner's fallback after a worker failure, atomic projection refits, camera and selection
 preservation across a refresh, notification-driven fetches with a coalesced rerun and bounded
-backoff, the reconnecting indication and resync after a reconnect, the event socket's own
+backoff, the connecting, online and offline/reconnecting indicator states with a retained view and
+resync after a reconnect, the event socket's own
 handshake/resync/reconnect behavior, and source text that stays inert. `npm run validate` also
 builds the served dashboard (entry page, stylesheet and browser bundle), so a broken build fails
 the aggregate check.

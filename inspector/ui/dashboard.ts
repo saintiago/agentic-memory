@@ -189,8 +189,8 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   let missingRequestRevision: number | undefined;
   /** The notice text a failed graph fetch wrote; a later success clears exactly this one. */
   let syncingNotice: string | undefined;
-  /** The live notification channel state, shown while it is disconnected. */
-  let connection: "connected" | "reconnecting" = "connected";
+  /** The live notification channel state, independent from graph loading and refresh state. */
+  let connection: "connecting" | "connected" | "reconnecting" = "connecting";
   /** One graph fetch at a time; a notification during a fetch is remembered and rerun after. */
   let syncing = false;
   let syncQueued = false;
@@ -221,6 +221,21 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     shell.notice.hidden = message === undefined;
   };
 
+  const renderConnection = (): void => {
+    shell.connectionStatus.dataset.state =
+      connection === "connected"
+        ? "online"
+        : connection === "reconnecting"
+          ? "offline"
+          : "connecting";
+    shell.connectionLabel.textContent =
+      connection === "connected"
+        ? "Online"
+        : connection === "reconnecting"
+          ? "Offline · reconnecting"
+          : "Connecting";
+  };
+
   const renderStatus = (): void => {
     clear(shell.viewStatus);
     const parts: string[] = [];
@@ -249,13 +264,6 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     }
     if (refreshing || applying) {
       parts.push(refreshing ? "refreshing…" : "applying the completed view…");
-    }
-    if (connection === "reconnecting") {
-      parts.push(
-        view === undefined
-          ? "live updates reconnecting…"
-          : "live updates reconnecting; the displayed view stays until the connection returns",
-      );
     }
     if (lastApply !== undefined) {
       parts.push(
@@ -412,6 +420,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
   };
 
   const renderAll = (): void => {
+    renderConnection();
     renderStatus();
     renderResults();
     paintDetails(detailsState);
@@ -815,7 +824,7 @@ export const createDashboard = (options: DashboardOptions): Dashboard => {
     },
     onStatus: (state) => {
       connection = state;
-      renderStatus();
+      renderConnection();
     },
   });
 
