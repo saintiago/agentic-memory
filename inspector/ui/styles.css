@@ -77,6 +77,37 @@ input[type="number"] {
   font-size: 18px;
 }
 
+.title-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+}
+
+.connection-status {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.connection-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #77838e;
+}
+
+.connection-status[data-state="online"] .connection-dot {
+  background: #16803c;
+}
+
+.connection-status[data-state="offline"] .connection-dot {
+  background: #b66a0a;
+}
+
 .topbar .actions {
   display: flex;
   gap: 8px;
