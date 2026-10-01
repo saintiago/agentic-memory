@@ -165,8 +165,8 @@ changes. On every connection send `{ type: "resync" }`; the browser then fetches
 during a fetch so a newer state is retrieved afterward. Serialize fetches and discard obsolete
 responses. Payloads contain no vectors or full graph; HTTP remains the authoritative snapshot source.
 
-Automatically reconnect with bounded exponential backoff (1 second to 30 seconds). Display a
-reconnecting indication and retain the last view while disconnected. Every reconnect performs a
+Automatically reconnect with bounded exponential backoff (1 second to 30 seconds). Update the
+[connection indicator](#connection-indicator) and retain the last view while disconnected. Every reconnect performs a
 fresh sync, including after a service restart; no persisted event log or replay guarantee is needed.
 The service also refreshes from storage on startup, so writes completed before a crash are discovered.
 If graph refresh failed temporarily, retry that refresh with bounded backoff until successful or
@@ -211,6 +211,19 @@ notes; keep arrow direction inspectable. Offer a simple all-links versus focused
 Selection opens original content, current context, keywords, tags, provenance, observation time and
 update evidence. Render source text as text, never executable HTML. Use note IDs as identities even
 when labels repeat. List unresolved link targets in details without inventing positioned nodes.
+
+### Connection indicator
+
+Keep a compact connection indicator visible in the dashboard header. Use the existing `/api/events`
+WebSocket lifecycle: show a neutral dot and **Connecting** before the first connection, a green dot
+and **Online** while connected, and an amber dot and **Offline · reconnecting** when disconnected.
+Text accompanies the color so the state is understandable without color. Reconnection updates the
+indicator automatically and performs the existing graph resync; no page reload or separate status
+polling is needed.
+
+Online means the service event channel is connected, not that ingestion, providers or graph
+projection have finished. Keep loading and graph-refresh errors in their existing status display.
+The last completed graph remains interactive while offline.
 
 ## Vector projection and proximity
 
@@ -331,6 +344,8 @@ visible in the list, including those absent from the map.
    projected proximity from original-vector similarity.
 6. Representative scale checks report corpus size, link count and hardware alongside measurements;
    all displayed source text is inert.
+7. The connection indicator shows connecting, online and offline/reconnecting states, including
+   service restart, and restores online automatically without clearing the last completed graph.
 
 The evidence for these checks is recorded with the dashboard's tests and its responsive scale check
 in [inspector/README.md](../inspector/README.md#acceptance-checks).
