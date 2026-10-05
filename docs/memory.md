@@ -33,6 +33,19 @@ interface InsertionPlan {
   noteId: string;
   records: EmbeddedNote[];
 }
+interface ContextCorrectionInput {
+  expected: Note;
+  attributes: Attributes;
+}
+interface ContextCorrectionPreparation {
+  note: Note;
+  plan?: InsertionPlan;
+}
+interface ContextCorrectionPreparer {
+  prepareContextCorrection(
+    input: ContextCorrectionInput,
+  ): Promise<ContextCorrectionPreparation>;
+}
 interface MemoryPrompts {
   construction: string;
   evolution: string;
@@ -46,8 +59,7 @@ interface SearchOptions {
   linkedLimit?: number;
 }
 type SearchResult =
-  | { note: Note; via: "match"; score: number }
-  | { note: Note; via: "link" };
+  { note: Note; via: "match"; score: number } | { note: Note; via: "link" };
 
 class AgenticMemory {
   constructor(
@@ -58,6 +70,9 @@ class AgenticMemory {
   );
   add(input: AddInput): Promise<Note>;
   prepare(input: PrepareInput): Promise<InsertionPlan>;
+  prepareContextCorrection(
+    input: ContextCorrectionInput,
+  ): Promise<ContextCorrectionPreparation>;
   apply(plan: InsertionPlan): Promise<Note>;
   get(id: string): Promise<Note | undefined>;
   page(limit?: number, cursor?: Cursor): Promise<Page>;
@@ -68,6 +83,8 @@ class AgenticMemory {
 `JsonValue` is NoteStore's JSON value type. Names are public export names; the signatures describe
 behavior and do not prescribe private classes. Export `defaultPrompts` as read-only values and
 `embeddingText` as the canonical representation function for reproducible evaluations.
+Export `contextCorrectionInputSchema` and derive `ContextCorrectionInput` from it so maintenance
+hosts validate proposals with the owning contract rather than copying its schema.
 
 Construction/evolution requests and response schemas are owned here; their complete text and
 data envelope are in [prompts](prompts.md). Transport returns parsed, untrusted JSON. No dependency
@@ -177,7 +194,8 @@ insertion's writes; no multi-note snapshot is promised.
 
 ## Failures
 
-Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `apply`, `get`, `page`, `search`),
+Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `prepareContextCorrection`, `apply`,
+`get`, `page`, `search`),
 `stage`, a safe `reason` and message, and `persistence` (`unchanged` or `uncertain`). An insertion
 error after ID allocation also includes `noteId`; a write-attempt error includes `affectedNoteIds`
 for the prepared batch. Preserve the underlying cause for diagnosis without embedding credentials or
@@ -202,11 +220,14 @@ The [ingestion queue interface](ingestion-queue.md#interface) also requires publ
 operations. Preparation uses the same construction and evolution rules as add, accepts the durable
 operation's fixed note ID and timestamp, and returns one immutable plan with its declared
 representation, embedding space and complete records, without writes. Application rejects a plan of
-another schema version, representation or embedding space before any write, requires the incoming
-note among the records and one record per identity, and then writes the exact supplied records
+another schema version, representation or embedding space before any write, requires the plan's
+`noteId` among the records and one record per identity, and then writes the exact supplied records
 without regeneration. Reapplying the same plan preserves identities, vectors and timestamps; the
 declared embedding space is the instance's own, while the queue binds the collection. The queue owns
 exclusivity and plan durability; raw add's uncertain-failure behavior above remains unchanged.
+The existing version-1 plan format and `apply` also serve a prepared context correction: `noteId`
+identifies the existing note returned after application. Its export name remains `InsertionPlan`
+for compatibility. Applying a trusted prepared batch does not infer whether its anchor is new.
 
 ## Existing-context correction
 
@@ -220,8 +241,30 @@ Preserve note identity, original content, source timestamp, metadata and existin
 semantic attributes and their embeddings consistently under the current representation and embedding
 space; unchanged records remain unchanged. Apply the existing update-time and write-uncertainty rules.
 Correction must respect collection writer ownership and must not introduce a competing direct writer.
-The maintenance interface and interruption handling belong to Architecture; preservation and
-before/after evidence follow [the quality evaluation](evaluation.md#quality-change-acceptance).
+Preservation and before/after evidence follow
+[the quality evaluation](evaluation.md#quality-change-acceptance).
+
+`prepareContextCorrection` accepts one complete inspected note as `expected` and the operator's
+reviewed replacement attributes. Validate and detach both using the existing note and attribute
+schemas before external work. Read the current note by `expected.id`; a missing note or any mismatch
+with `expected` rejects as an unchanged `read` failure. Compare complete values, including links,
+metadata and optional update time, independent of JSON object key order. Update time alone is not
+a revision token. The host must hold writer ownership throughout this read, preparation and application.
+Serialize this preparation with add/prepare/apply in invocation order within the instance; reads
+retain their ordinary concurrency. A stale proposal does not poison later operations.
+
+Use current immutable fields and links, replacing only context, keywords and tags. Equal attributes
+return the detached current note without a plan, embedding or new update time. Otherwise embed the
+canonical revised representation, validate its vector, sample update time after successful preparation,
+and return the revised note and a one-record version-1 plan. There is no construction, nearest search,
+model call or neighbor evolution. The operator derives replacement meaning from sources; the API
+checks structural validity and staleness, not semantic truth. Preparation never writes.
+
+Preparation failures carry `operation: prepareContextCorrection`, the selected `noteId`, the relevant
+`input`, `read` or `embed` stage and `persistence: unchanged`. Apply retains its existing validation,
+acknowledgment and uncertain-write behavior. The provider-owned `ContextCorrectionPreparer` is the
+focused read-only capability supplied to a maintenance owner; ordinary ingestion still needs only
+`prepare` and `apply`.
 
 ## Verification
 
@@ -232,3 +275,5 @@ one-hop budget/order behavior, including missing targets. With a controlled cloc
 receive the batch preparation time, no-op neighbors retain their time, legacy notes acquire it only
 on real evolution, and failures/reads do not invent successful updates. Schema-valid prose is evaluated separately;
 do not turn semantic preferences into hidden rejection rules.
+For correction, verify stale/missing-note rejection, detached proposals, invalid attributes or
+vectors before writes, source/link preservation, the no-op path and identity-preserving plan replay.

@@ -28,19 +28,21 @@ version. The configured collection is fixed for the instance; requests cannot se
 provider, model or filesystem path. Publish an OpenAPI definition with the service implementing
 these routes and validate requests and responses against the owned schemas.
 
-| Route                        | Request                                           | Response                                                                                                                                                          |
-| ---------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/observations`      | `{ sourceKey, content, timestamp?, provenance? }` | `202` after durable acceptance: receipt object and `Location: /v1/receipts/:id`. Identical resubmission returns `200` with the existing receipt.                  |
-| `GET /v1/receipts/:id`       | Receipt identity                                  | `200` receipt object, or `404`.                                                                                                                                   |
-| `POST /v1/search`            | `{ query, limit?, linkedLimit? }`                 | `200 { searchedAt, results }`, preserving Memory's complete notes, ordering, scores and match/link classifications.                                               |
-| `GET /v1/notes/:id`          | Note identity                                     | `200` complete note, or `404`.                                                                                                                                    |
-| `GET /v1/notes`              | Optional `limit` and opaque `cursor`              | `200 { notes, cursor? }` using public pagination.                                                                                                                 |
-| `GET /v1/inspection/records` | Optional `limit` and opaque `cursor`              | `200 { records, cursor?, embeddingSpaceId }`; records contain complete notes and stored vectors for projection.                                                   |
-| `GET /v1/status`             | None                                              | `200` collection identity, embedding-space identity, capability availability, queue counts by status, oldest pending age, and safe current error when applicable. |
+| Route                           | Request                                           | Response                                                                                                                                                          |
+| ------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/observations`         | `{ sourceKey, content, timestamp?, provenance? }` | `202` after durable acceptance: receipt object and `Location: /v1/receipts/:id`. Identical resubmission returns `200` with the existing receipt.                  |
+| `GET /v1/receipts/:id`          | Receipt identity                                  | `200` receipt object, or `404`.                                                                                                                                   |
+| `GET /v1/receipts`              | Optional `limit` and opaque `cursor`              | `200 { receipts, cursor? }`, using queue receipt pagination; includes all outcomes.                                                                               |
+| `POST /v1/receipts/:id/recover` | `{ expectedAttemptCount }`                        | `202 { receipt, recovered: true }` after durable requeue, or `200 { receipt, recovered: false }` for an ineffective repeat. `Location` names the same receipt.    |
+| `POST /v1/search`               | `{ query, limit?, linkedLimit? }`                 | `200 { searchedAt, results }`, preserving Memory's complete notes, ordering, scores and match/link classifications.                                               |
+| `GET /v1/notes/:id`             | Note identity                                     | `200` complete note, or `404`.                                                                                                                                    |
+| `GET /v1/notes`                 | Optional `limit` and opaque `cursor`              | `200 { notes, cursor? }` using public pagination.                                                                                                                 |
+| `GET /v1/inspection/records`    | Optional `limit` and opaque `cursor`              | `200 { records, cursor?, embeddingSpaceId }`; records contain complete notes and stored vectors for projection.                                                   |
+| `GET /v1/status`                | None                                              | `200` collection identity, embedding-space identity, capability availability, queue counts by status, oldest pending age, and safe current error when applicable. |
 
 Receipt objects contain `id`, `sourceKey`, `status`, `acceptedAt`, `updatedAt`, `attemptCount`,
 optional `nextRetryAt`, safe `lastError`, and `noteId` once stored. Their statuses and transitions
-follow the queue contract. A receipt ID and note ID are different identities. Source keys must be
+follow the queue contract, including optional `recoveries` evidence. A receipt ID and note ID are different identities. Source keys must be
 stable and unique within the collection, including the producer's source namespace where needed.
 
 Use Memory's public input constraints, defaults and pagination semantics. Encode cursors as opaque
@@ -53,6 +55,43 @@ return `400`; a source key reused with different input returns `409`; configured
 returns `413`. Default maximum JSON body size is 1 MiB, measured in UTF-8 bytes. Temporary overload
 returns `429` with `Retry-After`; unavailable capability returns `503`; unexpected failure returns
 `500`. A provider failure must not become an empty successful search or acceptance response.
+
+Recovery delegates to the queue's public `recoverFailed` operation and requires only the journal,
+not provider availability. A missing receipt returns `404`; invalid UUID/count returns `400`;
+ineligible state, future count or unresolved writer work returns `409` with the queue's safe reason.
+It is an operator API, not a new agent MCP tool. Its response means queued work, not confirmed storage;
+follow the existing receipt for outcome. The service adds no generation, source rewriting or automatic
+retry of failed model output. Status forwards pending context-correction evidence from the queue;
+observation counts are not repurposed as correction counts.
+Receipt enumeration likewise remains available without providers and uses queue-owned pagination,
+not note pagination or direct journal queries. The service client validates these additive responses;
+deploy it together with the service and MCP adapter because strict old receipt schemas may reject
+recovery evidence. The two agent tool names and behavior remain unchanged.
+
+## Operator context correction
+
+Provide `npm run memory:maintain -- correct-context --input <proposal.json>` as an offline Linux/WSL
+host command. Its JSON input is Memory's `ContextCorrectionInput`: the inspected full `expected`
+note and reviewed replacement `attributes`. Supporting-source references and review reasons remain
+in private evaluation artifacts; they are not written into original content or provenance.
+
+Stop the supervised service before invoking the command with the same configured durable directory,
+collection and embedding space. Open the configured journal and compatible collection without resetting
+or switching the corpus. Compose public Memory preparation and queue `correctContext`; do not import
+the worker lock or journal internals, call raw add/put, or launch a second listener. Reuse host settings
+and the pinned encoder without starting the model, dashboard or ingestion worker. The queue owns
+writer exclusion and interruption handling. Close resources and release ownership on exit.
+Delay provider initialization until the supplied correction preparation runs under queue ownership;
+the offline host validates its proposal first using Memory's exported input schema.
+
+Validate the proposal before provider work. Print a structured result with note identity, `changed`
+and the complete acknowledged note, or a safe error identifying staleness, ownership conflict,
+unchanged preparation failure or pending uncertain application as applicable. Exit nonzero on failure.
+Do not print credentials. Keep output with the private comparison artifacts. If interruption leaves
+a pending correction, restart the matched service for exact replay and inspect status/current data;
+do not compose a new proposal from an old search result. Subsequent proposals require a fresh
+inspected note. Restart after maintenance rebuilds inspection from persisted records; successful
+startup replay uses the same completed-write dashboard invalidation as insertion replay.
 
 ## Async work and resource sharing
 

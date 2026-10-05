@@ -177,6 +177,47 @@ search results reflect acknowledged corrections. Use isolated copies for destruc
 never reset the live corpus to obtain a cleaner comparison. Private evidence remains outside the
 public repository. This is bounded change acceptance, not a global accuracy or availability promise.
 
+## Quality maintenance procedure
+
+Evaluation is an operator client of the public service and library contracts, not a direct journal
+or collection writer. Enumerate receipt pages and correlate accepted/source identities to the retained
+private evidence. Record actual validation defects from preserved failed output when available;
+generic evolution-contract messages alone cannot distinguish missing fields, invalid IDs, duplicate
+updates or other causes. If raw responses are absent, retain that limit and reproduce representative
+sources in isolated runs with the existing explicit recording and redaction. Fix generation against
+that evidence without weakening response validation, adding model repair calls or assuming every
+receipt shares the same defect. Preserve old/new prompt text and identical provider settings.
+
+Freeze writers while making the consistent baseline backup. Keep its restore location and source,
+receipt and query inventory privately; validate restoration into an isolated matching collection and
+journal before mutating the live pair. The audit is historical evidence; use the actual retained
+baseline membership as the denominator and explain additions or unavailable audit cases.
+
+Use `POST /v1/receipts/:id/recover` only after the generation cause has been addressed. Retain the
+inspected attempt count, recovery response and final receipt for each selected source. Re-enumerate
+outcomes after processing, separating old failure evidence, effective recovery requests, new attempts,
+stored results and remaining reasons. Check every audited retained failure where identities remain
+available; report unmatched historical evidence explicitly rather than silently excluding it.
+
+Review correction proposals against original sources and supporting sources before using the offline
+command in [the service contract](service.md#operator-context-correction). Keep each complete expected
+note, proposed attributes, supporting-source references and review rationale alongside the acknowledged
+result or unresolved error in private run artifacts. This is evaluation evidence, not runtime metadata
+or a permanent version store. Exercise restart replay on an isolated copy before live use. Stop the
+service for the live correction session and restart it for resumed ingestion and fresh retrieval.
+
+Compare the same preserved queries, direct limits and nonzero linked budgets after recovery/correction.
+Separate changes from fresh generation/recovery from targeted context correction. Correction preserves
+existing links, so it does not by itself repair old noisy edges. Evaluate meaningful link selection on
+isolated before/after replays of the same retained sources, and report unchanged historical link noise
+in live probes. Do not claim old-link repair, remove those links, or change retrieval policy to conceal
+noise. If old edges prevent the accepted comparison from showing improvement, report that remaining
+limitation for an explicit scope decision rather than silently widening maintenance permissions.
+
+Include later related and unrelated insertions on isolated copies to assess whether corrected subjects
+expand again. Report deterministic protocol verification separately from real model-quality evidence;
+keep remaining failure, fidelity and relevance limitations explicit.
+
 ## Performance and cost
 
 Measure cold startup separately from warm insert/search. Report medians and p95 with sample count,
