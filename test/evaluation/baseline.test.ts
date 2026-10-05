@@ -1238,7 +1238,7 @@ describe("matched isolated comparison", () => {
       status: overrides.status ?? "completed",
       counts: {
         sources: fixtureOrder.length,
-        queries: 1,
+        queries: 2,
         insertions,
         insertionFailures: overrides.insertionFailures ?? 0,
         finalNotes: insertions,
