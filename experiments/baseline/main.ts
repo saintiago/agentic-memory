@@ -103,6 +103,7 @@ const options = {
   "exclude-source": { type: "string", multiple: true },
   before: { type: "string" },
   after: { type: "string" },
+  label: { type: "string" },
 } as const;
 
 const parse = (args: string[]) =>
@@ -357,6 +358,7 @@ const runCompare = async (args: string[]): Promise<void> => {
     root: required(values.root, "--root"),
     beforeRunId: required(values.before, "--before"),
     afterRunId: required(values.after, "--after"),
+    ...(values.label === undefined ? {} : { label: values.label }),
   });
   const line = (side: MatchedComparison["before"]): string => {
     const review =
@@ -390,7 +392,7 @@ const runCompare = async (args: string[]): Promise<void> => {
       `direct first-result ${String(comparison.deltas.directFirstResultRecovered)}.`,
   );
   console.log(
-    `Evidence: ${baselinePath(required(values.root, "--root"), "matchedComparison")}`,
+    `Evidence: ${values.label === undefined ? "matched-comparison.json" : `matched-comparison-${values.label}.json`}`,
   );
 };
 

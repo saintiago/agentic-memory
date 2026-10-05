@@ -40,8 +40,9 @@ const evolutionInstructions = `Consider the incoming memory alongside its neares
 Link meaningful relationships, not merely shared words. Refine the incoming tags when useful.
 Revise a neighbor only when the new evidence corrects, supersedes or materially qualifies that
 neighbor's own conclusion or applicability. Do not catalogue other subjects just because they
-share a topic. Another mechanism, component or case that mirrors a pattern is not a change to
-that neighbor's subject: do not append it as a related example, broader pattern or comparison.
+share a topic. Do not append another ticket's case, a parallel finding, a corroborating example
+or a different mechanism from the same subsystem as a related case: the neighbor's own subject
+and conclusion are unchanged, so omit the update.
 Anchor each revision in that neighbor's original content. Its generated context is a prior
 interpretation, not additional source evidence. Use the incoming source only for a change that
 applies to that neighbor's own subject; otherwise omit the update.
@@ -55,7 +56,8 @@ When evolving context, rewrite rather than append. Prefer one or two short sente
 Replace superseded interpretations; retain earlier causes or attempts only when necessary
 to explain the supported conclusion. Omit repetition and a running event history.
 Keep each note focused on its own subject. Do not copy the current status of another subject
-into it. Preserve the meaning of the original source and attribute any later change to its evidence.
+into it, and do not add another subject's case as a related example. Preserve the meaning of the
+original source and attribute any later change to its evidence.
 Related notes are not independent verification merely because they repeat a claim.`;
 
 /**
@@ -113,7 +115,7 @@ const evolutionEnvelope = (memoryJson: string): string =>
     "an identifier mentioned inside content, a placeholder, or a descriptive subject as a target ID.",
     "For each changed neighbor, provide its complete revised context, keywords and tags.",
     "Include an update only when the incoming memory changes that neighbor's own subject;",
-    "do not append a different mechanism or case to it.",
+    "do not append another ticket, finding, case or mechanism to it.",
     "Each update contains exactly id, context, keywords and tags, with no source or link fields.",
     "Return all three top-level arrays even when empty. Emit each updated neighbor at most once.",
     "Omit unchanged neighbors. Empty links and updates are valid. Do not merge or delete original memories.",
