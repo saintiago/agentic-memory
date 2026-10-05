@@ -6,7 +6,7 @@
  *
  * See docs/evaluation.md#quality-maintenance-procedure and docs/testing.md#test-discipline.
  */
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -19,7 +19,11 @@ import {
   DeclaredQueryError,
   readDeclaredQueries,
 } from "../../experiments/baseline/declared-queries.js";
-import { classifyModelCall } from "../../experiments/baseline/defects.js";
+import {
+  classifyModelCall,
+  classifyReproductionRuns,
+  recordedPromptTextSource,
+} from "../../experiments/baseline/defects.js";
 import { readRetainedBaseline } from "../../experiments/baseline/evidence.js";
 import {
   createEvidenceDirectory,
@@ -616,6 +620,191 @@ describe("model-call classification", () => {
       outcome: "transport-failure",
       categories: ["transport"],
     });
+  });
+});
+
+describe("reproduction prompt-source attribution", () => {
+  const sourceLine = `${JSON.stringify({
+    sourceId: "source-1",
+    content: "a retained source",
+    timestamp: "2026-10-01T10:00:00Z",
+  })}\n`;
+
+  const modelCall = (
+    overrides: Partial<ModelCallRecord> = {},
+  ): ModelCallRecord => ({
+    callId: 1,
+    stage: "construct",
+    sourceId: "source-1",
+    noteId: null,
+    candidateIds: null,
+    request: null,
+    response: { context: "a note", keywords: ["a"], tags: [] },
+    rawResponse: null,
+    error: null,
+    durationMs: 1,
+    finishReason: "stop",
+    usage: null,
+    requestId: null,
+    ...overrides,
+  });
+
+  const writeRun = async (
+    root: string,
+    runId: string,
+    options: {
+      status?: string;
+      promptTextSource?: string | null;
+      calls?: readonly ModelCallRecord[];
+    } = {},
+  ): Promise<void> => {
+    const directory = path.join(baselinePath(root, "runs"), runId);
+    await mkdir(directory, { recursive: true });
+    await writeJsonFile(path.join(directory, "manifest.json"), {
+      runId,
+      status: options.status ?? "completed",
+      revision: "task/test@abc",
+      fixture: {
+        sourceHash: sha256Text(sourceLine),
+        sourceCount: 1,
+        queryHash: sha256Text(""),
+        queryCount: 0,
+        insertionOrder: ["source-1"],
+      },
+      timing: {
+        startedAt: "2026-10-05T10:00:00Z",
+        finishedAt: "2026-10-05T10:01:00Z",
+        conditions:
+          options.promptTextSource === undefined
+            ? {}
+            : { promptTextSource: options.promptTextSource },
+      },
+    });
+    await writeFile(
+      path.join(directory, "calls.jsonl"),
+      (options.calls ?? []).map((call) => `${JSON.stringify(call)}\n`).join(""),
+      "utf8",
+    );
+    await writeFile(path.join(directory, "changes.jsonl"), "", "utf8");
+    await writeFile(
+      path.join(directory, "sources.jsonl"),
+      `${JSON.stringify({ outcome: "inserted" })}\n`,
+      "utf8",
+    );
+  };
+
+  it("attributes runs and every failing call to the recorded prompt source", async () => {
+    const root = await tempDirectory();
+    await mkdir(path.dirname(baselinePath(root, "reproductionSources")), {
+      recursive: true,
+    });
+    await writeFile(
+      baselinePath(root, "reproductionSources"),
+      sourceLine,
+      "utf8",
+    );
+    await writeRun(root, "baseline-run", {
+      status: "failed",
+      promptTextSource: "retained-baseline",
+      calls: [
+        modelCall(),
+        modelCall({
+          callId: 2,
+          stage: "evolve",
+          candidateIds: [],
+          response: { links: ["not-a-candidate"], newTags: [], updates: [] },
+        }),
+      ],
+    });
+    await writeRun(root, "current-run", {
+      promptTextSource: "current-defaults",
+      calls: [
+        modelCall(),
+        modelCall({
+          callId: 2,
+          stage: "evolve",
+          error: {
+            name: "HostModelTransportError",
+            message: "the model returned output that is not valid JSON.",
+            category: "output",
+          },
+        }),
+      ],
+    });
+    await writeRun(root, "unrecorded-run", {
+      calls: [
+        modelCall({
+          callId: 1,
+          error: {
+            name: "HostModelTransportError",
+            message: "unavailable",
+            category: "unavailable",
+          },
+        }),
+      ],
+    });
+
+    const report = await classifyReproductionRuns(root, {
+      now: () => new Date("2026-10-05T12:00:00Z"),
+    });
+
+    expect(report.failingCalls).toBe(3);
+    expect(report.runs.map((run) => run.promptTextSource)).toEqual([
+      "retained-baseline",
+      "current-defaults",
+      null,
+    ]);
+    const bySource = new Map(
+      report.promptSources.map((summary) => [
+        summary.promptTextSource,
+        summary,
+      ]),
+    );
+    expect(bySource.get("retained-baseline")).toMatchObject({
+      runs: 1,
+      completed: 0,
+      evolveCalls: 1,
+      contractViolations: 1,
+      outputFailures: 0,
+      transportFailures: 0,
+    });
+    expect(bySource.get("current-defaults")).toMatchObject({
+      runs: 1,
+      completed: 1,
+      evolveCalls: 1,
+      contractViolations: 0,
+      outputFailures: 1,
+      transportFailures: 0,
+    });
+    expect(bySource.get(null)).toMatchObject({
+      runs: 1,
+      transportFailures: 1,
+      outputFailures: 0,
+      contractViolations: 0,
+    });
+    expect(report.limits.join(" ")).toContain("unrecorded");
+  });
+
+  it("records no prompt source when the manifest holds none or a non-string value", () => {
+    expect(() =>
+      recordedPromptTextSource({ timing: { conditions: {} } }),
+    ).not.toThrow();
+    expect(recordedPromptTextSource({ timing: { conditions: {} } })).toBeNull();
+    expect(
+      recordedPromptTextSource({
+        timing: { conditions: { promptTextSource: null } },
+      }),
+    ).toBeNull();
+    expect(
+      recordedPromptTextSource({
+        timing: { conditions: { promptTextSource: 7 } },
+      }),
+    ).toBeNull();
+    expect(
+      recordedPromptTextSource({
+        timing: { conditions: { promptTextSource: "current-defaults" } },
+      }),
+    ).toBe("current-defaults");
   });
 });
 

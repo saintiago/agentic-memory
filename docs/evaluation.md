@@ -260,8 +260,10 @@ and the prompt source as run conditions, and uses the retained baseline prompt t
 A `--reverse-order` run of the same fixture gives the first-run sources candidate context for their
 evolution calls. `defects` re-validates every recorded response, null included, with the public
 schemas and the captured candidate identities, and separates unusable-output failures from provider
-or connectivity failures by the transport category the recorder now retains; `retrieval` runs the
-declared queries direct and with the declared linked budget. The operator's bounded semantic review
+or connectivity failures by the transport category the recorder now retains; each classified run
+keeps the prompt text source its manifest recorded and the report groups the failing calls by that
+source, so a prompt change's before/after adherence is reportable rather than inferred; `retrieval`
+runs the declared queries direct and with the declared linked budget. The operator's bounded semantic review
 of the linked additions beyond expected evidence lives in `linked-additions-review.json` (one
 useful, unrelated or unresolved verdict with a reason per reviewed addition); `metrics` aggregates
 the numbers with denominators, reports the reviewed verdicts with the assessed-sample denominator,

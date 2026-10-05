@@ -321,19 +321,21 @@ const runDefects = async (args: string[]): Promise<void> => {
   const report = await classifyReproductionRuns(
     required(values.root, "--root"),
   );
-  const violations = report.runs.reduce(
-    (total, run) =>
-      total +
-      run.findings.filter(
-        (finding) =>
-          finding.outcome === "contract-violation" ||
-          finding.outcome === "transport-failure",
-      ).length,
-    0,
-  );
   console.log(
-    `${String(report.runs.length)} reproduction run(s), ${String(violations)} failing call(s).`,
+    `${String(report.runs.length)} reproduction run(s), ` +
+      `${String(report.failingCalls)} failing call(s).`,
   );
+  for (const source of report.promptSources) {
+    console.log(
+      `- ${source.promptTextSource ?? "unrecorded prompt source"}: ` +
+        `${String(source.runs)} run(s), ${String(source.completed)} completed, ` +
+        `${String(source.evolveCalls)} evolve call(s), ` +
+        `${String(source.contractViolations)} contract violation(s), ` +
+        `${String(source.outputFailures)} output failure(s), ` +
+        `${String(source.transportFailures)} transport failure(s), ` +
+        `${String(source.inserted)} inserted, ${String(source.failed)} failed.`,
+    );
+  }
   for (const defect of report.defects) {
     console.log(
       `- ${defect.category} x${String(defect.occurrences)}: ${defect.issue}`,

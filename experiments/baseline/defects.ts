@@ -68,6 +68,8 @@ export interface ClassifiedRun {
   directory: string;
   status: RunManifest["status"];
   revision: string;
+  /** The prompt text source the run manifest recorded, or null when it recorded none. */
+  promptTextSource: string | null;
   fixtureMatches: boolean;
   calls: {
     total: number;
@@ -89,14 +91,43 @@ export interface ClassifiedRun {
   failures: RecordedFailure[];
 }
 
+/** One prompt text source's runs, calls and failing findings with their denominators. */
+export interface PromptSourceSummary {
+  promptTextSource: string | null;
+  runs: number;
+  completed: number;
+  constructCalls: number;
+  evolveCalls: number;
+  contractViolations: number;
+  outputFailures: number;
+  transportFailures: number;
+  inserted: number;
+  failed: number;
+}
+
 /** The defect report over every reproduction run retained in the evidence root. */
 export interface DefectReport {
   generatedAt: string;
   revision: string;
   runs: ClassifiedRun[];
   defects: DefectAggregate[];
+  /** Every failing call: contract violations, unusable output and transport failures. */
+  failingCalls: number;
+  /** Failing findings and call denominators grouped by the prompt text each run used. */
+  promptSources: PromptSourceSummary[];
   limits: string[];
 }
+
+/**
+ * The prompt text source a run manifest recorded, or null when it holds none: older runs and runs
+ * outside this tooling are never assumed to have used either prompt text.
+ */
+export const recordedPromptTextSource = (manifest: {
+  timing: { conditions: Record<string, unknown> };
+}): string | null => {
+  const value = manifest.timing.conditions["promptTextSource"];
+  return typeof value === "string" && value !== "" ? value : null;
+};
 
 const issueText = (error: ModelResponseError): string => {
   const marker = "documented contract: ";
@@ -236,6 +267,7 @@ const classifyRun = async (input: {
     directory: input.directory,
     status: manifest.status,
     revision: manifest.revision,
+    promptTextSource: recordedPromptTextSource(manifest),
     fixtureMatches: manifest.fixture.sourceHash === input.fixtureSourceHash,
     calls: {
       total: calls.length,
@@ -284,6 +316,8 @@ export const classifyReproductionRuns = async (
     runs.push(await classifyRun({ directory, fixtureSourceHash }));
   }
   const defects = new Map<string, DefectAggregate>();
+  const promptSources = new Map<string, PromptSourceSummary>();
+  let failingCalls = 0;
   for (const run of runs) {
     for (const finding of run.findings) {
       if (
@@ -310,11 +344,52 @@ export const classifyReproductionRuns = async (
       }
     }
   }
+  for (const run of runs) {
+    const key = run.promptTextSource ?? "";
+    const summary = promptSources.get(key) ?? {
+      promptTextSource: run.promptTextSource,
+      runs: 0,
+      completed: 0,
+      constructCalls: 0,
+      evolveCalls: 0,
+      contractViolations: 0,
+      outputFailures: 0,
+      transportFailures: 0,
+      inserted: 0,
+      failed: 0,
+    };
+    summary.runs += 1;
+    if (run.status === "completed") {
+      summary.completed += 1;
+    }
+    summary.constructCalls += run.calls.construct;
+    summary.evolveCalls += run.calls.evolve;
+    summary.inserted += run.outcomes.inserted;
+    summary.failed += run.outcomes.failed;
+    for (const finding of run.findings) {
+      if (finding.outcome === "contract-violation") {
+        summary.contractViolations += 1;
+        failingCalls += 1;
+      } else if (finding.outcome === "output-failure") {
+        summary.outputFailures += 1;
+        failingCalls += 1;
+      } else if (finding.outcome === "transport-failure") {
+        summary.transportFailures += 1;
+        failingCalls += 1;
+      }
+    }
+    promptSources.set(key, summary);
+  }
+
   const report: DefectReport = {
     generatedAt: (options.now ?? (() => new Date()))().toISOString(),
     revision: runs[0]?.revision ?? "unknown",
     runs,
     defects: [...defects.values()],
+    failingCalls,
+    promptSources: [...promptSources.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, summary]) => summary),
     limits: [
       "Contract checks re-validate every recorded parsed response, null included, with the same " +
         "public schemas Memory uses; a recorded response is not re-interpreted as a different " +
@@ -326,6 +401,9 @@ export const classifyReproductionRuns = async (
         "reproduction run, not the live corpus of the original failure.",
       "A reproduction that returns no violations is not proof that the original failure was " +
         "unreal; it is one stochastic isolated run on rebuilt candidate context.",
+      "Runs are attributed to the prompt text source their manifest recorded; a run that recorded " +
+        "none stays grouped as unrecorded rather than assumed to have used either text. Findings " +
+        "and failing-call totals include unusable model output, not only contract violations.",
     ],
   };
   await writeJsonFile(baselinePath(root, "defects"), report);
