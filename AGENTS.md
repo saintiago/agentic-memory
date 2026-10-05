@@ -71,6 +71,7 @@ experiment or existing ticket does not establish a requirement.
 - [Replay, evaluation and graph inspection](docs/evaluation.md)
 - [Live memory quality audit](docs/evaluation-memory-quality-2026-10-05.md)
 - [Memory quality requirements](docs/memory-quality-requirements.md)
+- [Memory quality experience](docs/memory-quality-experience.md)
 - [Local memory dashboard (Sigma.js)](docs/dashboard.md)
 - [Tech stack](docs/tech-stack.md)
 - [Testing architecture](docs/testing.md)
