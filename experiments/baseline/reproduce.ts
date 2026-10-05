@@ -155,7 +155,12 @@ export const reproduceFailures = async (
   }
   const insertionOrder =
     options.reverseInsertionOrder === true
-      ? sources.map((source) => source.sourceId).reverse()
+      ? sources
+          .filter(
+            (source) => !options.excludeSources?.includes(source.sourceId),
+          )
+          .map((source) => source.sourceId)
+          .reverse()
       : undefined;
 
   const exchanges = new RecordedExchanges();

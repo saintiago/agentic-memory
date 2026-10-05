@@ -6,14 +6,24 @@
  *
  * See docs/evaluation.md#quality-maintenance-procedure and docs/testing.md#test-discipline.
  */
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import * as library from "../../src/index.js";
+import * as liveEnvironment from "../../experiments/live/environment.js";
+import { createInMemoryEnvironment } from "../../experiments/replay/environment.js";
+import {
+  modelDescription,
+  ScriptedModel,
+  testSources,
+  TokenEmbedder,
+} from "./support/harness.js";
 
 import {
   DeclaredQueryError,
@@ -69,6 +79,7 @@ import {
 } from "../../experiments/baseline/restore.js";
 import {
   providerFetch,
+  reproduceFailures,
   reproductionConditions,
 } from "../../experiments/baseline/reproduce.js";
 import type { RetrievalBaseline } from "../../experiments/baseline/retrieval.js";
@@ -79,6 +90,7 @@ import type {
   RetrievalResultRecord,
   RunManifest,
   RunReport,
+  SourceRecord,
 } from "../../experiments/replay/artifacts.js";
 import type { Note } from "../../src/note-store/index.js";
 import { defaultPrompts } from "../../src/index.js";
@@ -465,6 +477,120 @@ describe("retained baseline integrity", () => {
       /modified after capture/,
     );
   });
+
+  it.each([
+    {
+      reverse: false,
+      excluded: [],
+      order: ["alpha-requirement", "alpha-record", "beta-observation"],
+    },
+    {
+      reverse: true,
+      excluded: [],
+      order: ["beta-observation", "alpha-record", "alpha-requirement"],
+    },
+    {
+      reverse: false,
+      excluded: ["alpha-requirement"],
+      order: ["alpha-record", "beta-observation"],
+    },
+    {
+      reverse: true,
+      excluded: ["alpha-requirement"],
+      order: ["beta-observation", "alpha-record"],
+    },
+  ])(
+    "reproduces included sources in order $order and records exclusions $excluded",
+    async ({ reverse, excluded, order }) => {
+      const root = await writeBaseline();
+      try {
+        await mkdir(path.dirname(baselinePath(root, "reproductionSources")), {
+          recursive: true,
+        });
+        await writeFile(
+          baselinePath(root, "reproductionSources"),
+          testSources.map((source) => JSON.stringify(source)).join("\n"),
+        );
+        await writeFile(baselinePath(root, "reproductionQueries"), "");
+        const embedder = new TokenEmbedder();
+        const model = new ScriptedModel();
+        for (const [index, id] of order.entries()) {
+          model.queue(
+            "construct",
+            () => ({ context: `Records ${id}.`, keywords: [], tags: [] }),
+            { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 },
+          );
+          if (index > 0) {
+            model.queue(
+              "evolve",
+              () => ({ links: [], newTags: [], updates: [] }),
+              { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 },
+            );
+          }
+        }
+        vi.spyOn(library, "openReferenceEmbedder").mockResolvedValue({
+          space: embedder.space,
+          settings: library.referenceEncoderSettings,
+          embed: (text) => embedder.embed(text),
+        });
+        vi.spyOn(liveEnvironment, "createLiveEnvironment").mockReturnValue(
+          createInMemoryEnvironment({
+            embedder,
+            model,
+            exchangeLog: model.exchanges,
+            modelDescription,
+          }),
+        );
+        const { result, report } = await reproduceFailures({
+          root,
+          qdrant: { url: "http://unused.invalid" },
+          model: {
+            endpoint: "http://unused.invalid",
+            id: "test-model",
+            timeoutMs: 1_000,
+            maxOutputTokens: 100,
+            thinking: false,
+          },
+          providerRequestMode: "unchanged",
+          embeddingCacheDir: root,
+          callBudget: 10,
+          tokenBudget: 1_000,
+          revision: "test-revision",
+          prompts: defaultPrompts,
+          promptSource: "current-defaults",
+          reverseInsertionOrder: reverse,
+          excludeSources: excluded,
+        });
+        expect(result.status).toBe("completed");
+        expect(result.manifest.fixture.sourceCount).toBe(testSources.length);
+        expect(result.manifest.fixture.insertionOrder).toEqual(order);
+        expect(report.exclusions.sources).toEqual(excluded);
+        const readRecords = async <T>(file: string): Promise<T[]> =>
+          (await readFile(path.join(result.directory, file), "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as T);
+        const calls = await readRecords<ModelCallRecord>("calls.jsonl");
+        expect(
+          calls
+            .filter((call) => call.stage === "construct")
+            .map((call) => call.sourceId),
+        ).toEqual(order);
+        const sources = await readRecords<SourceRecord>("sources.jsonl");
+        expect(sources.map((source) => source.sourceId)).toEqual(
+          testSources.map((source) => source.sourceId),
+        );
+        expect(
+          sources
+            .filter((source) => source.outcome === "excluded")
+            .map((source) => source.sourceId),
+        ).toEqual(excluded);
+      } finally {
+        vi.restoreAllMocks();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps unmeasured metrics null and states the denominator otherwise", async () => {
     const root = await writeBaseline();
