@@ -45,12 +45,14 @@ import {
 } from "../../experiments/baseline/layout.js";
 import {
   linkedAdditionsBeyondExpected,
+  linkedAdditionsFromRecords,
   readLinkedReviewSummary,
   summarizeLinkedReview,
   type LinkedReview,
 } from "../../experiments/baseline/linked-review.js";
 import {
   compareMatchedRuns,
+  matchedAdditions,
   MatchedComparisonError,
   readMatchedRun,
   runLinkedReviewFile,
@@ -75,6 +77,7 @@ import type {
   ModelCallRecord,
   RetrievalRecord,
   RetrievalResultRecord,
+  RunManifest,
   RunReport,
 } from "../../experiments/replay/artifacts.js";
 import type { Note } from "../../src/note-store/index.js";
@@ -831,9 +834,9 @@ describe("linked-addition semantic review", () => {
           rationale: "declared",
           requiredSourceIds: ["required"],
           results: [
-            { noteId: "required", origin: "match" },
-            { noteId: "added-1", origin: "link" },
-            { noteId: "added-2", origin: "link" },
+            { noteId: "required", sourceId: "required", origin: "match" },
+            { noteId: "added-1", sourceId: "added-1", origin: "link" },
+            { noteId: "added-2", sourceId: "added-2", origin: "link" },
           ],
         },
       ],
@@ -1152,6 +1155,10 @@ describe("matched isolated comparison", () => {
       insertionOrder?: string[];
       excludedSources?: string[];
       modelId?: string;
+      model?: Partial<RunManifest["model"]>;
+      excludedQueries?: string[];
+      queryIds?: string[];
+      linkedQueryIds?: string[];
       memory?: { neighbors: number; directLimit: number; linkedLimit: number };
       additions?: number;
       firstResultRecovered?: number;
@@ -1166,6 +1173,11 @@ describe("matched isolated comparison", () => {
     const inserted = fixtureOrder.filter((id) => !excluded.includes(id));
     const insertions = overrides.insertions ?? inserted.length;
     const additions = overrides.additions ?? 1;
+    const excludedQueries = overrides.excludedQueries ?? [];
+    const queryIds =
+      overrides.queryIds ??
+      ["q1", "q2"].filter((id) => !excludedQueries.includes(id));
+    const linkedQueryIds = overrides.linkedQueryIds ?? queryIds;
     const linkedResults = [
       ...inserted.map((sourceId) => result(sourceId, "match", 0.5)),
       ...Array.from({ length: additions }, (_value, index) =>
@@ -1180,7 +1192,7 @@ describe("matched isolated comparison", () => {
         sourceHash: sha256Text("fixture"),
         queryHash: sha256Text("queries"),
         sourceCount: fixtureOrder.length,
-        queryCount: 1,
+        queryCount: 2,
         insertionOrder: inserted,
       },
       prompts: { ...defaultPrompts },
@@ -1192,6 +1204,11 @@ describe("matched isolated comparison", () => {
       model: {
         endpoint: "http://127.0.0.1:9/chat",
         id: overrides.modelId ?? "test-model",
+        thinking: "disabled-external",
+        maxOutputTokens: 6000,
+        timeoutMs: 120000,
+        retries: 0,
+        ...overrides.model,
       },
       storage: {
         kind: "in-memory",
@@ -1232,12 +1249,14 @@ describe("matched isolated comparison", () => {
       },
       retrieval: {
         "evolved-direct": modeSummary("evolved-direct", {
+          queries: queryIds.length,
           firstResultRequired: {
             recovered: overrides.firstResultRecovered ?? 1,
             denominator: 1,
           },
         }),
         "evolved-linked": modeSummary("evolved-linked", {
+          queries: linkedQueryIds.length,
           firstResultRequired: {
             recovered: overrides.firstResultRecovered ?? 1,
             denominator: 1,
@@ -1249,16 +1268,124 @@ describe("matched isolated comparison", () => {
           },
         }),
       },
-      exclusions: { sources: [...excluded], queries: [], note: "test" },
+      exclusions: {
+        sources: [...excluded],
+        queries: excludedQueries,
+        note: "test",
+      },
     } as unknown as RunReport);
     await writeFile(
       path.join(directory, "retrieval.jsonl"),
-      `${[record("evolved-linked", "q1", ["source-1"], linkedResults, 3)]
+      `${[
+        ...queryIds.map((id) =>
+          record(
+            "evolved-direct",
+            id,
+            id === "q1" ? ["source-1"] : [],
+            inserted.map((sourceId) => result(sourceId, "match", 0.5)),
+            0,
+          ),
+        ),
+        ...linkedQueryIds.map((id) =>
+          record(
+            "evolved-linked",
+            id,
+            id === "q1" ? ["source-1"] : [],
+            id === "q1" ? linkedResults : [],
+            3,
+          ),
+        ),
+      ]
         .map((entry) => JSON.stringify(entry))
         .join("\n")}\n`,
       "utf8",
     );
   };
+
+  it("excludes expected linked sources while retaining generated note IDs for review", () => {
+    const records = [
+      record(
+        "evolved-linked",
+        "q1",
+        ["source-1"],
+        [
+          { ...result("generated-expected", "link", 0), sourceId: "source-1" },
+          {
+            ...result("generated-unexpected", "link", 0),
+            sourceId: "source-2",
+          },
+          { ...result("generated-unknown", "link", 0), sourceId: null },
+        ],
+        3,
+      ),
+    ];
+    expect(
+      linkedAdditionsFromRecords(records).map((entry) => entry.noteId),
+    ).toEqual(["generated-unexpected", "generated-unknown"]);
+    expect(
+      matchedAdditions(records).map(({ noteId, sourceId }) => ({
+        noteId,
+        sourceId,
+      })),
+    ).toEqual([
+      { noteId: "generated-unexpected", sourceId: "source-2" },
+      { noteId: "generated-unknown", sourceId: null },
+    ]);
+    expect(
+      linkedAdditionsFromRecords([
+        record(
+          "evolved-linked",
+          "q1",
+          ["source-1"],
+          [result("source-1", "link", 0), result("source-2", "link", 0)],
+          3,
+        ),
+      ]).map((entry) => entry.noteId),
+    ).toEqual(["source-2"]);
+  });
+
+  it.each([
+    { maxOutputTokens: 3000 },
+    { timeoutMs: 60000 },
+    { thinking: "enabled-external" as const },
+    { retries: 1 },
+  ])("refuses different recorded model settings: %j", async (model) => {
+    const root = await tempDirectory();
+    await writeRun(root, "before-run", {
+      promptTextSource: "retained-baseline",
+    });
+    await writeRun(root, "after-run", { model });
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "after-run",
+      }),
+    ).rejects.toThrow(/model settings/);
+  });
+
+  it.each([
+    { excludedQueries: ["q2"] },
+    { queryIds: ["q1"] },
+    { linkedQueryIds: ["q1"] },
+    { queryIds: ["q1", "q3"] },
+  ])(
+    "refuses differing query exclusions or evaluated membership: %j",
+    async (overrides) => {
+      const root = await tempDirectory();
+      await writeRun(root, "before-run", {
+        promptTextSource: "retained-baseline",
+      });
+      await writeRun(root, "after-run", overrides);
+      await expect(
+        compareMatchedRuns({
+          root,
+          beforeRunId: "before-run",
+          afterRunId: "after-run",
+        }),
+      ).rejects.toThrow(/quer/);
+    },
+  );
 
   it("reports linked additions and direct recovery for a matched pair", async () => {
     const root = await tempDirectory();
@@ -1362,7 +1489,7 @@ describe("matched isolated comparison", () => {
         beforeRunId: "before-run",
         afterRunId: "different-model",
       }),
-    ).rejects.toThrow(/model transports/);
+    ).rejects.toThrow(/model settings/);
     await expect(
       compareMatchedRuns({
         root,

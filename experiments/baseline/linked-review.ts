@@ -78,7 +78,10 @@ export const linkedAdditionsFromRecords = (
       if (result.origin !== "link") {
         continue;
       }
-      if (expectedByQuery.get(record.queryId)?.has(result.noteId) ?? false) {
+      if (
+        expectedByQuery.get(record.queryId)?.has(result.sourceId ?? "") ??
+        false
+      ) {
         continue;
       }
       const key = `${record.queryId}\u0000${result.noteId}`;

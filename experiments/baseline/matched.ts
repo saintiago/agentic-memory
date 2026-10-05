@@ -10,6 +10,7 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   ModeSummary,
@@ -47,6 +48,8 @@ export interface MatchedRunEvidence {
   promptTextSource: string | null;
   excludedSources: string[];
   includedSources: number;
+  excludedQueries: string[];
+  queryIds: string[];
   counts: {
     insertions: number;
     insertionFailures: number;
@@ -71,9 +74,11 @@ export interface MatchedComparison {
     insertionOrder: string[];
     includedSources: number;
     excludedSources: string[];
+    excludedQueries: string[];
+    queryIds: string[];
     limits: RunManifest["memory"];
     providerRequestMode: string | null;
-    model: { endpoint: string | null; id: string };
+    model: RunManifest["model"];
     encoderSpaceId: string;
     representation: string;
     difference: "prompt text source only";
@@ -255,6 +260,31 @@ export const readMatchedRun = async (
   }
   const direct = modeSummary(report, "evolved-direct", runId);
   const linked = modeSummary(report, "evolved-linked", runId);
+  const excludedQueries = [...(report.exclusions?.queries ?? [])].sort();
+  const includedQueries = manifest.fixture.queryCount - excludedQueries.length;
+  const queryIdsFor = (mode: string, summary: ModeSummary): string[] => {
+    const ids = records
+      .filter((record) => record.mode === mode)
+      .map((record) => record.queryId)
+      .sort();
+    if (
+      ids.length !== includedQueries ||
+      new Set(ids).size !== ids.length ||
+      ids.some((id) => excludedQueries.includes(id)) ||
+      summary.queries !== ids.length
+    ) {
+      throw new MatchedComparisonError(
+        `Run "${runId}" has incomplete or inconsistent evaluated queries for "${mode}".`,
+      );
+    }
+    return ids;
+  };
+  const queryIds = queryIdsFor("evolved-direct", direct);
+  if (!sameOrder(queryIds, queryIdsFor("evolved-linked", linked))) {
+    throw new MatchedComparisonError(
+      `Run "${runId}" evaluated different queries in its direct and linked modes.`,
+    );
+  }
   const linkedRecords = records.filter(
     (record) => record.mode === "evolved-linked",
   );
@@ -266,6 +296,8 @@ export const readMatchedRun = async (
     promptTextSource: promptTextSourceOf(manifest),
     excludedSources: [...(report.exclusions?.sources ?? [])].sort(),
     includedSources,
+    excludedQueries,
+    queryIds,
     counts: {
       insertions: report.counts.insertions,
       insertionFailures: report.counts.insertionFailures,
@@ -351,6 +383,14 @@ export const compareMatchedRuns = async (input: {
     problem("they do not include the same source membership.");
   }
   if (
+    !sameOrder(before.excludedQueries, after.excludedQueries) ||
+    !sameOrder(before.queryIds, after.queryIds)
+  ) {
+    problem(
+      "they do not include the same evaluated query membership and exclusions.",
+    );
+  }
+  if (
     !sameOrder(
       beforeManifest.fixture.insertionOrder,
       afterManifest.fixture.insertionOrder,
@@ -370,11 +410,8 @@ export const compareMatchedRuns = async (input: {
   ) {
     problem("they used different provider request modes.");
   }
-  if (
-    beforeManifest.model.endpoint !== afterManifest.model.endpoint ||
-    beforeManifest.model.id !== afterManifest.model.id
-  ) {
-    problem("they used different model transports.");
+  if (!isDeepStrictEqual(beforeManifest.model, afterManifest.model)) {
+    problem("they used different model settings.");
   }
   if (
     beforeManifest.encoder.spaceId !== afterManifest.encoder.spaceId ||
@@ -407,6 +444,8 @@ export const compareMatchedRuns = async (input: {
       insertionOrder: [...beforeManifest.fixture.insertionOrder],
       includedSources: before.includedSources,
       excludedSources: [...before.excludedSources],
+      excludedQueries: [...before.excludedQueries],
+      queryIds: [...before.queryIds],
       limits: { ...beforeManifest.memory },
       providerRequestMode: providerRequestModeOf(beforeManifest),
       model: { ...beforeManifest.model },

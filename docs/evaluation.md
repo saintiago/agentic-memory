@@ -265,7 +265,9 @@ evolution calls. `--exclude-source` keeps a named source out of insertion, so a 
 pair can exclude the same sources and hold identical membership even when one prompt cannot ingest
 them. `compare` pairs two completed reproduction runs whose fixture, insertion order, included
 membership, queries, limits, revision and provider settings agree and whose recorded prompt text
-sources differ, refuses any other pairing, and writes `matched-comparison.json` with each run's
+sources differ. This includes every recorded model setting (endpoint, ID, thinking, output-token
+limit, timeout and retries) and the evaluated query identities in both direct and linked modes,
+with matching query exclusions and complete query records. It refuses any other pairing, and writes `matched-comparison.json` with each run's
 direct recovery and linked additions — and the reviewed verdicts when a run retains its
 `linked-additions-review.json` — so an isolated prompt comparison is measured rather than inferred. `defects` re-validates every recorded response, null included, with the public
 schemas and the captured candidate identities, and separates unusable-output failures from provider
@@ -273,7 +275,8 @@ or connectivity failures by the transport category the recorder now retains; eac
 keeps the prompt text source its manifest recorded and the report groups the failing calls by that
 source, so a prompt change's before/after adherence is reportable rather than inferred; `retrieval`
 runs the declared queries direct and with the declared linked budget. The operator's bounded semantic review
-of the linked additions beyond expected evidence lives in `linked-additions-review.json` (one
+of the linked additions beyond expected evidence (matched by fixture `sourceId`; generated `noteId`
+identifies the review entry) lives in `linked-additions-review.json` (one
 useful, unrelated or unresolved verdict with a reason per reviewed addition), either for the
 restored baseline retrieval or next to one reproduction run; `metrics` aggregates
 the numbers with denominators, reports the reviewed verdicts with the assessed-sample denominator,

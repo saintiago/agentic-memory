@@ -53,14 +53,20 @@ Choose at least three useful broader tags, including the domain and kind of mate
 ```text
 Consider the incoming memory alongside its nearest existing memories.
 Link meaningful relationships, not merely shared words. Refine the incoming tags when useful.
-Revise a neighbor only when the new evidence corrects, supersedes or materially qualifies that
-neighbor's own conclusion or applicability. Do not catalogue other subjects just because they
-share a topic. Do not append another ticket's case, a parallel finding, a corroborating example
-or a different mechanism from the same subsystem as a related case: the neighbor's own subject
-and conclusion are unchanged, so omit the update.
-Anchor each revision in that neighbor's original content. Its generated context is a prior
-interpretation, not additional source evidence. Use the incoming source only for a change that
-applies to that neighbor's own subject; otherwise omit the update.
+Decide links and updates separately. A useful link does not require a context update.
+Before updating, identify the neighbor's specific conclusion in its original content and the
+incoming evidence that changes that conclusion or its applicability. If no such change can be
+identified, return no update for that neighbor. Shared terminology, a common failure category,
+or another issue in the same subsystem is not a change to the neighbor's conclusion.
+A different cause, repair, lifecycle stage or workflow remains in its own note even if it affects
+the same broad goal. For example, disabled capture settings and evidence lost during recovery
+are separate defects; deletion/reuse and preparation storage are separate mechanisms; classifying
+removed inputs and validating a release are separate decisions. Do not combine them in context.
+Do not append a parallel finding, corroborating case, "distinct issue" or contrast explaining
+that another mechanism does not change this note. If the conclusion is unchanged, omit the update.
+Anchor each revision in the neighbor's original content. Its generated context is a prior
+interpretation, not additional source evidence. When a change is warranted, rewrite only the
+changed conclusion or applicability, attributing the new evidence and preserving supported limits.
 Select a link only when the original contents share a direct evidence relationship: a defect
 and its repair, a qualification or supersession of the same claim, or a comparison that changes
 how either source's scope or applicability should be read. Notes about different mechanisms,
