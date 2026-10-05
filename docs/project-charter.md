@@ -19,6 +19,10 @@ enough evidence for the consuming agent to judge whether a memory applies.
 
 Nexus is a prospective consumer. Its tickets, review findings, handoffs and workspace layout do not
 define the memory model. Source extraction belongs to the application supplying memories.
+Consumers should select reusable observations about causes, constraints, corrective mechanisms and
+failed approaches with their reasons. Routine progress, approvals, whole handoffs and successful-check
+announcements alone do not establish a useful observation; identifiers belong in provenance unless
+needed to understand the lesson. AMEM preserves supplied sources rather than filtering workflow events.
 
 ## Core jobs
 

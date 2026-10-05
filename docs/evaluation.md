@@ -42,8 +42,10 @@ fixture/query IDs fail fixture validation before paid work.
 
 Extraction belongs to the source application's adapter. Deterministic extraction means selecting
 defined artifact fields and rendering attributed source text consistently, not asking a model to
-read every log and discover experiences. A task description, developer report, individual reviewer
-finding and individual developer response can each form a separate note. Keep each statement's
+read every log and discover experiences. Select observations according to the
+[charter's source-selection guidance](project-charter.md#vision), rather than turning every artifact
+or workflow outcome into a memory. A reusable observation in a developer report, individual reviewer
+finding or developer response can form a separate note. Keep each statement's
 speaker, conditions and subject in its content. Do not imply that a developer response verifies a
 reviewer finding or that chronological adjacency proves a relationship.
 
@@ -129,6 +131,51 @@ Manual semantic review checks attribution, claim strength, dates, quantities, un
 scope, supersession and unsupported certainty. Track growth of context, repeated event history,
 opaque identifiers and another subject's status copied into a note. Schema validity, source quotes,
 graph connectivity and correct answers from a pretrained agent do not establish memory usefulness.
+
+## Quality-change acceptance
+
+For ingestion and retrieval quality changes, retain a before/after comparison using the existing
+run artifacts, comparison modes and semantic measures. The
+[live audit](evaluation-memory-quality-2026-10-05.md) supplies cases and a historical snapshot,
+not a reproducible baseline or proof of the precise response defects. Establish the baseline from
+retained sources, failed-response evidence where available, and declared queries before changing
+the corpus. Record unavailable evidence and avoid inventing failure causes.
+
+Account for every accepted observation by outcome, including failed and blocked receipts. Report
+stored/accepted and model-output failures/attempts with denominators, separating fresh ingestion
+from recovery. On representative sources that reproduce the identified output-contract defects,
+demonstrate successful valid ingestion after the correction; unresolved failures remain explicit.
+Do not claim reliability from backlog size, a schema-valid response or a single successful model call.
+
+Review the same source/context pairs before and after, including the audit's two named expanded
+contexts where retained. Corrections must remove unrelated subjects and repeated event history,
+reduce that excess text and preserve attribution, supported meaning, conditions and uncertainty.
+Judge against original sources, including necessary related evidence; shorter text alone is not
+acceptance. Review subsequent evolution of those subjects to check the expansion does not return.
+
+Use the four known-topic audit queries and the recorded paraphrases where available, with expected
+evidence declared in advance. If exact query text is unavailable, label replacements rather than
+claiming an exact repeat. Preserve relevant-first recovery on the retained known-topic cases and
+include representative cross-subject and differently scoped queries. Compare direct search with
+linked expansion at the same nonzero linked limit: show less unrelated added material on the
+identified noisy cases while retaining useful related evidence. Disabling all links is not evidence
+of improved link quality. Report source recovery, irrelevant additions and returned text separately.
+An uncovered question does not establish an answer merely because neighbors were returned.
+
+Review supplied observations separately from generated context. Report bookkeeping-only sources
+and observations with reusable mechanisms, with sample counts and reasons; omission of a tracking
+identifier from generated prose does not turn an empty source event into a lesson. Attribute noise
+caused by source selection to its consumer and record any needed consumer follow-up separately from
+AMEM's ingestion/evolution results.
+
+Before live maintenance, preserve a consistent recoverable copy of the journal and collection plus
+the inspected source/context baseline. Account for the audit's retained failed observations, with
+each recovered or given an explicit remaining reason. Correct identified contexts where the source
+evidence supports a correction; retain a reason for any deferred case. Verify source content,
+provenance, identities and source timestamps survive, unaffected records remain intact, and new
+search results reflect acknowledged corrections. Use isolated copies for destructive experiments;
+never reset the live corpus to obtain a cleaner comparison. Private evidence remains outside the
+public repository. This is bounded change acceptance, not a global accuracy or availability promise.
 
 ## Performance and cost
 

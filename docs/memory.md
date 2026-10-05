@@ -46,7 +46,8 @@ interface SearchOptions {
   linkedLimit?: number;
 }
 type SearchResult =
-  { note: Note; via: "match"; score: number } | { note: Note; via: "link" };
+  | { note: Note; via: "match"; score: number }
+  | { note: Note; via: "link" };
 
 class AgenticMemory {
   constructor(
@@ -206,6 +207,21 @@ note among the records and one record per identity, and then writes the exact su
 without regeneration. Reapplying the same plan preserves identities, vectors and timestamps; the
 declared embedding space is the instance's own, while the queue binds the collection. The queue owns
 exclusivity and plan durability; raw add's uncertain-failure behavior above remains unchanged.
+
+## Existing-context correction
+
+Support controlled correction of identified existing contexts that violate the
+[source-focused evolution guidance](prompts.md#evolution-instructions). Derive the corrected meaning
+from immutable original sources and any relevant, attributed supporting sources, rather than treating
+an expanded generated context as evidence. Preserve supported conclusions, applicability and caveats.
+This is targeted maintenance, not automatic corpus-wide rewriting or a permanent revision store.
+
+Preserve note identity, original content, source timestamp, metadata and existing links. Update
+semantic attributes and their embeddings consistently under the current representation and embedding
+space; unchanged records remain unchanged. Apply the existing update-time and write-uncertainty rules.
+Correction must respect collection writer ownership and must not introduce a competing direct writer.
+The maintenance interface and interruption handling belong to Architecture; preservation and
+before/after evidence follow [the quality evaluation](evaluation.md#quality-change-acceptance).
 
 ## Verification
 

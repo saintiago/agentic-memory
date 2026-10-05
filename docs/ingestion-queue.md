@@ -115,7 +115,8 @@ silently drops accepted work is allowed.
 A model transport reports failures with a machine-readable category
 ([language model](language-model.md#transport-behavior)). A rejected credential or a missing
 provider resource blocks the receipt with a safe diagnostic and is retried only at the retry limit
-until the host corrects the configuration; unusable model output fails the receipt permanently; a
+until the host corrects the configuration; unusable model output ends the current processing attempt
+as a failed receipt, retained for explicit recovery below; a
 temporary provider or transport failure is retried. A storage failure that reports an unauthorized,
 forbidden or missing resource (an HTTP status of 401, 403 or 404 on the failure or one of its
 causes) is that credential or storage condition and blocks the same way. Reconciliation, not
@@ -174,6 +175,25 @@ observation. Until then the blocked receipt keeps its place, so no later observa
 Claiming and reconciliation serialize through journal transactions, including across handles: a
 completed `stored` decision cannot be undone by a previously selected retry. If the worker claims
 first, the receipt is processing and reconciliation rejects because it is no longer blocked.
+
+## Recovery of failed observations
+
+After the cause is corrected, an operator can explicitly return a retained failed observation that
+is known not to have attempted any note write to processing. Preserve its receipt, source key,
+accepted content, provenance, observation timestamp, allocated note identity and prior attempt
+accounting. An identical producer resubmission still returns the receipt; it does not implicitly
+restart failed work. Do not manufacture a new source key or call raw add to recover it.
+
+Recovered work goes through normal preparation against the current corpus and the same exclusive
+writer. Its recovery position must be explicit; already completed later observations are not undone
+to recreate the old neighborhood. Once pending again, ordinary drain and crash-recovery guarantees
+apply. Repeating a recovery request must not create duplicate pending work or reprocess a stored
+receipt. If output remains unusable, report failure without publishing malformed or partial results.
+
+An uncertain write, a committed plan or unresolved legacy evidence is not a known-unwritten failure.
+Use the existing plan replay or reconciliation rules instead. Keep acceptance, failed outcomes and
+recovered storage separately visible; an empty backlog never proves all accepted sources were stored.
+The recovery operation's public interface and scheduling details belong to Architecture.
 
 ## Visibility and verification
 
