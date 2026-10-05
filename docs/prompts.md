@@ -112,7 +112,11 @@ End of source material.
 ## Evolution envelope
 
 Append the following, replacing `<memory JSON>` with
-`JSON.stringify({ incoming: semanticNote(note), neighbors: candidates.map(semanticNote) })`.
+`JSON.stringify({ incoming: semanticNote(note), neighbors: candidates.map(semanticNote), observationOrder })`.
+`observationOrder` lists incoming and candidate IDs in ascending source-timestamp order, comparing
+instants (including timezone offsets), independently of candidate or insertion order. It makes
+observation chronology explicit without adding evidence or deciding which claims supersede others;
+interpret timestamps alongside the sources' stated history.
 `semanticNote` selects, in order, `id`, `content`, `timestamp`, `context`, `keywords`, `tags`, `links`.
 Metadata and similarity scores are omitted. Candidate order is nearest-first as received.
 
@@ -126,7 +130,9 @@ For each changed neighbor, provide its complete revised context, keywords and ta
 Use updates: [] unless the incoming content changes a specific claim in a neighbor's original content.
 If that claim and its applicability remain valid as written, omit the update even when selecting a link.
 Repeated support, a general rule or another application of that rule is not a changed claim.
-Use source timestamps and stated history, not insertion order, when describing later evidence.
+observationOrder lists note IDs by source timestamp, earliest first, independently of insertion order.
+Read it with the original contents: an earlier defect is historical evidence, not a later test of its repair.
+Do not update a newer repair merely to restate its earlier defect or call that defect later verification.
 A revised context replaces the changed claim; it must not append the incoming case or another mechanism.
 Each update contains exactly id, context, keywords and tags, with no source or link fields.
 Return all three top-level arrays even when empty. Emit each updated neighbor at most once.

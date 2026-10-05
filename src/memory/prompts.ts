@@ -135,7 +135,9 @@ const evolutionEnvelope = (memoryJson: string): string =>
     "Use updates: [] unless the incoming content changes a specific claim in a neighbor's original content.",
     "If that claim and its applicability remain valid as written, omit the update even when selecting a link.",
     "Repeated support, a general rule or another application of that rule is not a changed claim.",
-    "Use source timestamps and stated history, not insertion order, when describing later evidence.",
+    "observationOrder lists note IDs by source timestamp, earliest first, independently of insertion order.",
+    "Read it with the original contents: an earlier defect is historical evidence, not a later test of its repair.",
+    "Do not update a newer repair merely to restate its earlier defect or call that defect later verification.",
     "A revised context replaces the changed claim; it must not append the incoming case or another mechanism.",
     "Each update contains exactly id, context, keywords and tags, with no source or link fields.",
     "Return all three top-level arrays even when empty. Emit each updated neighbor at most once.",
@@ -169,5 +171,11 @@ export const assembleEvolutionPrompt = (
     JSON.stringify({
       incoming: semanticNote(source.incoming),
       neighbors: source.neighbors.map(semanticNote),
+      observationOrder: [source.incoming, ...source.neighbors]
+        .sort(
+          (left, right) =>
+            Date.parse(left.timestamp) - Date.parse(right.timestamp),
+        )
+        .map((note) => note.id),
     }),
   )}`;

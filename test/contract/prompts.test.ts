@@ -193,6 +193,7 @@ describe("prompt assembly", () => {
           links: SECOND_NEIGHBOR.links,
         },
       ],
+      observationOrder: [SECOND_NEIGHBOR.id, NEIGHBOR.id, INCOMING.id],
     });
 
     expect(prompt).toBe(
@@ -207,6 +208,28 @@ describe("prompt assembly", () => {
     expect(prompt).not.toContain("metadata");
     expect(prompt).not.toContain("similarity");
     expect(prompt).not.toContain(UPDATE_TIME);
+  });
+
+  it("makes an earlier incoming observation explicit without reordering candidates", () => {
+    const incoming = { ...INCOMING, timestamp: "2026-09-26T08:00:00+02:00" };
+    const neighbor = { ...NEIGHBOR, timestamp: "2026-09-26T06:30:00Z" };
+    const prompt = assembleEvolutionPrompt(defaultPrompts.evolution, {
+      incoming,
+      neighbors: [neighbor, SECOND_NEIGHBOR],
+    });
+    const payload = payloadLine(prompt, "End of memory data.") as {
+      observationOrder: string[];
+      neighbors: Array<{ id: string }>;
+    };
+    expect(payload.observationOrder).toEqual([
+      SECOND_NEIGHBOR.id,
+      incoming.id,
+      neighbor.id,
+    ]);
+    expect(payload.neighbors.map((note) => note.id)).toEqual([
+      neighbor.id,
+      SECOND_NEIGHBOR.id,
+    ]);
   });
 });
 
