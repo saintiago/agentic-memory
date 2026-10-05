@@ -31,7 +31,7 @@ const loadSqlite = (): typeof import("node:sqlite") =>
   require("node:sqlite") as typeof import("node:sqlite");
 
 /** The journal schema this reader understands; a different version is refused, not guessed at. */
-export const supportedJournalVersion = "2";
+export const supportedJournalVersion = "3";
 
 /** One receipt row of the retained journal copy, with the fields baseline evidence needs. */
 export const journalCopyReceiptSchema = z.strictObject({

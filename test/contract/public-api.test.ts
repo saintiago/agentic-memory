@@ -42,8 +42,11 @@ import type {
   Page,
   PrepareInput,
   QueueObservation,
+  QueueReceiptPage,
   QueueReceipt,
   QueueReceiptStatus,
+  QueueRecovery,
+  QueueRecoveryRequest,
   QueueSubmission,
   QueueStatus,
   ReconcileOutcome,
@@ -267,15 +270,21 @@ describe("package root exports", () => {
       "QueueBindingError",
       "QueueClosedError",
       "QueueConflictError",
+      "QueueReceiptNotFoundError",
       "QueueRequestError",
+      "QueueStateConflictError",
       "QueueWorkerLockedError",
       "legacyImportResultSchema",
       "legacyReceiptSchema",
       "openIngestionQueue",
       "queueBindingSchema",
       "queueObservationSchema",
+      "queueReceiptPageSchema",
       "queueReceiptSchema",
       "queueReceiptStatuses",
+      "queueRecoveryEvidenceSchema",
+      "queueRecoveryRequestSchema",
+      "queueRecoverySchema",
       "queueStatusSchema",
       "reconcileOutcomeSchema",
     ] as const;
@@ -295,6 +304,9 @@ describe("package root exports", () => {
     >();
     expectTypeOf<QueueReceipt["attemptCount"]>().toEqualTypeOf<number>();
     expectTypeOf<QueueReceipt["noteId"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<QueueReceiptPage["receipts"]>().toEqualTypeOf<
+      QueueReceipt[]
+    >();
     expectTypeOf<QueueStatus["counts"]["blocked"]>().toEqualTypeOf<number>();
     expectTypeOf<LegacyReceipt["status"]>().toEqualTypeOf<
       "pending" | "stored" | "uncertain"
@@ -323,6 +335,24 @@ describe("package root exports", () => {
     expectTypeOf<IngestionQueue["reconcile"]>()
       .parameter(1)
       .toEqualTypeOf<ReconcileOutcome>();
+    expectTypeOf<IngestionQueue["pageReceipts"]>().returns.toEqualTypeOf<
+      Promise<QueueReceiptPage>
+    >();
+    expectTypeOf<IngestionQueue["recoverFailed"]>()
+      .parameter(1)
+      .toEqualTypeOf<QueueRecoveryRequest>();
+    expectTypeOf<IngestionQueue["recoverFailed"]>().returns.toEqualTypeOf<
+      Promise<QueueRecovery>
+    >();
+    expectTypeOf<IngestionQueue["correctContext"]>()
+      .parameter(0)
+      .toEqualTypeOf<ContextCorrectionInput>();
+    expectTypeOf<IngestionQueue["correctContext"]>()
+      .parameter(1)
+      .toEqualTypeOf<ContextCorrectionPreparer>();
+    expectTypeOf<IngestionQueue["correctContext"]>().returns.toEqualTypeOf<
+      Promise<{ note: Note; changed: boolean }>
+    >();
   });
 
   it("keeps the documented prompt and response types usable through the package root", () => {

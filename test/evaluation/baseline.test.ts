@@ -165,13 +165,14 @@ const writeJournal = async (
         plan TEXT,
         plan_committed INTEGER NOT NULL DEFAULT 0,
         requires_reconciliation INTEGER NOT NULL DEFAULT 0,
-        reconciled INTEGER NOT NULL DEFAULT 0
+        reconciled INTEGER NOT NULL DEFAULT 0,
+        recoveries TEXT
       ) STRICT;
     `);
     const insertMetadata = db.prepare(
       "INSERT INTO queue_metadata (key, value) VALUES (?, ?)",
     );
-    insertMetadata.run("journalVersion", options.version ?? "2");
+    insertMetadata.run("journalVersion", options.version ?? "3");
     insertMetadata.run("representation", "amem-note-v1");
     insertMetadata.run("binding", JSON.stringify(options.binding ?? BINDING));
     const insert = db.prepare(
@@ -263,7 +264,7 @@ describe("journal copy", () => {
     });
     await copyJournal(source, copy);
     const journal = readJournalCopy(copy);
-    expect(journal.version).toBe("2");
+    expect(journal.version).toBe("3");
     expect(journal.binding).toEqual(BINDING);
     expect(journal.latestSequence).toBe(2);
     expect(journal.receipts[1]?.attemptCount).toBe(38);
@@ -273,7 +274,7 @@ describe("journal copy", () => {
   it("refuses an unsupported journal schema instead of guessing at columns", async () => {
     const directory = await tempDirectory();
     const file = path.join(directory, "future.sqlite");
-    await writeJournal(file, { version: "3" });
+    await writeJournal(file, { version: "4" });
     expect(() => readJournalCopy(file)).toThrow(JournalCopyError);
   });
 

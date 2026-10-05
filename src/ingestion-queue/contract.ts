@@ -77,6 +77,19 @@ export const queueBindingSchema = z.strictObject({
 export type QueueBinding = z.infer<typeof queueBindingSchema>;
 
 /**
+ * One effective recovery's retained evidence: when it was requested, the failed attempt count the
+ * operator inspected and the safe diagnostic that attempt reported. Receipt evidence, not note
+ * metadata.
+ */
+export const queueRecoveryEvidenceSchema = z.strictObject({
+  requestedAt: instant("A recovery request time"),
+  attemptCount: z.int().nonnegative(),
+  lastError: z.string().min(1),
+});
+
+export type QueueRecoveryEvidence = z.infer<typeof queueRecoveryEvidenceSchema>;
+
+/**
  * One accepted observation's public state. `noteId` appears once the note is stored, because an
  * accepted observation is not yet searchable.
  */
@@ -90,6 +103,7 @@ export const queueReceiptSchema = z.strictObject({
   nextRetryAt: instant("A retry time").optional(),
   lastError: z.string().min(1).optional(),
   noteId: z.uuid().optional(),
+  recoveries: z.array(queueRecoveryEvidenceSchema).min(1).optional(),
 });
 
 export type QueueReceipt = z.infer<typeof queueReceiptSchema>;
@@ -103,6 +117,32 @@ export const queueSubmissionSchema = queueReceiptSchema.extend({
 });
 
 export type QueueSubmission = z.infer<typeof queueSubmissionSchema>;
+
+/** One page of current receipts in acceptance-sequence order; a missing cursor ends traversal. */
+export const queueReceiptPageSchema = z.strictObject({
+  receipts: z.array(queueReceiptSchema),
+  cursor: z.string().min(1).optional(),
+});
+
+export type QueueReceiptPage = z.infer<typeof queueReceiptPageSchema>;
+
+/** The operator's inspected failed-attempt count for one explicit recovery request. */
+export const queueRecoveryRequestSchema = z.strictObject({
+  expectedAttemptCount: z.int().nonnegative(),
+});
+
+export type QueueRecoveryRequest = z.infer<typeof queueRecoveryRequestSchema>;
+
+/**
+ * The outcome of one recovery request: the current receipt and whether this call made a failed
+ * receipt pending again. `recovered: false` reports an ineffective repeat without writing.
+ */
+export const queueRecoverySchema = z.strictObject({
+  receipt: queueReceiptSchema,
+  recovered: z.boolean(),
+});
+
+export type QueueRecovery = z.infer<typeof queueRecoverySchema>;
 
 /** Receipt outcomes and pending backlog of one queue. Counts include every accepted receipt. */
 export const queueStatusSchema = z.strictObject({
@@ -120,6 +160,12 @@ export const queueStatusSchema = z.strictObject({
   oldestPendingAt: instant("An acceptance time").optional(),
   oldestPendingAgeMs: z.int().nonnegative().optional(),
   lastError: z.string().min(1).optional(),
+  contextCorrection: z
+    .strictObject({
+      noteId: z.uuid(),
+      lastError: z.string().min(1).optional(),
+    })
+    .optional(),
 });
 
 export type QueueStatus = z.infer<typeof queueStatusSchema>;

@@ -10,6 +10,7 @@ import type { JsonValue } from "../note-store/index.js";
 import type {
   LegacyReceipt,
   QueueObservation,
+  QueueRecoveryEvidence,
   QueueReceiptStatus,
   ReconcileOutcome,
 } from "./contract.js";
@@ -31,6 +32,8 @@ export interface JournalRecord {
   readonly lastError: string | undefined;
   readonly storedAt: string | undefined;
   readonly plan: string | undefined;
+  /** Retained evidence of each effective recovery, oldest first; absent when there are none. */
+  readonly recoveries: QueueRecoveryEvidence[] | undefined;
   /**
    * Whether preparation committed a complete plan for this receipt at least once. A receipt
    * without a plan but with this evidence lost a committed plan, so the queue must not prepare
@@ -46,6 +49,19 @@ export interface JournalRecord {
   readonly reconciled: boolean;
 }
 
+/**
+ * The one pending context-correction slot, while the journal holds it. A missing plan is
+ * committed-plan evidence with lost data, so the queue blocks instead of preparing again.
+ */
+export interface PendingCorrection {
+  readonly noteId: string;
+  readonly plan: string | undefined;
+  readonly attemptCount: number;
+  readonly nextRetryAt: string | undefined;
+  readonly lastError: string | undefined;
+  readonly updatedAt: string;
+}
+
 /** One failure a worker recorded for a receipt. */
 export interface JournalFailure {
   readonly status: Extract<
@@ -56,12 +72,23 @@ export interface JournalFailure {
   readonly lastError: string;
 }
 
+/** One failed correction application attempt; the slot carries the cumulative count. */
+export interface JournalCorrectionFailure {
+  readonly nextRetryAt: string | undefined;
+  readonly lastError: string;
+}
+
 /** Receipt counts and the oldest pending acceptance, for status reporting. */
 export interface JournalStatus {
   readonly counts: Record<QueueReceiptStatus, number>;
   readonly oldestPendingAt: string | undefined;
-  /** The global reconciliation diagnostic, otherwise the oldest pending receipt's error. */
+  /**
+   * The global reconciliation diagnostic, the pending correction's diagnostic, otherwise the
+   * oldest pending receipt's error.
+   */
   readonly pendingError: string | undefined;
+  /** The pending context correction's selected note and safe diagnostic, while it exists. */
+  readonly correction: { noteId: string; lastError?: string } | undefined;
 }
 
 /** The journal bound to the version, representation and binding of its first handle. */
@@ -82,6 +109,8 @@ export type JournalOperation =
       readonly path: string;
       readonly expected: ExpectedJournalMetadata;
     }
+  | { readonly operation: "upgrade" }
+  | { readonly operation: "recheckUpgrade" }
   | {
       readonly operation: "submit";
       readonly observation: QueueObservation;
@@ -93,6 +122,11 @@ export type JournalOperation =
       readonly now: string;
     }
   | { readonly operation: "byId"; readonly receiptId: string }
+  | {
+      readonly operation: "pageReceipts";
+      readonly limit: number;
+      readonly cursor: string | undefined;
+    }
   | { readonly operation: "nextPending" }
   | { readonly operation: "unresolvedReconciliation" }
   | {
@@ -124,6 +158,27 @@ export type JournalOperation =
       readonly outcome: ReconcileOutcome;
       readonly now: string;
     }
+  | {
+      readonly operation: "recoverFailed";
+      readonly receiptId: string;
+      readonly expectedAttemptCount: number;
+      readonly now: string;
+    }
+  | { readonly operation: "correction" }
+  | { readonly operation: "correctionRefusal" }
+  | {
+      readonly operation: "saveCorrection";
+      readonly noteId: string;
+      readonly plan: string;
+      readonly now: string;
+    }
+  | { readonly operation: "beginCorrectionAttempt"; readonly now: string }
+  | {
+      readonly operation: "markCorrectionFailure";
+      readonly failure: JournalCorrectionFailure;
+      readonly now: string;
+    }
+  | { readonly operation: "clearCorrection" }
   | { readonly operation: "status" }
   | { readonly operation: "close" };
 
@@ -136,6 +191,8 @@ export type JournalRequest = JournalOperation & { readonly id: number };
  */
 export type JournalFailureReport =
   | { readonly kind: "conflict"; readonly sourceKey: string }
+  | { readonly kind: "state"; readonly reason: string }
+  | { readonly kind: "notFound"; readonly receiptId: string }
   | { readonly kind: "binding"; readonly reason: string }
   | { readonly kind: "request"; readonly reason: string }
   | {

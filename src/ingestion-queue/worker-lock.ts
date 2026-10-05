@@ -19,6 +19,13 @@ const lockName = (journalPath: string): string =>
     .update(canonicalJournalPath(journalPath))
     .digest("hex")}`;
 
+/**
+ * The exclusive operations of one queue. Only `worker` means the ingestion worker runs; every
+ * other purpose still excludes a second owner and is reported as itself to ownership probes.
+ */
+export type WorkerLockPurpose =
+  "worker" | "migration" | "upgrade" | "correction";
+
 /** One worker's exclusive ownership of a queue; released on the owning process's exit. */
 export class WorkerLock {
   readonly #server: Server;
@@ -29,7 +36,7 @@ export class WorkerLock {
 
   static acquire(
     journalPath: string,
-    purpose: "worker" | "migration" = "worker",
+    purpose: WorkerLockPurpose = "worker",
   ): Promise<WorkerLock> {
     // Probes never acquire ownership. Report its purpose so migration does not look like a
     // running worker. A disconnected probe cannot disrupt ownership.
@@ -62,8 +69,19 @@ export class WorkerLock {
    * never create, steal or disturb ownership.
    */
   static isWorkerRunning(journalPath: string): Promise<boolean> {
+    return WorkerLock.ownerPurpose(journalPath).then(
+      (purpose) => purpose === "worker",
+    );
+  }
+
+  /**
+   * The purpose the current owner of the queue reported, or `undefined` when no owner holds it.
+   * The probe connects to the ownership binding instead of taking it, so it can never create,
+   * steal or disturb ownership.
+   */
+  static ownerPurpose(journalPath: string): Promise<string | undefined> {
     const socket = connect({ path: lockName(journalPath) });
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<string | undefined>((resolve, reject) => {
       let purpose = "";
       socket.setEncoding("utf8");
       socket.on("data", (chunk: string) => {
@@ -71,12 +89,14 @@ export class WorkerLock {
       });
       socket.once("end", () => {
         socket.destroy();
-        resolve(purpose === "worker");
+        resolve(purpose);
       });
       socket.once("error", (cause: NodeJS.ErrnoException) => {
         socket.destroy();
-        if (cause.code === "ECONNREFUSED") {
-          resolve(false);
+        // A refused connection means no owner listens; a reset means the owner released the
+        // binding while this probe was connecting. Neither may surface as a probe failure.
+        if (cause.code === "ECONNREFUSED" || cause.code === "ECONNRESET") {
+          resolve(undefined);
           return;
         }
         reject(cause);

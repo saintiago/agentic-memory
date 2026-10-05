@@ -14,8 +14,11 @@ import {
 import {
   MemoryError,
   ModelResponseError,
+  contextCorrectionInputSchema,
   insertionPlanSchema,
   representationVersion,
+  type ContextCorrectionInput,
+  type ContextCorrectionPreparer,
   type InsertionPlan,
   type PrepareInput,
 } from "../memory/index.js";
@@ -26,6 +29,9 @@ import {
   queueBindingSchema,
   queueObservationSchema,
   queueReceiptSchema,
+  queueReceiptPageSchema,
+  queueRecoveryRequestSchema,
+  queueRecoverySchema,
   queueStatusSchema,
   queueSubmissionSchema,
   reconcileOutcomeSchema,
@@ -34,12 +40,25 @@ import {
   type QueueBinding,
   type QueueObservation,
   type QueueReceipt,
+  type QueueReceiptPage,
+  type QueueRecovery,
+  type QueueRecoveryRequest,
   type QueueSubmission,
   type QueueStatus,
   type ReconcileOutcome,
 } from "./contract.js";
-import { QueueClosedError, QueueRequestError } from "./errors.js";
-import { Journal, type JournalFailure, type JournalRecord } from "./journal.js";
+import {
+  QueueClosedError,
+  QueueRequestError,
+  QueueStateConflictError,
+} from "./errors.js";
+import {
+  Journal,
+  type JournalCorrectionFailure,
+  type JournalFailure,
+  type JournalRecord,
+  type PendingCorrection,
+} from "./journal.js";
 import { openJournalPath } from "./journal-path.js";
 import { WorkerLock } from "./worker-lock.js";
 
@@ -76,6 +95,12 @@ export interface IngestionQueue {
   submit(observation: QueueObservation): Promise<QueueSubmission>;
   /** Look up one receipt by identity; an unknown identity returns `undefined`. */
   receipt(id: string): Promise<QueueReceipt | undefined>;
+  /**
+   * One acceptance-sequence page of current receipts, defaulting to 100. The cursor is opaque and
+   * journal-owned; an omitted next cursor completes traversal. Every outcome is included and no
+   * source payload, provenance or plan is exposed.
+   */
+  pageReceipts(limit?: number, cursor?: string): Promise<QueueReceiptPage>;
   /** Current receipt outcomes, backlog and worker availability. */
   status(): Promise<QueueStatus>;
   /** Import preserved legacy receipts idempotently; no workspace scan is performed. */
@@ -84,6 +109,23 @@ export interface IngestionQueue {
   ): Promise<LegacyImportResult>;
   /** Apply an operator decision to one blocked receipt. */
   reconcile(id: string, outcome: ReconcileOutcome): Promise<QueueReceipt>;
+  /**
+   * Return one failed receipt known not to have written to processing, after the cause was
+   * corrected. An inspected `expectedAttemptCount` guards against stale and repeated requests.
+   */
+  recoverFailed(
+    id: string,
+    input: QueueRecoveryRequest,
+  ): Promise<QueueRecovery>;
+  /**
+   * Prepare and apply exactly one reviewed context correction under exclusive writer ownership.
+   * The committed plan replays before later ingestion after an interruption; ingestion cannot
+   * drain while the correction is pending.
+   */
+  correctContext(
+    input: ContextCorrectionInput,
+    preparer: ContextCorrectionPreparer,
+  ): Promise<{ note: Note; changed: boolean }>;
   /** Acquire worker ownership and drain durable pending work. */
   start(): Promise<void>;
   /** Stop claiming work, settle the active operation and release worker ownership. */
@@ -289,6 +331,9 @@ const toReceipt = (record: JournalRecord): QueueReceipt =>
     ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
     // A note identity is published only once the note is stored; acceptance is not searchability.
     ...(record.status === "stored" ? { noteId: record.noteId } : {}),
+    ...(record.recoveries === undefined
+      ? {}
+      : { recoveries: record.recoveries }),
   });
 
 /** Compare one plan with the queue's bound collection and the accepted note identity. */
@@ -310,6 +355,73 @@ const assertPlanBinding = (
   if (plan.noteId.toLowerCase() !== noteId.toLowerCase()) {
     throw new QueuePlanError(
       "The stored insertion plan belongs to another accepted note identity.",
+    );
+  }
+};
+
+/** Structural JSON equality, independent of object key order; undefined properties are ignored. */
+const sameJson = (left: unknown, right: unknown): boolean => {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((element, index) => sameJson(element, right[index]))
+    );
+  }
+  if (
+    typeof left !== "object" ||
+    left === null ||
+    typeof right !== "object" ||
+    right === null
+  ) {
+    return false;
+  }
+  const meaningful = (value: object): [string, unknown][] =>
+    Object.entries(value).filter(([, nested]) => nested !== undefined);
+  const rightEntries = new Map(meaningful(right));
+  const leftEntries = meaningful(left);
+  return (
+    leftEntries.length === rightEntries.size &&
+    leftEntries.every(
+      ([key, value]) =>
+        rightEntries.has(key) && sameJson(value, rightEntries.get(key)),
+    )
+  );
+};
+
+/**
+ * Validate one prepared correction plan: it belongs to this queue's binding and the inspected
+ * note, contains exactly that one record, and preserves the inspected source fields and links.
+ * Only the reviewed semantic attributes may differ.
+ */
+const assertCorrectionPlan = (
+  plan: InsertionPlan,
+  binding: QueueBinding,
+  expected: Note,
+): void => {
+  assertPlanBinding(plan, binding, expected.id);
+  if (plan.records.length !== 1) {
+    throw new QueueStateConflictError(
+      "The prepared context correction plan must contain exactly one note record.",
+    );
+  }
+  const record = plan.records[0];
+  const note = record?.note;
+  if (
+    note === undefined ||
+    note.id.toLowerCase() !== expected.id.toLowerCase() ||
+    note.content !== expected.content ||
+    note.timestamp !== expected.timestamp ||
+    !sameJson(note.metadata ?? null, expected.metadata ?? null) ||
+    !sameJson(note.links, expected.links)
+  ) {
+    throw new QueueStateConflictError(
+      "The prepared context correction does not preserve the inspected note's identity, " +
+        "source fields and links.",
     );
   }
 };
@@ -379,13 +491,48 @@ class DurableQueue implements IngestionQueue {
     return record === undefined ? undefined : toReceipt(record);
   }
 
+  async pageReceipts(limit = 100, cursor?: string): Promise<QueueReceiptPage> {
+    this.#assertOpen();
+    const parsedLimit = z
+      .int()
+      .positive("The receipt page limit must be a positive safe integer.")
+      .safeParse(limit);
+    if (!parsedLimit.success) {
+      throw new QueueRequestError(
+        "The receipt page limit must be a positive safe integer.",
+        parsedLimit.error,
+      );
+    }
+    const parsedCursor =
+      cursor === undefined
+        ? undefined
+        : z
+            .string()
+            .min(1, "The receipt page cursor must be nonempty.")
+            .safeParse(cursor);
+    if (parsedCursor !== undefined && !parsedCursor.success) {
+      throw new QueueRequestError(
+        "The receipt page cursor is not valid.",
+        parsedCursor.error,
+      );
+    }
+    const page = await this.#journal.pageReceipts(
+      parsedLimit.data,
+      parsedCursor?.data,
+    );
+    return queueReceiptPageSchema.parse({
+      receipts: page.records.map(toReceipt),
+      ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
+    });
+  }
+
   async status(): Promise<QueueStatus> {
     this.#assertOpen();
     const [journalStatus, workerOwned] = await Promise.all([
       this.#journal.status(),
       WorkerLock.isWorkerRunning(this.journalPath),
     ]);
-    const { counts, oldestPendingAt, pendingError } = journalStatus;
+    const { counts, oldestPendingAt, pendingError, correction } = journalStatus;
     const accepted = Object.values(counts).reduce(
       (total, count) => total + count,
       0,
@@ -408,6 +555,7 @@ class DurableQueue implements IngestionQueue {
             oldestPendingAgeMs: Math.max(0, now - Date.parse(oldestPendingAt)),
           }),
       ...(lastError === undefined ? {} : { lastError }),
+      ...(correction === undefined ? {} : { contextCorrection: correction }),
     });
   }
 
@@ -464,6 +612,105 @@ class DurableQueue implements IngestionQueue {
     );
     this.#wake();
     return toReceipt(record);
+  }
+
+  async recoverFailed(
+    id: string,
+    input: QueueRecoveryRequest,
+  ): Promise<QueueRecovery> {
+    this.#assertOpen();
+    const parsedId = z.uuid().safeParse(id);
+    if (!parsedId.success) {
+      throw new QueueRequestError(
+        "The receipt identity must be a UUID.",
+        parsedId.error,
+      );
+    }
+    const parsedInput = queueRecoveryRequestSchema.safeParse(input);
+    if (!parsedInput.success) {
+      throw new QueueRequestError(
+        "The expected attempt count must be a nonnegative safe integer.",
+        parsedInput.error,
+      );
+    }
+    const { record, recovered } = await this.#journal.recoverFailed(
+      parsedId.data,
+      parsedInput.data.expectedAttemptCount,
+      new Date().toISOString(),
+    );
+    if (recovered) {
+      // Newly pending work should not wait for the next poll; the request never waits for it.
+      this.#wake();
+    }
+    return queueRecoverySchema.parse({ receipt: toReceipt(record), recovered });
+  }
+
+  async correctContext(
+    input: ContextCorrectionInput,
+    preparer: ContextCorrectionPreparer,
+  ): Promise<{ note: Note; changed: boolean }> {
+    this.#assertOpen();
+    const parsedInput = contextCorrectionInputSchema.safeParse(input);
+    if (!parsedInput.success) {
+      throw new QueueRequestError(
+        "The context correction input is not valid.",
+        parsedInput.error,
+      );
+    }
+    if (typeof preparer?.prepareContextCorrection !== "function") {
+      throw new QueueRequestError(
+        "The context correction needs a preparation capability.",
+      );
+    }
+    // Maintenance takes the same canonical ownership as draining and import: no worker may drain
+    // and no other maintenance operation may run while the reviewed change is prepared and
+    // applied. Producers may still submit.
+    const lock = await WorkerLock.acquire(this.journalPath, "correction");
+    try {
+      this.#assertOpen();
+      const refusal = await this.#journal.correctionRefusal();
+      if (refusal !== undefined) {
+        throw new QueueStateConflictError(refusal);
+      }
+      const expected = parsedInput.data.expected;
+      const preparation = await preparer.prepareContextCorrection(
+        parsedInput.data,
+      );
+      if (preparation.plan === undefined) {
+        if (preparation.note.id.toLowerCase() !== expected.id.toLowerCase()) {
+          throw new QueueStateConflictError(
+            "The correction preparation returned another note identity than the inspected one.",
+          );
+        }
+        return { note: preparation.note, changed: false };
+      }
+      try {
+        assertCorrectionPlan(preparation.plan, this.binding, expected);
+      } catch (cause) {
+        // A returned plan is caller-supplied input, not persisted journal evidence: its refusal
+        // is a typed state conflict, never the internal blocked-plan diagnostic.
+        if (cause instanceof QueuePlanError) {
+          throw new QueueStateConflictError(cause.reason);
+        }
+        throw cause;
+      }
+      await this.#journal.saveCorrection(
+        expected.id,
+        JSON.stringify(preparation.plan),
+        new Date().toISOString(),
+      );
+      const note = await this.#applyCorrection(expected.id);
+      if (note === undefined) {
+        const pending = await this.#journal.correction();
+        throw new QueueStateConflictError(
+          pending?.lastError ??
+            "The context correction could not be applied; its committed plan remains pending.",
+        );
+      }
+      return { note, changed: true };
+    } finally {
+      await lock.release();
+    }
   }
 
   /**
@@ -578,7 +825,26 @@ class DurableQueue implements IngestionQueue {
    */
   async #runWorker(lock: WorkerLock): Promise<void> {
     try {
+      // A pending correction owns the collection state and is replayed before any observation
+      // drains. A blocked slot is attempted once per worker start: correcting the configuration
+      // and restarting is what resumes it, never a tight retry loop.
+      let firstPass = true;
       while (!this.#stopRequested) {
+        const correction = await this.#journal.correction();
+        if (correction !== undefined) {
+          const due =
+            correction.nextRetryAt === undefined
+              ? firstPass
+              : Date.parse(correction.nextRetryAt) <= Date.now();
+          firstPass = false;
+          if (due) {
+            await this.#applyCorrection(correction.noteId);
+          } else {
+            await this.#wait(this.#correctionWaitMs(correction));
+          }
+          continue;
+        }
+        firstPass = false;
         const unresolved = await this.#journal.unresolvedReconciliation();
         if (unresolved !== undefined) {
           // The legacy system may have written this observation, so no collection write may
@@ -667,6 +933,112 @@ class DurableQueue implements IngestionQueue {
         new Date().toISOString(),
       );
     }
+  }
+
+  /**
+   * Apply the committed correction plan and clear its slot, recording the failure when it cannot.
+   * Returns the acknowledged note, or `undefined` when the attempt failed and its evidence was
+   * persisted for an exact replay. The same values, vector and update time are written again.
+   */
+  async #applyCorrection(noteId: string): Promise<Note | undefined> {
+    const pending = await this.#journal.correction();
+    if (pending === undefined) {
+      throw new QueueStateConflictError(
+        "The queue has no pending context correction.",
+      );
+    }
+    let plan: InsertionPlan;
+    try {
+      plan = this.#readCorrectionPlan(pending);
+    } catch (cause) {
+      // Damaged committed-plan evidence blocks with a diagnostic; preparation is never repeated.
+      const decision = classifyFailure(cause);
+      await this.#journal.markCorrectionFailure(
+        { nextRetryAt: undefined, lastError: decision.reason },
+        new Date().toISOString(),
+      );
+      return undefined;
+    }
+    // Record the attempt before application, so a crash during the write keeps its accounting.
+    const attempt = await this.#journal.beginCorrectionAttempt(
+      new Date().toISOString(),
+    );
+    try {
+      const note = await this.#memory.apply(plan);
+      if (note.id.toLowerCase() !== noteId.toLowerCase()) {
+        throw new QueuePlanError(
+          "Applying the context correction produced another note identity than the selected one.",
+        );
+      }
+      await this.#journal.clearCorrection();
+      return note;
+    } catch (cause) {
+      const decision = classifyFailure(cause);
+      const failure: JournalCorrectionFailure = {
+        nextRetryAt: decision.retryAfterBackoff
+          ? new Date(
+              Date.now() + retryDelayMs(attempt.attemptCount),
+            ).toISOString()
+          : undefined,
+        lastError: decision.reason,
+      };
+      await this.#journal.markCorrectionFailure(
+        failure,
+        new Date().toISOString(),
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Read the committed correction plan and validate it against this queue's binding and the
+   * selected note identity. A missing, unreadable or incompatible plan is committed-plan evidence
+   * that blocks instead of preparing a new correction.
+   */
+  #readCorrectionPlan(pending: PendingCorrection): InsertionPlan {
+    if (pending.plan === undefined) {
+      throw new QueuePlanError(
+        `The committed context correction for note ${pending.noteId} has no stored plan, so ` +
+          "the original application cannot be replayed.",
+      );
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(pending.plan);
+    } catch {
+      throw new QueuePlanError(
+        `The stored context correction plan for note ${pending.noteId} is unreadable.`,
+      );
+    }
+    const parsed = insertionPlanSchema.safeParse(value);
+    if (!parsed.success) {
+      throw new QueuePlanError(
+        `The stored context correction plan for note ${pending.noteId} does not satisfy the ` +
+          "documented contract.",
+      );
+    }
+    assertPlanBinding(parsed.data, this.binding, pending.noteId);
+    if (
+      parsed.data.records.length !== 1 ||
+      parsed.data.records[0]?.note.id.toLowerCase() !==
+        pending.noteId.toLowerCase()
+    ) {
+      throw new QueuePlanError(
+        `The stored context correction for note ${pending.noteId} is not its one-record plan.`,
+      );
+    }
+    return parsed.data;
+  }
+
+  /** How long to wait before reconsidering the pending correction slot. */
+  #correctionWaitMs(correction: PendingCorrection): number {
+    if (correction.nextRetryAt === undefined) {
+      return this.#pollIntervalMs;
+    }
+    return Math.min(
+      Math.max(0, Date.parse(correction.nextRetryAt) - Date.now()),
+      this.#pollIntervalMs,
+    );
   }
 
   /**
