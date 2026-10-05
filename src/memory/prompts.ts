@@ -48,6 +48,11 @@ an earlier defect does not refute its later repair just because it is inserted a
 recast a documented implemented repair as an intention or failure on that basis. If the evidence
 order or its effect on the claim is unclear, leave the neighbor unchanged.
 A qualification limits that same claim; it does not add another problem under a broader theme.
+Repeating, supporting or illustrating a rule the neighbor already states leaves that rule unchanged.
+A general rule and its specialized application may be linked, but do not merge their contexts:
+adding a general deleted-input mapping case does not revise an already complete suite-ownership
+repair. Omit corroborating evidence and cross-case summaries when they change no existing claim.
+Never describe an earlier source as later corroboration of a newer finding.
 A defect and its later repair can justify an update. Two defects with different causes or repairs,
 or findings about different lifecycle stages, do not qualify each other even when they concern
 the same subsystem or goal. Disabled capture settings and evidence lost during recovery are
@@ -129,6 +134,8 @@ const evolutionEnvelope = (memoryJson: string): string =>
     "For each changed neighbor, provide its complete revised context, keywords and tags.",
     "Use updates: [] unless the incoming content changes a specific claim in a neighbor's original content.",
     "If that claim and its applicability remain valid as written, omit the update even when selecting a link.",
+    "Repeated support, a general rule or another application of that rule is not a changed claim.",
+    "Use source timestamps and stated history, not insertion order, when describing later evidence.",
     "A revised context replaces the changed claim; it must not append the incoming case or another mechanism.",
     "Each update contains exactly id, context, keywords and tags, with no source or link fields.",
     "Return all three top-level arrays even when empty. Emit each updated neighbor at most once.",
