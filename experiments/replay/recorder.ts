@@ -11,12 +11,13 @@ import type {
   EmbeddedPage,
   LanguageModel,
   Match,
+  ModelFailureCategory,
   ModelRequest,
   Note,
   NoteStore,
   Page,
 } from "../../src/index.js";
-import { embeddingText } from "../../src/index.js";
+import { embeddingText, ModelRequestError } from "../../src/index.js";
 import type {
   DeclaredBudget,
   ModelCallRecord,
@@ -67,6 +68,8 @@ export interface InsertionCapture {
    * the declared canonical serialization. Null when the insertion never reached candidate selection.
    */
   neighbors: { count: number; characters: number } | null;
+  /** The candidate identities the insertion's evolution call was given, when it was reached. */
+  candidateIds: string[] | null;
   /** Batch writes with the current-note state each record replaced and their acknowledgment. */
   writes: Array<{
     acknowledged: boolean;
@@ -186,6 +189,7 @@ export class ReplayRecorder {
       constructResponse: null,
       firstEmbedding: null,
       neighbors: null,
+      candidateIds: null,
       writes: [],
     };
   }
@@ -277,15 +281,25 @@ export class ReplayRecorder {
     }
   }
 
-  /** Record one model call: aggregate it now, write it with the note identity of its insertion. */
-  async recordModelCall(record: ModelCallRecord): Promise<void> {
+  /**
+   * Record one model call: fill the candidate identities the store boundary observed for an
+   * evolution call, aggregate the call and write it with the note identity of its insertion.
+   */
+  async recordModelCall(
+    record: Omit<ModelCallRecord, "candidateIds">,
+  ): Promise<void> {
+    const capture = this.#insertion;
+    const enriched: ModelCallRecord = {
+      ...record,
+      candidateIds:
+        record.stage === "evolve" ? (capture?.candidateIds ?? null) : null,
+    };
     this.#calls[record.stage] += 1;
     this.#calls.total += 1;
     this.#callDurations[record.stage].push(record.durationMs);
     if (record.error !== null) {
       this.#calls.failed += 1;
     }
-    const capture = this.#insertion;
     if (
       capture !== null &&
       record.stage === "construct" &&
@@ -294,12 +308,12 @@ export class ReplayRecorder {
       capture.constructResponse = record.response;
     }
     if (capture === null) {
-      await this.#artifacts.appendModelCall(record);
+      await this.#artifacts.appendModelCall(enriched);
     } else {
       // The note identity is known only when the insertion resolves; flush the calls then.
-      this.#pendingCalls.push(record);
+      this.#pendingCalls.push(enriched);
     }
-    this.#observeUsage(record);
+    this.#observeUsage(enriched);
     this.#observeCallBudget();
   }
 
@@ -423,6 +437,7 @@ export class ReplayRecorder {
           0,
         ),
       };
+      capture.candidateIds = candidates.map((candidate) => candidate.note.id);
     }
   }
 
@@ -508,11 +523,33 @@ export const instrumentEmbedder = (
   },
 });
 
-const failureRecord = (cause: unknown): { name: string; message: string } => {
-  if (cause instanceof Error) {
-    return { name: cause.name, message: cause.message };
+/**
+ * The machine-readable category a transport reported for a failed call, read from the error chain
+ * Memory preserves as the cause. It is null for failures that are not a ModelRequestError, so a
+ * classifier can tell unusable model output apart from connectivity and provider failures.
+ */
+const failureCategory = (cause: unknown): ModelFailureCategory | null => {
+  let link: unknown = cause;
+  for (let depth = 0; depth < 8 && link instanceof Error; depth += 1) {
+    if (link instanceof ModelRequestError) {
+      return link.category;
+    }
+    link = link.cause;
   }
-  return { name: "Error", message: String(cause) };
+  return null;
+};
+
+const failureRecord = (
+  cause: unknown,
+): { name: string; message: string; category: ModelFailureCategory | null } => {
+  if (cause instanceof Error) {
+    return {
+      name: cause.name,
+      message: cause.message,
+      category: failureCategory(cause),
+    };
+  }
+  return { name: "Error", message: String(cause), category: null };
 };
 
 const lastOf = <T>(values: readonly T[]): T | undefined =>

@@ -280,6 +280,15 @@ describe("replay runner", () => {
     expect(calls.every((call) => call.error === null)).toBe(true);
     expect(calls.every((call) => call.request !== null)).toBe(true);
     expect(calls[0]?.sourceId).toBe("alpha-requirement");
+    // An evolution call records the candidate identities its response must reference; a
+    // construction call has no candidates to check.
+    for (const call of calls) {
+      if (call.stage === "evolve") {
+        expect((call.candidateIds ?? []).length).toBeGreaterThan(0);
+      } else {
+        expect(call.candidateIds).toBeNull();
+      }
+    }
     // Every call is correlated with the note its insertion allocated.
     for (const call of calls) {
       const source = sources.find(

@@ -69,6 +69,30 @@ than duplicating its full failure matrix across every journey.
 Use isolated collections and clean up even on failure. Tests must never write to prototype or user
 collections. Real model judgments belong in evaluation, not deterministic system-test assertions.
 
+## Quality recovery and maintenance checks
+
+Keep new correctness evidence with its owner. Memory component checks cover correction proposal
+validation, a complete expected-note comparison, detached inputs, preserved sources/links, no-op
+preparation, re-embedding/update time and application of its actual prepared plan. Use real isolated
+storage to verify corrected semantics are searchable after reopening.
+
+Queue checks cover complete receipt traversal, identity-preserving recovery and retained recovery
+evidence, stale attempt-count requests, transactional races with claim/recovery, and refusal while
+a later write plan is unresolved. Maintenance checks cover the shared lock, no writes before plan
+commit, pending-slot status, exact correction replay before subsequent ingestion, and blocking on
+damaged slot data. Reopen the previous journal schema and verify upgrade preserves existing receipt
+and plan values, including unknown historical evidence. Reuse the existing partial-write/replay
+failure controls rather than building another recovery framework.
+
+Service contract checks exercise actual queue receipts for enumeration/recovery, error mapping,
+durable acceptance versus storage feedback and client/OpenAPI compatibility. A focused workflow
+combines the offline correction command with actual preparation/application and service restart;
+it verifies single-writer exclusion and fresh inspection without introducing browser controls.
+Use the accepted [experience walkthrough questions](memory-quality-experience.md#refinement-questions)
+with failed, pending, stored and blocked examples. Source/link fidelity and smaller unrelated returned
+text remain model-quality evidence under [evaluation](evaluation.md#quality-change-acceptance), not
+schema, prompt snapshots or prose-length assertions.
+
 ## Memory-quality evaluation
 
 Treat evaluation as evidence about models, prompts and source material, separate from correctness
@@ -89,6 +113,14 @@ Record input order, model and embedding settings, prompts, corpus, query wording
 criteria. Preserve runs outside the core runtime so comparisons remain inspectable. Repeat stochastic
 runs when drawing conclusions about improvement; one successful run is not a guarantee. Manual
 source paraphrases can introduce ambiguity before the model sees them and must be audited too.
+
+The quality-baseline tooling is covered deterministically: journal copying and schema refusal,
+declared-query parsing, receipt accounting and representative selection, evidence-integrity refusal,
+restore-target isolation refusal, provider-request adjustment without implicit retries, model-call
+classification of null and categorized failures, linked-addition review accounting, metric
+denominators and the Qdrant collection-metadata location all run against local fixtures. The
+operator procedure itself produces private live evidence under
+[evaluation](evaluation.md#quality-maintenance-procedure), not repository test fixtures.
 
 ## Live boundaries and performance
 

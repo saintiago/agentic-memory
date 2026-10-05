@@ -32,11 +32,23 @@ interface IngestionQueue {
   readonly journalPath: string;
   submit(observation: QueueObservation): Promise<QueueSubmission>;
   receipt(id: string): Promise<QueueReceipt | undefined>;
+  pageReceipts(
+    limit?: number,
+    cursor?: string,
+  ): Promise<{ receipts: QueueReceipt[]; cursor?: string }>;
   status(): Promise<QueueStatus>;
   importLegacyReceipts(
     records: readonly LegacyReceipt[],
   ): Promise<LegacyImportResult>;
   reconcile(id: string, outcome: ReconcileOutcome): Promise<QueueReceipt>;
+  recoverFailed(
+    id: string,
+    input: { expectedAttemptCount: number },
+  ): Promise<QueueRecovery>;
+  correctContext(
+    input: ContextCorrectionInput,
+    preparer: ContextCorrectionPreparer,
+  ): Promise<{ note: Note; changed: boolean }>;
   start(): Promise<void>;
   stop(): Promise<void>;
   close(): Promise<void>;
@@ -56,11 +68,29 @@ acceptance from an identical resubmission that found the existing receipt:
 interface QueueSubmission extends QueueReceipt {
   created: boolean;
 }
+interface QueueRecovery {
+  receipt: QueueReceipt;
+  recovered: boolean;
+}
+interface QueueRecoveryEvidence {
+  requestedAt: string;
+  attemptCount: number;
+  lastError: string;
+}
 ```
 
 Receipt lookup returns status, attempt count, safe last error, next retry time when applicable,
 and note identity once stored. Statuses are `queued`, `processing`, `retrying`, `stored`, `failed`
 and `blocked`. Acceptance is not a promise that the note is already searchable.
+The optional receipt field `recoveries: QueueRecoveryEvidence[]` retains the previous failed
+attempt's safe error and cumulative attempt count for each effective recovery. Omit it when there
+have been no recoveries; duplicate requests append nothing. It is receipt evidence, not note metadata.
+`pageReceipts` defaults to 100, validates a positive safe integer limit and an opaque journal-owned
+cursor, and returns current receipts in acceptance-sequence order. Omit the next cursor at completion;
+continuing an unchanged journal traverses all receipts without duplicates or an internal total cap.
+It is read-only, includes every outcome and exposes no raw source payloads or plans. Status changes
+and new acceptances during traversal are not a snapshot. Clients can select failures locally without
+a new filter language; source keys and receipt IDs identify retained work.
 
 The worker consumes Memory's public prepare/apply operations. Preparation accepts a previously
 allocated note identity and returns an immutable, versioned insertion plan without writing notes.
@@ -68,6 +98,11 @@ The plan contains the complete new and changed note/vector records. Apply writes
 through NoteStore's public `put` contract, without model generation or fresh timestamps. These
 operations share the ordinary add algorithm; the host must not reimplement evolution or import
 private library internals. Raw add remains available for independently owned collections.
+`ContextCorrectionInput`, `ContextCorrectionPreparer` and its prepared result come from
+[Memory's public interface](memory.md#interface); `Note` comes from NoteStore. The focused correction
+preparer is supplied only to `correctContext`. Startup replay still uses the existing apply capability.
+The queue checks returned plans against its binding and the selected note identity. A correction
+plan must contain exactly that one record and preserve the inspected source fields and links.
 
 The [local memory service](service.md) owns HTTP access and provider lifecycle; the host supervises
 that service. Producers submit through its API rather than opening queue files. The API can accept
@@ -115,7 +150,8 @@ silently drops accepted work is allowed.
 A model transport reports failures with a machine-readable category
 ([language model](language-model.md#transport-behavior)). A rejected credential or a missing
 provider resource blocks the receipt with a safe diagnostic and is retried only at the retry limit
-until the host corrects the configuration; unusable model output fails the receipt permanently; a
+until the host corrects the configuration; unusable model output ends the current processing attempt
+as a failed receipt, retained for explicit recovery below; a
 temporary provider or transport failure is retried. A storage failure that reports an unauthorized,
 forbidden or missing resource (an HTTP status of 401, 403 or 404 on the failure or one of its
 causes) is that credential or storage condition and blocks the same way. Reconciliation, not
@@ -175,6 +211,95 @@ Claiming and reconciliation serialize through journal transactions, including ac
 completed `stored` decision cannot be undone by a previously selected retry. If the worker claims
 first, the receipt is processing and reconciliation rejects because it is no longer blocked.
 
+## Recovery of failed observations
+
+After the cause is corrected, an operator can explicitly return a retained failed observation that
+is known not to have attempted any note write to processing. Preserve its receipt, source key,
+accepted content, provenance, observation timestamp, allocated note identity and prior attempt
+accounting. An identical producer resubmission still returns the receipt; it does not implicitly
+restart failed work. Do not manufacture a new source key or call raw add to recover it.
+
+Recovered work goes through normal preparation against the current corpus and the same exclusive
+writer. Retain the original acceptance sequence: recovery returns to that position among unclaimed
+work; already completed later observations are not undone to recreate the old neighborhood.
+Once pending again, ordinary drain and crash-recovery guarantees
+apply. Repeating a recovery request must not create duplicate pending work or reprocess a stored
+receipt. If output remains unusable, report failure without publishing malformed or partial results.
+
+An uncertain write, a committed plan or unresolved legacy evidence is not a known-unwritten failure.
+Use the existing plan replay or reconciliation rules instead. Keep acceptance, failed outcomes and
+recovered storage separately visible; an empty backlog never proves all accepted sources were stored.
+`recoverFailed` validates a receipt UUID and a nonnegative safe integer `expectedAttemptCount`,
+taken from the operator's inspected receipt. In one journal transaction, require a `failed` receipt
+with that count, no plan, no committed-plan evidence and no unresolved legacy uncertainty. Refuse
+recovery while any receipt is processing, an unresolved committed insertion plan exists, a context
+correction is pending, or global legacy reconciliation is required. This keeps an earlier recovered
+sequence from overtaking a later interrupted write. Settle/replay or reconcile that work first.
+Claiming rechecks the earliest eligible sequence transactionally, so selection before a recovery
+commit cannot claim the old head afterward.
+
+On an effective request, append recovery evidence, change status to `queued`, clear current error
+and retry timing, and update receipt time. Preserve acceptance time, observation fields, allocated
+note ID, sequence and cumulative attempts. Increment attempts only at the ordinary claim boundary.
+Commit before returning `{ receipt, recovered: true }`; wake the worker without waiting for ingestion.
+Producer acceptance and accepted counts do not increase.
+
+A repeat carrying the same inspected count returns `{ receipt, recovered: false }` if the receipt
+is already pending or stored, or a later failed attempt has increased its count. It does not resume
+that later failure: the operator must inspect it and explicitly request its new count. A future
+count, a blocked/ineligible receipt or the write-safety conditions above produces a typed conflict
+with a safe reason; an unknown receipt is a typed not-found error. Validate eligibility from durable
+state, not error text. Concurrent requests serialize; only one effective transition records evidence.
+The receipt's recovery evidence survives successful storage even though its current `lastError` clears.
+Check the count and ineffective-repeat cases before the safety guards for an effective transition;
+returning the current receipt performs no write and does not claim that a blocked write was resolved.
+
+## Context maintenance
+
+`correctContext` is a stopped-worker maintenance operation, not an observation submission. Acquire
+the same canonical journal lock as draining/import, refusing while another owner holds it, and hold
+it through preparation, plan commit, application and durable completion. Submissions can still be
+accepted, but they cannot drain during maintenance. Refuse new correction while there is a pending
+correction, unresolved legacy uncertainty, or any unresolved committed insertion plan; resolve those
+before reading a correction's expected state. Pending known-unwritten observations can wait.
+
+Prepare exactly one reviewed correction through the supplied read-only capability. A no-op returns
+`{ note, changed: false }` without a journal plan. Otherwise validate the complete one-record plan
+and commit it into one journal-owned pending-correction slot before applying any note write. The slot
+contains selected note ID, complete serialized plan, cumulative application attempts, persisted retry
+timing and a safe last error when applicable. Do not
+create an observation receipt/source key, modify ingestion attempt counts, or retain runtime note history.
+Return `{ note, changed: true }` only after application acknowledgment and durable clearing of the slot.
+An unsuccessful preparation leaves notes unchanged and creates no slot.
+
+A pending slot holds every later mutation, including failed-receipt recovery and another correction.
+Legacy imports also refuse a pending slot, so they cannot introduce uncertainty ahead of its replay.
+After a crash, startup under writer ownership replays the exact correction plan before draining any
+observations. Preparation is never repeated once the slot commits. Transient application failures
+use the existing bounded backoff, retaining attempt count and next retry time across restarts.
+Record attempts before application; a blocking error has no scheduled retry. Incompatible, unreadable
+or missing plan data blocks with a safe
+diagnostic. Never clear that block by generating a new correction; correct configuration or restore
+the consistent journal/collection backup. Slot existence itself is committed-plan evidence, so a
+slot with missing plan data cannot look like unstarted preparation. Clearing occurs only after
+acknowledgment; a crash before clearing replays the same values, vector and update time.
+
+`status()` includes optional `contextCorrection: { noteId, lastError? }` while the slot exists.
+Observation counts/backlog retain their current meaning; the pending correction is separately visible
+and keeps ingestion unavailable until resolved. A lost maintenance response is not success: inspect
+the pending slot and complete current note, resume exact replay if pending, and compare the full
+reviewed attributes/source fields if already completed. Do not infer completion merely from note ID.
+
+## Journal upgrade
+
+Add receipt recovery evidence and the singleton correction slot in one transactional journal-schema
+upgrade under exclusive writer ownership. Stop old service/worker binaries before upgrade; refuse
+upgrade from a producer-only handle while an old worker owns the journal. Initialize existing
+receipts with no recovery evidence, not an invented history, and no pending correction. Preserve all
+bindings, acceptance sequences, identities, inputs, attempts, plan data and committed-plan/legacy
+flags. Refuse unknown schema versions and downgrade; use the matched service/client/library build.
+No collection schema or representation change, corpus reset or vector backfill accompanies this upgrade.
+
 ## Visibility and verification
 
 Expose backlog size, oldest pending age, worker availability and receipt outcomes. Report accepted,
@@ -195,3 +320,7 @@ its order, and that a shutdown which arrives during startup settles. Verify that
 still runs while another connection holds the journal's write lock, so journal contention never
 blocks a producer's event loop. Do not equate a visible new note with successful completion of the
 whole insertion.
+Also verify recovery request races/stale counts, evidence after storage, original-position scheduling,
+refusal during interrupted later writes, and restart after requeue. Verify maintenance lock exclusion,
+preparation/no-op failure paths, pending-slot status, crash after plan commit or application, exact
+correction replay before later insertion, corrupt-slot blocking and preservation through journal upgrade.

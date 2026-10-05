@@ -9,7 +9,7 @@ their public contracts.
 | Component       | Owns                                                                                                                                        |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Service         | HTTP API, provider lifecycle, shared encoder and availability reporting                                                                     |
-| Ingestion queue | Durable acceptance, source-key deduplication, writer ownership and restart recovery                                                         |
+| Ingestion queue | Durable acceptance, source-key deduplication, writer ownership, explicit recovery, maintenance-plan durability and restart replay           |
 | Memory          | Public memory operations, note construction and evolution decisions, prompt assembly, model-output interpretation and retrieval composition |
 | NoteStore       | Durable note and vector records, identity lookup, similarity search and paginated inspection                                                |
 | Embeddings      | Text-to-vector conversion and the identity and configuration of the embedding space                                                         |
@@ -77,6 +77,11 @@ The [local service](service.md) is the shared access point for concurrent agents
 and collection, accepts durable submissions, and serves retrieval and paginated inspection. Its
 supervised process outlives client tasks. Clients configure the API URL; the service owns database
 and model credentials. The [queue](ingestion-queue.md) owns sequential writes and restart recovery.
+Operators recover known-unwritten failed observations through the service's receipt-recovery route.
+For a reviewed existing-context correction, stop the service and use its offline maintenance command:
+the queue takes the same writer ownership, Memory prepares the replacement, and the queue commits
+and applies that exact plan. A pending maintenance plan replays before ingestion on restart. Neither
+agent clients nor the read-only dashboard gain context-editing controls or direct database access.
 The bundled inspection module shares the service listener and read capabilities; its background
 worker owns projection, not another encoder or database client.
 
@@ -128,6 +133,12 @@ contract and source-data envelope. Defaults request concise, source-attributed c
 claim strength, conditions, exceptions and scope. Opaque workflow identifiers remain in original
 content and provenance rather than being repeated in generated context merely for bookkeeping.
 Structural validation establishes acceptable output shape and references, not semantic truth.
+The [quality requirements](memory-quality-requirements.md) and
+[experience](memory-quality-experience.md) retain these boundaries. Generation improvements stay in
+Memory's owned prompts/envelope; transport stays provider-neutral and strict validation still precedes
+writes. Evaluate concise context and meaningful links at creation/evolution rather than introducing
+a retrieval-time model or changing search policy. Precise audited response defects remain unconfirmed
+until retained evidence or a representative reproduction identifies them.
 
 ## Retrieval
 
