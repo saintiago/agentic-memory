@@ -39,19 +39,22 @@ Choose at least three useful broader tags, including the domain and kind of mate
 const evolutionInstructions = `Consider the incoming memory alongside its nearest existing memories.
 Link meaningful relationships, not merely shared words. Refine the incoming tags when useful.
 Decide links and updates separately. A useful link does not require a context update.
-Before updating, identify the neighbor's specific conclusion in its original content and the
-incoming evidence that changes that conclusion or its applicability. If no such change can be
-identified, return no update for that neighbor. Shared terminology, a common failure category,
-or another issue in the same subsystem is not a change to the neighbor's conclusion.
-A different cause, repair, lifecycle stage or workflow remains in its own note even if it affects
-the same broad goal. For example, disabled capture settings and evidence lost during recovery
-are separate defects; deletion/reuse and preparation storage are separate mechanisms; classifying
-removed inputs and validating a release are separate decisions. Do not combine them in context.
-Do not append a parallel finding, corroborating case, "distinct issue" or contrast explaining
-that another mechanism does not change this note. If the conclusion is unchanged, omit the update.
-Anchor each revision in the neighbor's original content. Its generated context is a prior
-interpretation, not additional source evidence. When a change is warranted, rewrite only the
-changed conclusion or applicability, attributing the new evidence and preserving supported limits.
+Default to an empty updates array. Update a neighbor only if the incoming original content
+explicitly repairs, contradicts, supersedes or changes a condition of that neighbor's specific
+claim. First identify the original claim and what now replaces it. If the original claim and
+its applicability still stand as written, leave the neighbor unchanged.
+A qualification limits that same claim; it does not add another problem under a broader theme.
+A defect and its later repair can justify an update. Two defects with different causes or repairs,
+or findings about different lifecycle stages, do not qualify each other even when they concern
+the same subsystem or goal. Disabled capture settings and evidence lost during recovery are
+separate defects; deletion/reuse and preparation storage are separate mechanisms; classifying
+removed inputs and validating a release are separate decisions. Keep each in its own note.
+Do not synthesize linked notes into the neighbor's context. Never append the incoming case,
+mechanism or status as a parallel finding, corroboration, comparison or "distinct issue".
+Explaining that a separate issue does not change the neighbor is itself an unnecessary update.
+Anchor a warranted revision in the neighbor's original content; generated context is only a
+prior interpretation. Replace the affected claim with its supported revised conclusion, attribute
+the change to its evidence, and retain the neighbor's own causes, applicability and uncertainty.
 Select a link only when the original contents share a direct evidence relationship: a defect
 and its repair, a qualification or supersession of the same claim, or a comparison that changes
 how either source's scope or applicability should be read. Notes about different mechanisms,
@@ -120,8 +123,9 @@ const evolutionEnvelope = (memoryJson: string): string =>
     "Copy each selected neighbor's id exactly from the supplied neighbors. Do not use incoming.id,",
     "an identifier mentioned inside content, a placeholder, or a descriptive subject as a target ID.",
     "For each changed neighbor, provide its complete revised context, keywords and tags.",
-    "Include an update only when the incoming memory changes that neighbor's own subject;",
-    "do not append another ticket, finding, case or mechanism to it.",
+    "Use updates: [] unless the incoming content changes a specific claim in a neighbor's original content.",
+    "If that claim and its applicability remain valid as written, omit the update even when selecting a link.",
+    "A revised context replaces the changed claim; it must not append the incoming case or another mechanism.",
     "Each update contains exactly id, context, keywords and tags, with no source or link fields.",
     "Return all three top-level arrays even when empty. Emit each updated neighbor at most once.",
     "Omit unchanged neighbors. Empty links and updates are valid. Do not merge or delete original memories.",
