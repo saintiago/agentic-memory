@@ -13,6 +13,7 @@ import path from "node:path";
 import {
   openReferenceEmbedder,
   referenceEncoderSettings,
+  type MemoryPrompts,
   type JsonValue,
 } from "../../src/index.js";
 import { createHostModelTransport } from "../../examples/host-model-transport.js";
@@ -28,11 +29,34 @@ import {
 import { reportSummaryLines } from "../replay/report-summary.js";
 import { runReplay, type ReplayResult } from "../replay/runner.js";
 import type { RunReport } from "../replay/artifacts.js";
+import { readRetainedBaseline } from "./evidence.js";
 import { baselinePath } from "./layout.js";
 import type { QdrantTarget } from "./qdrant-snapshots.js";
 
 /** The provider request shape one reproduction replay sends. */
 export type ProviderRequestMode = "unchanged" | "deepseek-json-object";
+
+/** Which prompt text one reproduction uses. */
+export type PromptTextSource = "retained-baseline" | "current-defaults";
+
+/**
+ * The conditions one reproduction records: the provider adjustments, the retained baseline
+ * revision and which prompt text the executing revision used. The run manifest itself carries the
+ * executing revision and the exact prompt text, so before/after evidence stays attributable.
+ */
+export const reproductionConditions = (input: {
+  providerRequestMode: ProviderRequestMode;
+  baselineRevision: string;
+  promptTextSource: PromptTextSource;
+}): Record<string, JsonValue> => ({
+  providerRequestMode: input.providerRequestMode,
+  providerAdjustments:
+    input.providerRequestMode === "deepseek-json-object"
+      ? "thinking disabled and JSON-object response format applied"
+      : "request sent unchanged",
+  baselineRevision: input.baselineRevision,
+  promptTextSource: input.promptTextSource,
+});
 
 export interface ReproduceOptions {
   root: string;
@@ -53,7 +77,12 @@ export interface ReproduceOptions {
   allowEmbeddingDownloads?: boolean;
   callBudget: number;
   tokenBudget: number;
+  /** The executing revision recorded in the run manifest; the operator states it explicitly. */
   revision: string;
+  /** The prompt text this run uses, supplied explicitly by the caller. */
+  prompts: MemoryPrompts;
+  /** Which prompt text `prompts` holds: the retained baseline text or this revision's defaults. */
+  promptSource: PromptTextSource;
   runId?: string;
   /**
    * Insert the fixture sources in reverse, so sources that run first in the fixture order get
@@ -68,7 +97,7 @@ export interface ReproduceOptions {
  * disabled thinking and requested a JSON object for DeepSeek; a reproduction that omitted this
  * would run with different provider settings than the failed attempts.
  */
-const providerFetch = (input: {
+export const providerFetch = (input: {
   mode: ProviderRequestMode;
   fetch: typeof globalThis.fetch;
 }): typeof globalThis.fetch => {
@@ -76,20 +105,23 @@ const providerFetch = (input: {
     return input.fetch;
   }
   return async (request, init) => {
+    // Only body parsing may fall back to an unadjusted request: a transport failure must
+    // propagate from the single fetch below instead of triggering an implicit second request.
+    let adjusted = init;
     if (typeof init?.body === "string") {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>;
         body["thinking"] = { type: "disabled" };
         body["response_format"] = { type: "json_object" };
-        return await input.fetch(request, {
+        adjusted = {
           ...init,
           body: JSON.stringify(body),
-        });
+        };
       } catch {
         // A non-JSON body is forwarded unchanged; the transport owns its own serialization.
       }
     }
-    return await input.fetch(request, init);
+    return await input.fetch(request, adjusted);
   };
 };
 
@@ -97,6 +129,8 @@ const providerFetch = (input: {
 export const reproduceFailures = async (
   options: ReproduceOptions,
 ): Promise<{ result: ReplayResult; report: RunReport }> => {
+  const baseline = await readRetainedBaseline(options.root);
+  const baselineRevision = baseline.manifest.revision;
   const sourcesText = await readFile(
     baselinePath(options.root, "reproductionSources"),
     "utf8",
@@ -181,6 +215,7 @@ export const reproduceFailures = async (
       runsDirectory: baselinePath(options.root, "runs"),
       sources,
       queries,
+      prompts: options.prompts,
       sourceHash: fixtureHash(sourcesText),
       queryHash: fixtureHash(queriesText),
       ...(insertionOrder === undefined ? {} : { insertionOrder }),
@@ -193,18 +228,21 @@ export const reproduceFailures = async (
         callBudget: options.callBudget,
         tokenBudget: options.tokenBudget,
       },
-      conditions: {
-        providerRequestMode: options.providerRequestMode as JsonValue,
-        providerAdjustments:
-          options.providerRequestMode === "deepseek-json-object"
-            ? "thinking disabled and JSON-object response format applied"
-            : "request sent unchanged",
-      },
+      conditions: reproductionConditions({
+        providerRequestMode: options.providerRequestMode,
+        baselineRevision,
+        promptTextSource: options.promptSource,
+      }),
       limits: [
         "This reproduction rebuilds candidate context from the selected failed sources; it does " +
           "not restore the live corpus neighborhood of the original attempt.",
         "A reproduction that does not fail is one stochastic isolated run, not evidence that the " +
           "original failure was unreal.",
+        options.promptSource === "retained-baseline"
+          ? `The run uses the prompt text retained for baseline revision ${baselineRevision}; ` +
+            "the code that executes and validates responses is the executing revision."
+          : "The run uses the executing revision's default prompt text, not the prompt text " +
+            "retained with the historical baseline.",
       ],
     });
     const report = JSON.parse(

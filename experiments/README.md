@@ -93,20 +93,29 @@ npm run baseline -- capture --root <private-root> --journal <live-journal> \
   --revision <revision> --model-endpoint <endpoint> --model-id <id> --service-url <service>
 npm run baseline -- receipts --root <private-root>
 npm run baseline -- restore --root <private-root> --work <private-root>/restore-work --qdrant-url <url>
-npm run baseline -- reproduce --root <private-root> --qdrant-url <url> \
-  --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> [--reverse-order]
+npm run baseline -- reproduce --root <private-root> --revision <executing-revision> \
+  --qdrant-url <url> --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> \
+  [--prompts baseline|current] [--reverse-order]
 npm run baseline -- defects --root <private-root>
 npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
 npm run baseline -- metrics --root <private-root>
 ```
 
 `capture` copies the live journal with SQLite's online backup before taking the collection
-snapshot and attests quiescence with a second receipt-state copy. `receipts` records what the
-journal can and cannot show and writes the representative failed-source fixture; `reproduce`
-replays that fixture in an isolated, recorded collection with the live host's provider
-adjustments, and a second `--reverse-order` run gives the sources that ran first in the fixture
-candidate context for their evolution calls. The evidence root and its artifacts stay private;
-only this tooling and its deterministic tests are committed.
+snapshot and attests quiescence with a second receipt-state copy. `receipts` records cumulative
+claims grouped by each receipt's current outcome, states that per-attempt failure history is not
+retained, and writes the representative failed-source fixture. `restore` refuses the captured
+live collection and any existing destination before uploading, so it can only create and clean up
+its own disposable collection. `reproduce` replays the fixture in an isolated, recorded
+collection, labels new-generation evidence with the executing revision the operator states
+explicitly, records the retained baseline revision and prompt source as run conditions, and uses
+the prompt text retained with the baseline by default (`--prompts current` selects this
+revision's defaults); a second `--reverse-order` run gives the sources that ran first in the
+fixture candidate context for their evolution calls. `linked-additions-review.json` retains the
+operator's bounded semantic review of the captured linked additions — useful, unrelated or
+unresolved with a reason each — and `metrics` reports those verdicts with the assessed-sample
+denominator, leaving the review explicit when it is absent. The evidence root and its artifacts
+stay private; only this tooling and its deterministic tests are committed.
 
 ## Graph inspection
 

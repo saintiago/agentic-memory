@@ -89,6 +89,7 @@ const options = {
   cleanup: { type: "boolean" },
   sample: { type: "string", multiple: true },
   "provider-mode": { type: "string" },
+  prompts: { type: "string" },
   "embedding-cache": { type: "string" },
   "allow-embedding-downloads": { type: "boolean" },
   "direct-limit": { type: "string" },
@@ -219,8 +220,11 @@ const runReceipts = async (args: string[]): Promise<void> => {
       `${String(counts.queued + counts.processing + counts.retrying)}, blocked ${String(counts.blocked)}.`,
   );
   console.log(
-    `Failed attempts: ${String(accounting.attempts.byStatus.failed)} across ` +
-      `${String(counts.failed)} failed observations.`,
+    `Cumulative attempts: ${String(accounting.attempts.total)} across ` +
+      `${String(accounting.acceptedObservations.count)} accepted observations; ` +
+      `${String(accounting.attempts.byCurrentOutcome.failed)} of them fall on the ` +
+      `${String(counts.failed)} receipts currently failed. Per-attempt failure history: ` +
+      "unavailable (the journal retains cumulative claims and latest errors only).",
   );
   for (const diagnostic of accounting.failedDiagnostics) {
     console.log(
@@ -233,10 +237,11 @@ const runReceipts = async (args: string[]): Promise<void> => {
   );
   console.log(
     `Next: npm run baseline -- reproduce --root ${root} ` +
+      `--revision <executing-revision> ` +
       `--qdrant-url ${baseline.journal.binding.endpoint} ` +
       `--model-endpoint ${baseline.manifest.model.endpoint ?? "<endpoint>"} ` +
       `--model-id ${baseline.manifest.model.id} --embedding-cache <cache> ` +
-      `--revision ${baseline.manifest.revision}`,
+      "[--prompts baseline|current]",
   );
 };
 
@@ -249,6 +254,10 @@ const runReproduce = async (args: string[]): Promise<void> => {
     throw new CliError(
       "--provider-mode must be unchanged or deepseek-json-object.",
     );
+  }
+  const promptMode = values.prompts ?? "baseline";
+  if (promptMode !== "baseline" && promptMode !== "current") {
+    throw new CliError("--prompts must be baseline or current.");
   }
   const apiKeyEnv = values["model-api-key-env"] ?? "NEXUS_MEMORY_MODEL_API_KEY";
   const apiKey = values["model-api-key"] ?? process.env[apiKeyEnv];
@@ -288,7 +297,13 @@ const runReproduce = async (args: string[]): Promise<void> => {
       "--token-budget",
       400_000,
     ),
-    revision: values.revision ?? baseline.manifest.revision,
+    revision: required(values.revision, "--revision"),
+    prompts:
+      promptMode === "baseline"
+        ? { ...baseline.manifest.prompts }
+        : { ...defaultPrompts },
+    promptSource:
+      promptMode === "baseline" ? "retained-baseline" : "current-defaults",
     ...(values["run-id"] === undefined ? {} : { runId: values["run-id"] }),
     ...(values["reverse-order"] === true
       ? { reverseInsertionOrder: true }
@@ -357,12 +372,22 @@ const runRetrieval = async (args: string[]): Promise<void> => {
 const runMetrics = async (args: string[]): Promise<void> => {
   const { values } = parse(args);
   const metrics = await aggregateMetrics(required(values.root, "--root"));
-  const { acceptedObservations, storedOutcomes, failedOutcomes, recovery } =
-    metrics.ingestion;
+  const {
+    acceptedObservations,
+    storedOutcomes,
+    failedOutcomes,
+    attempts,
+    recovery,
+  } = metrics.ingestion;
   console.log(
     `Ingestion: accepted ${String(acceptedObservations.count)}, stored ` +
       `${String(storedOutcomes.count)}, failed ${String(failedOutcomes.count)}; ` +
       `recovery evidence available: ${String(recovery.available)}.`,
+  );
+  console.log(
+    `Cumulative attempts: ${String(attempts.total.count)} ` +
+      `(${attempts.total.denominator}); ${String(attempts.failedOutcomeClaims.count)} on ` +
+      "receipts currently failed; per-attempt failure history unavailable.",
   );
   if (metrics.retrieval !== null) {
     console.log(
@@ -370,6 +395,14 @@ const runMetrics = async (args: string[]): Promise<void> => {
         `${String(metrics.retrieval.directRecovery.allRequiredDirectTopK.recovered)}/` +
         `${String(metrics.retrieval.directRecovery.allRequiredDirectTopK.denominator)}; ` +
         `linked additions ${String(metrics.retrieval.linkedAdditions.count)}.`,
+    );
+    const review = metrics.retrieval.linkedAdditions.semanticReview;
+    console.log(
+      review === null
+        ? "Linked additions semantic review: not retained yet."
+        : `Linked additions semantic review: ${String(review.assessed)}/${String(review.denominator)} ` +
+            `assessed; useful ${String(review.useful)}, unrelated ${String(review.unrelated)}, ` +
+            `unresolved ${String(review.unresolved)}, unassessed ${String(review.unassessed)}.`,
     );
   }
   if (metrics.reproduction !== null) {

@@ -29,6 +29,8 @@ export const baselineLayout = {
   /** Live reproduction run directories and the baseline retrieval evidence. */
   runs: "runs",
   retrieval: "retrieval.json",
+  /** The operator's bounded semantic review of the linked additions beyond expected evidence. */
+  linkedReview: "linked-additions-review.json",
   /** The aggregated numbers with their denominators. */
   metrics: "baseline-metrics.json",
 } as const;

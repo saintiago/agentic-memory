@@ -231,8 +231,9 @@ npm run baseline -- capture --root <private-root> --journal <live-journal> --qdr
   --model-endpoint <endpoint> --model-id <id> --service-url <service>
 npm run baseline -- receipts --root <private-root>
 npm run baseline -- restore --root <private-root> --work <private-root>/restore-work --qdrant-url <url>
-npm run baseline -- reproduce --root <private-root> --qdrant-url <url> \
-  --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> [--reverse-order]
+npm run baseline -- reproduce --root <private-root> --revision <executing-revision> \
+  --qdrant-url <url> --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> \
+  [--prompts baseline|current] [--reverse-order]
 npm run baseline -- defects --root <private-root>
 npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
 npm run baseline -- metrics --root <private-root>
@@ -245,16 +246,26 @@ queries fixed before any run), `restore-work/` and `restore-report.json`, `accou
 
 `capture` takes the journal with SQLite's online backup before the collection snapshot and attests
 quiescence with a second receipt-state copy; `restore` copies the pair into an isolated journal
-directory and collection and fails unless every retention check passes. The retained prompt text is
-the one in force at capture; a later generation change may make it differ from the current defaults
-without invalidating the baseline. `receipts` keeps the raw failed-output limit and the diagnostics
-explicit, and writes the representative fixture; `reproduce`
-replays it in an isolated recorded run with the live host's provider adjustments, and a
-`--reverse-order` run of the same fixture gives the first-run sources candidate context for their
-evolution calls. `defects` re-validates every recorded response with the public schemas and the
-captured candidate identities; `retrieval` runs the declared queries direct and with the declared
-linked budget; `metrics` aggregates the numbers with denominators and keeps unmeasured evidence null
-instead of zero.
+directory and collection, refuses the captured live collection and any existing destination before
+uploading, and fails unless every retention check passes; only a collection whose restored identity
+this invocation verified is ever cleaned up. The retained prompt text is the one in force at
+capture; a later generation change may make it differ from the current defaults without invalidating
+the baseline. `receipts` keeps the raw failed-output limit explicit, reports cumulative claims
+grouped by each receipt's current outcome with the total-attempt denominator, states that
+per-attempt failure history is not retained, and writes the representative fixture; `reproduce`
+replays it in an isolated recorded run with the live host's provider adjustments, labels the run
+with the executing revision the operator states explicitly, records the retained baseline revision
+and the prompt source as run conditions, and uses the retained baseline prompt text by default
+(`--prompts current` selects this revision's defaults), so before/after evidence stays attributable.
+A `--reverse-order` run of the same fixture gives the first-run sources candidate context for their
+evolution calls. `defects` re-validates every recorded response, null included, with the public
+schemas and the captured candidate identities, and separates unusable-output failures from provider
+or connectivity failures by the transport category the recorder now retains; `retrieval` runs the
+declared queries direct and with the declared linked budget. The operator's bounded semantic review
+of the linked additions beyond expected evidence lives in `linked-additions-review.json` (one
+useful, unrelated or unresolved verdict with a reason per reviewed addition); `metrics` aggregates
+the numbers with denominators, reports the reviewed verdicts with the assessed-sample denominator,
+and keeps unmeasured evidence — an absent review included — null or explicit instead of zero.
 
 ## Performance and cost
 

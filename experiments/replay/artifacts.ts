@@ -8,7 +8,12 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { Attributes, JsonValue, Note } from "../../src/index.js";
+import type {
+  Attributes,
+  JsonValue,
+  ModelFailureCategory,
+  Note,
+} from "../../src/index.js";
 import { redactCredential } from "../../examples/host-model-transport.js";
 
 /** Token usage a provider reported for one model call; `null` means it did not report that part. */
@@ -37,7 +42,15 @@ export interface ModelCallRecord {
   response: unknown;
   /** The provider's raw response body when raw exchange recording is enabled. */
   rawResponse: string | null;
-  error: { name: string; message: string } | null;
+  /**
+   * The recorded failure, with the transport's machine-readable category when it was a
+   * ModelRequestError; `category` is null for failures that reported none.
+   */
+  error: {
+    name: string;
+    message: string;
+    category: ModelFailureCategory | null;
+  } | null;
   durationMs: number;
   finishReason: string | null;
   usage: TokenUsage | null;

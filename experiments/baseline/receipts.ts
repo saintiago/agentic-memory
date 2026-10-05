@@ -10,6 +10,7 @@
  * See docs/evaluation.md#quality-maintenance-procedure.
  */
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
@@ -24,6 +25,7 @@ import {
 } from "../replay/fixture.js";
 import {
   createEvidenceDirectory,
+  EvidenceDirectoryError,
   sha256Text,
   writeJsonFile,
   writeJsonl,
@@ -78,8 +80,15 @@ export interface ReceiptAccounting {
   }>;
   attempts: {
     total: number;
-    byStatus: Record<QueueReceiptStatus, number>;
+    /** Cumulative claims grouped by each receipt's current outcome; the total is the denominator. */
+    byCurrentOutcome: Record<QueueReceiptStatus, number>;
     receiptsWithMoreThanOneAttempt: number;
+    /**
+     * What the retained journal cannot report: the queue keeps each receipt's cumulative claim
+     * count and latest error only, so failed attempts on receipts that later stored are not
+     * retained and a historical per-attempt failure count stays unavailable.
+     */
+    failureHistory: { available: false; reason: string };
   };
   failedDiagnostics: FailedDiagnostic[];
   storedIdentity: {
@@ -100,7 +109,7 @@ export const summarizeReceipts = (
   options: { revision: string },
 ): ReceiptAccounting => {
   const statusCounts = countReceipts(receipts);
-  const byStatus = Object.fromEntries(
+  const byCurrentOutcome = Object.fromEntries(
     queueReceiptStatuses.map((status) => [
       status,
       receipts
@@ -135,10 +144,19 @@ export const summarizeReceipts = (
         (total, receipt) => total + receipt.attemptCount,
         0,
       ),
-      byStatus,
+      byCurrentOutcome,
       receiptsWithMoreThanOneAttempt: receipts.filter(
         (receipt) => receipt.attemptCount > 1,
       ).length,
+      failureHistory: {
+        available: false,
+        reason:
+          "The queue journal retains each receipt's cumulative claim count and its latest error, " +
+          "not a per-attempt history: a receipt that failed and later stored keeps its attempt " +
+          "count but clears the error. The number of historically failed attempts is therefore " +
+          "unavailable rather than the number of cumulative claims. The latest error of each " +
+          "currently failed receipt is retained separately as failedDiagnostics.",
+      },
     },
     failedDiagnostics: [...diagnostics.entries()].map(
       ([diagnostic, receiptIds]) => ({
@@ -294,17 +312,40 @@ export const writeReproductionFixture = async (
   validateFixture(sources, []);
   const sourcesFile = baselinePath(root, "reproductionSources");
   const queriesFile = baselinePath(root, "reproductionQueries");
-  await createEvidenceDirectory(path.dirname(sourcesFile));
   const sourcesText = sources
     .map((source) => `${JSON.stringify(source)}\n`)
     .join("");
+  const queriesText = "";
+  try {
+    await createEvidenceDirectory(path.dirname(sourcesFile));
+  } catch (cause) {
+    if (!(cause instanceof EvidenceDirectoryError)) {
+      throw cause;
+    }
+    // A re-run that derives exactly the retained fixture reuses it; a different derivation still
+    // refuses to overwrite evidence that was written once.
+    const [retainedSources, retainedQueries] = await Promise.all([
+      readFile(sourcesFile, "utf8"),
+      readFile(queriesFile, "utf8"),
+    ]);
+    if (retainedSources !== sourcesText || retainedQueries !== queriesText) {
+      throw cause;
+    }
+    return {
+      sourcesFile,
+      queriesFile,
+      sourcesHash: sha256Text(sourcesText),
+      queryHash: sha256Text(queriesText),
+      sources,
+    };
+  }
   await writeJsonl(sourcesFile, sources);
   await writeJsonl(queriesFile, []);
   return {
     sourcesFile,
     queriesFile,
     sourcesHash: sha256Text(sourcesText),
-    queryHash: sha256Text(""),
+    queryHash: sha256Text(queriesText),
     sources,
   };
 };

@@ -200,18 +200,40 @@ export const restoreBaseline = async (
   const baseline = await readRetainedBaseline(options.root);
   const manifest: BaselineManifest = baseline.manifest;
 
-  await createEvidenceDirectory(options.workDirectory);
-  const isolatedJournal = baselinePath(options.workDirectory, "restoreJournal");
-  await mkdir(path.dirname(isolatedJournal), { recursive: true });
-  await copyFile(baselinePath(options.root, "journal"), isolatedJournal);
-
-  const restoredJournal = readJournalCopy(isolatedJournal);
   const collection =
     options.collection ??
     `baseline-restore-${now()
       .toISOString()
       .replace(/[^0-9]/g, "")
       .slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+  // The journal binding and the captured collection name are the live corpus of this baseline;
+  // restoring onto either would overwrite it, so both are refused before any request is sent.
+  const capturedLiveCollections = new Set([
+    manifest.journal.binding.collection,
+    manifest.collection.name,
+  ]);
+  if (capturedLiveCollections.has(collection)) {
+    throw new BaselineRestoreError(
+      `The destination ${collection} is the captured live collection; restore into a fresh ` +
+        "isolated collection instead. This tool never writes the live corpus.",
+    );
+  }
+  // A snapshot upload merges into an existing collection; refuse any existing destination so a
+  // restore can only ever create its own disposable collection.
+  const existing = await collectionInfo(options.qdrant, collection);
+  if (existing !== undefined) {
+    throw new BaselineRestoreError(
+      `The destination collection ${collection} already exists; a restore requires a fresh ` +
+        "collection and never uploads into existing points.",
+    );
+  }
+
+  await createEvidenceDirectory(options.workDirectory);
+  const isolatedJournal = baselinePath(options.workDirectory, "restoreJournal");
+  await mkdir(path.dirname(isolatedJournal), { recursive: true });
+  await copyFile(baselinePath(options.root, "journal"), isolatedJournal);
+
+  const restoredJournal = readJournalCopy(isolatedJournal);
   const snapshotBytes = await readFile(baselinePath(options.root, "snapshot"));
   await restoreCollectionSnapshot(options.qdrant, collection, snapshotBytes);
 
@@ -402,7 +424,12 @@ export const restoreBaseline = async (
   };
   await writeJsonFile(baselinePath(options.root, "restoreReport"), report);
   if (options.cleanup === true) {
-    await deleteCollection(options.qdrant, collection);
+    // The destination was verified absent before the upload, so a collection that now carries the
+    // restored identity is the disposable one this invocation created; never delete anything else.
+    const current = await collectionInfo(options.qdrant, collection);
+    if (current !== undefined && spaceRetained) {
+      await deleteCollection(options.qdrant, collection);
+    }
   }
   if (!report.checks.every((check) => check.ok)) {
     throw new BaselineRestoreError(

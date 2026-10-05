@@ -2,7 +2,8 @@
  * Classify the recorded calls of the representative reproduction runs: validate every parsed
  * response against the very response contracts Memory enforces, using the candidate identities the
  * recorder captured for evolution calls, and report the concrete defects (missing or wrong fields,
- * unknown candidate IDs, duplicate updates, transport failures) with the run evidence behind each.
+ * unknown candidate IDs, duplicate updates, unusable output, provider failures) with the run
+ * evidence behind each.
  *
  * See docs/evaluation.md#quality-maintenance-procedure and docs/prompts.md#validation.
  */
@@ -31,7 +32,12 @@ export interface CallFinding {
   stage: ModelRequest["stage"];
   sourceId: string | null;
   noteId: string | null;
-  outcome: "valid" | "contract-violation" | "transport-failure" | "unchecked";
+  outcome:
+    | "valid"
+    | "contract-violation"
+    | "output-failure"
+    | "transport-failure"
+    | "unchecked";
   categories: string[];
   issues: string[];
   rawResponseRecorded: boolean;
@@ -67,6 +73,7 @@ export interface ClassifiedRun {
     total: number;
     construct: number;
     evolve: number;
+    outputFailures: number;
     transportFailures: number;
     withRawResponse: number;
     withCandidateIds: number;
@@ -113,7 +120,7 @@ const categorize = (reason: string): string[] => {
   return categories;
 };
 
-const validateCall = (call: ModelCallRecord): CallFinding => {
+export const classifyModelCall = (call: ModelCallRecord): CallFinding => {
   const base = {
     callId: call.callId,
     stage: call.stage,
@@ -123,15 +130,21 @@ const validateCall = (call: ModelCallRecord): CallFinding => {
     candidateIdsRecorded: (call.candidateIds ?? null) !== null,
   };
   if (call.error !== null) {
+    const category = call.error.category ?? null;
+    if (category === "output") {
+      return {
+        ...base,
+        outcome: "output-failure",
+        categories: ["output"],
+        issues: [call.error.message],
+      };
+    }
     return {
       ...base,
       outcome: "transport-failure",
-      categories: ["transport"],
+      categories: [category ?? "transport"],
       issues: [call.error.message],
     };
-  }
-  if (call.response === null || call.response === undefined) {
-    return { ...base, outcome: "unchecked", categories: [], issues: [] };
   }
   try {
     if (call.stage === "construct") {
@@ -195,7 +208,7 @@ const classifyRun = async (input: {
   const sources = await readJsonl<SourceRecord>(
     path.join(input.directory, "sources.jsonl"),
   );
-  const findings = calls.map(validateCall);
+  const findings = calls.map(classifyModelCall);
   const outcomes = {
     inserted: 0,
     failed: 0,
@@ -228,6 +241,9 @@ const classifyRun = async (input: {
       total: calls.length,
       construct: calls.filter((call) => call.stage === "construct").length,
       evolve: calls.filter((call) => call.stage === "evolve").length,
+      outputFailures: findings.filter(
+        (finding) => finding.outcome === "output-failure",
+      ).length,
       transportFailures: findings.filter(
         (finding) => finding.outcome === "transport-failure",
       ).length,
@@ -272,6 +288,7 @@ export const classifyReproductionRuns = async (
     for (const finding of run.findings) {
       if (
         finding.outcome === "contract-violation" ||
+        finding.outcome === "output-failure" ||
         finding.outcome === "transport-failure"
       ) {
         for (const category of finding.categories) {
@@ -299,8 +316,12 @@ export const classifyReproductionRuns = async (
     runs,
     defects: [...defects.values()],
     limits: [
-      "Contract checks re-validate the recorded parsed responses with the same public schemas " +
-        "Memory uses; a recorded response is not re-interpreted as a different defect class.",
+      "Contract checks re-validate every recorded parsed response, null included, with the same " +
+        "public schemas Memory uses; a recorded response is not re-interpreted as a different " +
+        "defect class.",
+      "A recorded failure the transport categorized as output is an unusable-model-output " +
+        "defect; other failure categories are provider or connectivity failures, not response " +
+        "defects. Failures recorded before the category was retained stay uncategorized.",
       "Reference checks use the candidate identities captured at the store boundary of the " +
         "reproduction run, not the live corpus of the original failure.",
       "A reproduction that returns no violations is not proof that the original failure was " +

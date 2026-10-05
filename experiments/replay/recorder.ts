@@ -11,12 +11,13 @@ import type {
   EmbeddedPage,
   LanguageModel,
   Match,
+  ModelFailureCategory,
   ModelRequest,
   Note,
   NoteStore,
   Page,
 } from "../../src/index.js";
-import { embeddingText } from "../../src/index.js";
+import { embeddingText, ModelRequestError } from "../../src/index.js";
 import type {
   DeclaredBudget,
   ModelCallRecord,
@@ -522,11 +523,33 @@ export const instrumentEmbedder = (
   },
 });
 
-const failureRecord = (cause: unknown): { name: string; message: string } => {
-  if (cause instanceof Error) {
-    return { name: cause.name, message: cause.message };
+/**
+ * The machine-readable category a transport reported for a failed call, read from the error chain
+ * Memory preserves as the cause. It is null for failures that are not a ModelRequestError, so a
+ * classifier can tell unusable model output apart from connectivity and provider failures.
+ */
+const failureCategory = (cause: unknown): ModelFailureCategory | null => {
+  let link: unknown = cause;
+  for (let depth = 0; depth < 8 && link instanceof Error; depth += 1) {
+    if (link instanceof ModelRequestError) {
+      return link.category;
+    }
+    link = link.cause;
   }
-  return { name: "Error", message: String(cause) };
+  return null;
+};
+
+const failureRecord = (
+  cause: unknown,
+): { name: string; message: string; category: ModelFailureCategory | null } => {
+  if (cause instanceof Error) {
+    return {
+      name: cause.name,
+      message: cause.message,
+      category: failureCategory(cause),
+    };
+  }
+  return { name: "Error", message: String(cause), category: null };
 };
 
 const lastOf = <T>(values: readonly T[]): T | undefined =>

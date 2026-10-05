@@ -116,7 +116,9 @@ source paraphrases can introduce ambiguity before the model sees them and must b
 
 The quality-baseline tooling is covered deterministically: journal copying and schema refusal,
 declared-query parsing, receipt accounting and representative selection, evidence-integrity refusal,
-metric denominators and the Qdrant collection-metadata location all run against local fixtures. The
+restore-target isolation refusal, provider-request adjustment without implicit retries, model-call
+classification of null and categorized failures, linked-addition review accounting, metric
+denominators and the Qdrant collection-metadata location all run against local fixtures. The
 operator procedure itself produces private live evidence under
 [evaluation](evaluation.md#quality-maintenance-procedure), not repository test fixtures.
 

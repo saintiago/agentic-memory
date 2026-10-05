@@ -19,6 +19,7 @@ import {
   DeclaredQueryError,
   readDeclaredQueries,
 } from "../../experiments/baseline/declared-queries.js";
+import { classifyModelCall } from "../../experiments/baseline/defects.js";
 import { readRetainedBaseline } from "../../experiments/baseline/evidence.js";
 import {
   createEvidenceDirectory,
@@ -38,13 +39,28 @@ import {
   baselineDirectory,
   baselinePath,
 } from "../../experiments/baseline/layout.js";
+import {
+  linkedAdditionsBeyondExpected,
+  readLinkedReviewSummary,
+  summarizeLinkedReview,
+  type LinkedReview,
+} from "../../experiments/baseline/linked-review.js";
 import { aggregateMetrics } from "../../experiments/baseline/metrics.js";
 import { collectionInfo } from "../../experiments/baseline/qdrant-snapshots.js";
 import {
   selectRepresentativeFailures,
   summarizeReceipts,
 } from "../../experiments/baseline/receipts.js";
-import { promptSettingsStatus } from "../../experiments/baseline/restore.js";
+import {
+  promptSettingsStatus,
+  restoreBaseline,
+} from "../../experiments/baseline/restore.js";
+import {
+  providerFetch,
+  reproductionConditions,
+} from "../../experiments/baseline/reproduce.js";
+import type { RetrievalBaseline } from "../../experiments/baseline/retrieval.js";
+import type { ModelCallRecord } from "../../experiments/replay/artifacts.js";
 import { defaultPrompts } from "../../src/index.js";
 
 const BINDING = {
@@ -290,8 +306,11 @@ describe("receipt accounting", () => {
     const accounting = summarizeReceipts(receipts, { revision: "test" });
     expect(accounting.acceptedObservations.count).toBe(4);
     expect(accounting.statusCounts).toMatchObject({ stored: 2, failed: 2 });
-    expect(accounting.attempts.byStatus.failed).toBe(39);
+    expect(accounting.attempts.total).toBe(41);
+    expect(accounting.attempts.byCurrentOutcome.failed).toBe(39);
+    expect(accounting.attempts.byCurrentOutcome.stored).toBe(2);
     expect(accounting.attempts.receiptsWithMoreThanOneAttempt).toBe(1);
+    expect(accounting.attempts.failureHistory.available).toBe(false);
     expect(accounting.outcomes.map((outcome) => outcome.denominator)).toEqual([
       4, 4, 4, 4, 4, 4,
     ]);
@@ -463,6 +482,331 @@ describe("retained baseline integrity", () => {
         prompts: { construction: "", evolution: "old evolve" },
       }),
     ).toEqual({ retained: false, matchesCurrentDefaults: false });
+  });
+
+  const withQdrant = async (
+    handler: (url: string, requests: string[]) => Promise<void>,
+  ): Promise<void> => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method ?? ""} ${request.url ?? ""}`);
+      if (
+        request.method === "GET" &&
+        (request.url ?? "").startsWith("/collections/")
+      ) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            result: { status: "green", points_count: 0 },
+            status: "ok",
+            time: 0,
+          }),
+        );
+        return;
+      }
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: { error: "Not found" }, time: 0 }));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address() as AddressInfo;
+    try {
+      await handler(`http://127.0.0.1:${String(address.port)}`, requests);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  };
+
+  it("refuses the captured live collection without sending a request", async () => {
+    const root = await writeBaseline();
+    await withQdrant(async (url, requests) => {
+      await expect(
+        restoreBaseline({
+          root,
+          qdrant: { url },
+          workDirectory: path.join(root, "restore-live-work"),
+          collection: "nexus-memory",
+        }),
+      ).rejects.toThrow(/captured live collection/);
+      expect(requests).toEqual([]);
+    });
+  });
+
+  it("refuses an existing destination before uploading a snapshot", async () => {
+    const root = await writeBaseline();
+    await withQdrant(async (url, requests) => {
+      await expect(
+        restoreBaseline({
+          root,
+          qdrant: { url },
+          workDirectory: path.join(root, "restore-existing-work"),
+          collection: "another-collection",
+          cleanup: true,
+        }),
+      ).rejects.toThrow(/already exists/);
+      expect(
+        requests.some((request) => request.includes("/snapshots/upload")),
+      ).toBe(false);
+      expect(requests.some((request) => request.startsWith("DELETE"))).toBe(
+        false,
+      );
+    });
+  });
+});
+
+describe("model-call classification", () => {
+  const call = (overrides: Partial<ModelCallRecord> = {}): ModelCallRecord => ({
+    callId: 1,
+    stage: "construct",
+    sourceId: "source-1",
+    noteId: null,
+    candidateIds: null,
+    request: null,
+    response: { context: "a note", keywords: ["a"], tags: [] },
+    rawResponse: null,
+    error: null,
+    durationMs: 1,
+    finishReason: "stop",
+    usage: null,
+    requestId: null,
+    ...overrides,
+  });
+
+  it("validates a returned JSON null through the public contract", () => {
+    const finding = classifyModelCall(call({ response: null }));
+    expect(finding.outcome).toBe("contract-violation");
+    expect(finding.categories).toEqual(["structure"]);
+    expect(finding.issues.join(" ")).not.toBe("");
+  });
+
+  it("separates output failures from provider failures by the recorded category", () => {
+    const output = classifyModelCall(
+      call({
+        error: {
+          name: "HostModelTransportError",
+          message: "The construct model request failed: output.",
+          category: "output",
+        },
+      }),
+    );
+    expect(output).toMatchObject({
+      outcome: "output-failure",
+      categories: ["output"],
+    });
+    const provider = classifyModelCall(
+      call({
+        error: {
+          name: "HostModelTransportError",
+          message: "The construct model request failed: unavailable.",
+          category: "unavailable",
+        },
+      }),
+    );
+    expect(provider).toMatchObject({
+      outcome: "transport-failure",
+      categories: ["unavailable"],
+    });
+    const uncategorized = classifyModelCall(
+      call({ error: { name: "Error", message: "old record", category: null } }),
+    );
+    expect(uncategorized).toMatchObject({
+      outcome: "transport-failure",
+      categories: ["transport"],
+    });
+  });
+});
+
+describe("linked-addition semantic review", () => {
+  const retrieval = (): RetrievalBaseline =>
+    ({
+      records: [
+        {
+          queryId: "q1",
+          query: "a known question",
+          rationale: "declared",
+          requiredSourceIds: ["required"],
+          results: [
+            { noteId: "required", origin: "match" },
+            { noteId: "added-1", origin: "link" },
+            { noteId: "added-2", origin: "link" },
+          ],
+        },
+      ],
+    }) as unknown as RetrievalBaseline;
+
+  const review = (entries: LinkedReview["entries"]): LinkedReview => ({
+    formatVersion: 1,
+    reviewedAt: "2026-10-05T22:00:00Z",
+    revision: "test-revision",
+    retrievalSha256: "sha256:test",
+    entries,
+    limits: ["reviewed by hand"],
+  });
+
+  it("counts verdicts with the addition total as the assessed-sample denominator", () => {
+    expect(linkedAdditionsBeyondExpected(retrieval())).toHaveLength(2);
+    const summary = summarizeLinkedReview({
+      retrieval: retrieval(),
+      review: review([
+        {
+          queryId: "q1",
+          noteId: "added-1",
+          verdict: "useful",
+          reason: "supports the question",
+        },
+        {
+          queryId: "q1",
+          noteId: "added-2",
+          verdict: "unrelated",
+          reason: "different subject",
+        },
+      ]),
+    });
+    expect(summary).toMatchObject({
+      assessed: 2,
+      denominator: 2,
+      unassessed: 0,
+      useful: 1,
+      unrelated: 1,
+      unresolved: 0,
+    });
+  });
+
+  it("leaves additions the review did not assess explicit and refuses unknown entries", () => {
+    const summary = summarizeLinkedReview({
+      retrieval: retrieval(),
+      review: review([
+        {
+          queryId: "q1",
+          noteId: "added-1",
+          verdict: "unresolved",
+          reason: "needs more context",
+        },
+      ]),
+    });
+    expect(summary).toMatchObject({
+      assessed: 1,
+      denominator: 2,
+      unassessed: 1,
+      unresolved: 1,
+    });
+    expect(() =>
+      summarizeLinkedReview({
+        retrieval: retrieval(),
+        review: review([
+          {
+            queryId: "q1",
+            noteId: "not-an-addition",
+            verdict: "useful",
+            reason: "wrong identity",
+          },
+        ]),
+      }),
+    ).toThrow(/not a captured linked addition/);
+    expect(() =>
+      summarizeLinkedReview({
+        retrieval: retrieval(),
+        review: review([
+          {
+            queryId: "q1",
+            noteId: "added-1",
+            verdict: "useful",
+            reason: "first",
+          },
+          {
+            queryId: "q1",
+            noteId: "added-1",
+            verdict: "unrelated",
+            reason: "second",
+          },
+        ]),
+      }),
+    ).toThrow(/more than once/);
+  });
+
+  it("reports an absent review as unmeasured instead of zero", async () => {
+    const root = await tempDirectory();
+    expect(await readLinkedReviewSummary(root)).toBeNull();
+  });
+});
+
+describe("provider request adjustment", () => {
+  it("adjusts a JSON body and propagates a rejected request without retrying", async () => {
+    const bodies: unknown[] = [];
+    const wrapped = providerFetch({
+      mode: "deepseek-json-object",
+      fetch: async (_input, init) => {
+        bodies.push(init?.body);
+        throw new TypeError("network down");
+      },
+    });
+    await expect(
+      wrapped("https://provider.example/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "test", messages: [] }),
+      }),
+    ).rejects.toThrow("network down");
+    expect(bodies).toHaveLength(1);
+    const body = JSON.parse(String(bodies[0])) as Record<string, unknown>;
+    expect(body["thinking"]).toEqual({ type: "disabled" });
+    expect(body["response_format"]).toEqual({ type: "json_object" });
+  });
+
+  it("forwards a non-JSON body unchanged and an unchanged request as-is", async () => {
+    const received: unknown[] = [];
+    const wrapped = providerFetch({
+      mode: "deepseek-json-object",
+      fetch: async (_input, init) => {
+        received.push(init?.body);
+        return new Response("{}");
+      },
+    });
+    await wrapped("https://provider.example/chat/completions", {
+      method: "POST",
+      body: "not json",
+    });
+    expect(received).toEqual(["not json"]);
+    const raw = providerFetch({
+      mode: "unchanged",
+      fetch: async (_input, init) => {
+        received.push(init?.body);
+        return new Response("{}");
+      },
+    });
+    await raw("https://provider.example/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "test" }),
+    });
+    expect(received[1]).toBe(JSON.stringify({ model: "test" }));
+  });
+
+  it("records the executing revision provenance and prompt source explicitly", () => {
+    expect(
+      reproductionConditions({
+        providerRequestMode: "deepseek-json-object",
+        baselineRevision: "task/AMEM-17@67f3d98",
+        promptTextSource: "retained-baseline",
+      }),
+    ).toEqual({
+      providerRequestMode: "deepseek-json-object",
+      providerAdjustments:
+        "thinking disabled and JSON-object response format applied",
+      baselineRevision: "task/AMEM-17@67f3d98",
+      promptTextSource: "retained-baseline",
+    });
+    expect(
+      reproductionConditions({
+        providerRequestMode: "unchanged",
+        baselineRevision: "base",
+        promptTextSource: "current-defaults",
+      }),
+    ).toMatchObject({
+      providerAdjustments: "request sent unchanged",
+      promptTextSource: "current-defaults",
+    });
   });
 });
 

@@ -10,9 +10,14 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
+import { queueReceiptStatuses } from "../../src/index.js";
 import { readRetainedBaseline } from "./evidence.js";
 import { writeJsonFile } from "./io.js";
 import { baselinePath } from "./layout.js";
+import {
+  readLinkedReviewSummary,
+  type LinkedReviewSummary,
+} from "./linked-review.js";
 import { summarizeReceipts, type ReceiptAccounting } from "./receipts.js";
 import {
   retrievalBaselineSummarySchema,
@@ -56,6 +61,7 @@ const defectReportSchema = z.object({
         total: z.int().nonnegative(),
         construct: z.int().nonnegative(),
         evolve: z.int().nonnegative(),
+        outputFailures: z.int().nonnegative().optional(),
         transportFailures: z.int().nonnegative(),
         withRawResponse: z.int().nonnegative(),
         withCandidateIds: z.int().nonnegative(),
@@ -151,9 +157,16 @@ export interface BaselineMetrics {
     storedOutcomes: { count: number; denominator: string };
     failedOutcomes: { count: number; denominator: string };
     pendingOrBlocked: { count: number; denominator: string };
-    failedAttempts: {
-      attempts: number;
-      receiptsWithMoreThanOneAttempt: number;
+    attempts: {
+      total: { count: number; denominator: string };
+      byCurrentOutcome: Array<{
+        status: string;
+        claims: number;
+        denominator: string;
+      }>;
+      receiptsWithMoreThanOneAttempt: { count: number; denominator: string };
+      failedOutcomeClaims: { count: number; denominator: string };
+      failureHistory: ReceiptAccounting["attempts"]["failureHistory"];
     };
     storedIdentity: ReceiptAccounting["storedIdentity"];
     failedDiagnostics: ReceiptAccounting["failedDiagnostics"];
@@ -172,6 +185,7 @@ export interface BaselineMetrics {
     linkedAdditions: RetrievalBaselineSummary["linkedAdditions"] & {
       returnedCharacters: RetrievalBaselineSummary["summaries"]["linked"]["returnedCharacters"];
       denominator: string;
+      semanticReview: LinkedReviewSummary | null;
     };
   } | null;
   reproduction: {
@@ -181,6 +195,7 @@ export interface BaselineMetrics {
       total: number;
       construct: number;
       evolve: number;
+      outputFailures: number;
       transportFailures: number;
     };
     outcomes: { inserted: number; failed: number };
@@ -245,6 +260,10 @@ export const aggregateMetrics = async (
       "The retained failure evidence is invalid; inspect the receipts again.",
     );
   }
+  const linkedReview =
+    retrievalValue !== null && retrievalValue.success
+      ? await readLinkedReviewSummary(root)
+      : null;
 
   const counts = accounting.statusCounts;
   const metrics: BaselineMetrics = {
@@ -281,10 +300,27 @@ export const aggregateMetrics = async (
           counts.queued + counts.processing + counts.retrying + counts.blocked,
         denominator: `${String(accounting.acceptedObservations.count)} accepted observations`,
       },
-      failedAttempts: {
-        attempts: accounting.attempts.byStatus.failed,
-        receiptsWithMoreThanOneAttempt:
-          accounting.attempts.receiptsWithMoreThanOneAttempt,
+      attempts: {
+        total: {
+          count: accounting.attempts.total,
+          denominator: `${String(accounting.acceptedObservations.count)} accepted observations`,
+        },
+        byCurrentOutcome: queueReceiptStatuses.map((status) => ({
+          status,
+          claims: accounting.attempts.byCurrentOutcome[status],
+          denominator: `${String(accounting.attempts.total)} cumulative attempts`,
+        })),
+        receiptsWithMoreThanOneAttempt: {
+          count: accounting.attempts.receiptsWithMoreThanOneAttempt,
+          denominator: `${String(accounting.acceptedObservations.count)} accepted observations`,
+        },
+        failedOutcomeClaims: {
+          count: accounting.attempts.byCurrentOutcome.failed,
+          denominator:
+            `${String(accounting.attempts.total)} cumulative attempts; ` +
+            `${String(counts.failed)} receipts currently failed`,
+        },
+        failureHistory: accounting.attempts.failureHistory,
       },
       storedIdentity: accounting.storedIdentity,
       failedDiagnostics: accounting.failedDiagnostics,
@@ -314,6 +350,7 @@ export const aggregateMetrics = async (
               denominator:
                 "declared queries; additions beyond expected exclude the declared sources " +
                 "reached through a link (linked-only recovery)",
+              semanticReview: linkedReview,
             },
           }
         : null,
@@ -327,10 +364,18 @@ export const aggregateMetrics = async (
                 total: totals.total + run.calls.total,
                 construct: totals.construct + run.calls.construct,
                 evolve: totals.evolve + run.calls.evolve,
+                outputFailures:
+                  totals.outputFailures + (run.calls.outputFailures ?? 0),
                 transportFailures:
                   totals.transportFailures + run.calls.transportFailures,
               }),
-              { total: 0, construct: 0, evolve: 0, transportFailures: 0 },
+              {
+                total: 0,
+                construct: 0,
+                evolve: 0,
+                outputFailures: 0,
+                transportFailures: 0,
+              },
             ),
             outcomes: defectValue.data.runs.reduce(
               (totals, run) => ({
@@ -367,6 +412,14 @@ export const aggregateMetrics = async (
         : []),
       ...(defectValue !== null && defectValue.success
         ? defectValue.data.limits
+        : []),
+      ...(retrievalValue !== null && retrievalValue.success
+        ? linkedReview === null
+          ? [
+              "The captured linked additions have no retained semantic review; unrelated and " +
+                "useful additions stay unmeasured rather than zero.",
+            ]
+          : linkedReview.limits
         : []),
     ],
   };

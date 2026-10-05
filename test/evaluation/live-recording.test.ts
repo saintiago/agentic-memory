@@ -20,6 +20,7 @@ import {
 } from "../../experiments/replay/artifacts.js";
 import { reportSummaryLines } from "../../experiments/replay/report-summary.js";
 import { readEvolutionEnvelope } from "../../experiments/replay/envelope.js";
+import { classifyModelCall } from "../../experiments/baseline/defects.js";
 import {
   modelDescription,
   testQueries,
@@ -139,6 +140,9 @@ describe("live call artifacts", () => {
           );
         });
         expect(result.status).toBe("failed");
+        expect(calls.at(-1)?.error?.category).toBe(
+          failure === "http-error" ? "authentication" : "output",
+        );
         expect(calls.at(-1)).toMatchObject({
           stage,
           usage: { inputTokens: 10, outputTokens: 100, cachedInputTokens: 0 },
@@ -340,4 +344,45 @@ describe("live call artifacts", () => {
       },
     );
   }
+
+  it("classifies a returned JSON null through the public construction contract", async () => {
+    const { result, calls } = await run(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ finish_reason: "stop", message: { content: "null" } }],
+            usage,
+          }),
+        ),
+    );
+    expect(result.status).toBe("failed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.response).toBeNull();
+    expect(calls[0]?.error).toBeNull();
+    const finding = classifyModelCall(calls[0] as ModelCallRecord);
+    expect(finding.outcome).toBe("contract-violation");
+    expect(finding.issues.join(" ")).not.toBe("");
+  });
+
+  it("classifies unparsable model output as an output failure, not a transport one", async () => {
+    const { result, calls } = await run(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              { finish_reason: "stop", message: { content: "not json" } },
+            ],
+            usage,
+          }),
+        ),
+    );
+    expect(result.status).toBe("failed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.error?.category).toBe("output");
+    const finding = classifyModelCall(calls[0] as ModelCallRecord);
+    expect(finding).toMatchObject({
+      outcome: "output-failure",
+      categories: ["output"],
+    });
+  });
 });
