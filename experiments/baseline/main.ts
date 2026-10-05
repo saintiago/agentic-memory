@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 
 import { defaultPrompts, referenceEncoderSettings } from "../../src/index.js";
 import { captureBaseline } from "./capture.js";
+import { compareMatchedRuns, type MatchedComparison } from "./matched.js";
 import { classifyReproductionRuns } from "./defects.js";
 import { readRetainedBaseline } from "./evidence.js";
 import { writeJsonFile } from "./io.js";
@@ -33,6 +34,7 @@ Commands:
   receipts    Account for every receipt, state the failed-output limit and build the reproduction fixture.
   reproduce   Replay the retained representative failures in an isolated, recorded run.
   defects     Classify every retained reproduction run.
+  compare     Pair two isolated reproduction runs and report their linked-additions comparison.
   retrieval   Run the declared queries against the restored collection.
   metrics     Aggregate the retained evidence into the baseline numbers with denominators.
 
@@ -98,6 +100,9 @@ const options = {
   "token-budget": { type: "string" },
   "run-id": { type: "string" },
   "reverse-order": { type: "boolean" },
+  "exclude-source": { type: "string", multiple: true },
+  before: { type: "string" },
+  after: { type: "string" },
 } as const;
 
 const parse = (args: string[]) =>
@@ -308,6 +313,9 @@ const runReproduce = async (args: string[]): Promise<void> => {
     ...(values["reverse-order"] === true
       ? { reverseInsertionOrder: true }
       : {}),
+    ...(values["exclude-source"] === undefined
+      ? {}
+      : { excludeSources: values["exclude-source"] }),
   });
   console.log(`Run ${result.runId}: ${result.status}.`);
   for (const line of reproductionSummary(report)) {
@@ -341,6 +349,49 @@ const runDefects = async (args: string[]): Promise<void> => {
       `- ${defect.category} x${String(defect.occurrences)}: ${defect.issue}`,
     );
   }
+};
+
+const runCompare = async (args: string[]): Promise<void> => {
+  const { values } = parse(args);
+  const comparison = await compareMatchedRuns({
+    root: required(values.root, "--root"),
+    beforeRunId: required(values.before, "--before"),
+    afterRunId: required(values.after, "--after"),
+  });
+  const line = (side: MatchedComparison["before"]): string => {
+    const review =
+      side.semanticReview === null
+        ? "unreviewed"
+        : `${String(side.semanticReview.assessed)}/${String(side.semanticReview.denominator)} ` +
+          `assessed: useful ${String(side.semanticReview.useful)}, ` +
+          `unrelated ${String(side.semanticReview.unrelated)}, ` +
+          `unresolved ${String(side.semanticReview.unresolved)}`;
+    return (
+      `- ${side.runId} (${String(side.promptTextSource)}): ` +
+      `${String(side.counts.insertions)} insertions, ` +
+      `${String(side.counts.directedLinks)} links, ` +
+      `direct first ${String(side.linked.firstResultRequired.recovered)}/` +
+      `${String(side.linked.firstResultRequired.denominator)}, top-K ` +
+      `${String(side.linked.allRequiredDirectTopK.recovered)}/` +
+      `${String(side.linked.allRequiredDirectTopK.denominator)}; ` +
+      `linked additions ${String(side.additions.length)} ` +
+      `(${String(side.linked.returnedCharacters.linked)} chars); ${review}`
+    );
+  };
+  console.log(
+    `Matched comparison of "${values.before}" and "${values.after}":`,
+  );
+  console.log(line(comparison.before));
+  console.log(line(comparison.after));
+  console.log(
+    `Deltas (after - before): additions ${String(comparison.deltas.linkedAdditions)}, ` +
+      `characters ${String(comparison.deltas.linkedCharacters)}, ` +
+      `reviewed unrelated ${String(comparison.deltas.reviewedUnrelated)}, ` +
+      `direct first-result ${String(comparison.deltas.directFirstResultRecovered)}.`,
+  );
+  console.log(
+    `Evidence: ${baselinePath(required(values.root, "--root"), "matchedComparison")}`,
+  );
 };
 
 const runRetrieval = async (args: string[]): Promise<void> => {
@@ -430,6 +481,8 @@ const main = async (): Promise<void> => {
       return await runReproduce(args);
     case "defects":
       return await runDefects(args);
+    case "compare":
+      return await runCompare(args);
     case "retrieval":
       return await runRetrieval(args);
     case "metrics":

@@ -53,14 +53,18 @@ Choose at least three useful broader tags, including the domain and kind of mate
 ```text
 Consider the incoming memory alongside its nearest existing memories.
 Link meaningful relationships, not merely shared words. Refine the incoming tags when useful.
-Revise a neighbor only when the new evidence changes its interpretation or adds a meaningful
-relationship or broader pattern. Do not catalogue other subjects just because they share a topic.
+Revise a neighbor only when the new evidence corrects, supersedes or materially qualifies that
+neighbor's own conclusion or applicability. Do not catalogue other subjects just because they
+share a topic. Another mechanism, component or case that mirrors a pattern is not a change to
+that neighbor's subject: do not append it as a related example, broader pattern or comparison.
 Anchor each revision in that neighbor's original content. Its generated context is a prior
 interpretation, not additional source evidence. Use the incoming source only for a change that
 applies to that neighbor's own subject; otherwise omit the update.
-Select a link only when the two original sources have a useful evidence relationship, such as
-a defect and its repair, a qualification of the same claim, or a relevant comparison of scope.
-Shared workflow vocabulary or a broad theme alone is insufficient.
+Select a link only when the original contents share a direct evidence relationship: a defect
+and its repair, a qualification or supersession of the same claim, or a comparison that changes
+how either source's scope or applicability should be read. Notes about different mechanisms,
+components or workflows are not related by a shared project, ticket, domain, failure shape or
+broad theme. Judge a link from the original contents, not their generated contexts.
 
 When evolving context, rewrite rather than append. Prefer one or two short sentences.
 Replace superseded interpretations; retain earlier causes or attempts only when necessary
@@ -99,6 +103,8 @@ Use only supplied neighbor IDs in links and updates. newTags is the incoming not
 Copy each selected neighbor's id exactly from the supplied neighbors. Do not use incoming.id,
 an identifier mentioned inside content, a placeholder, or a descriptive subject as a target ID.
 For each changed neighbor, provide its complete revised context, keywords and tags.
+Include an update only when the incoming memory changes that neighbor's own subject;
+do not append a different mechanism or case to it.
 Each update contains exactly id, context, keywords and tags, with no source or link fields.
 Return all three top-level arrays even when empty. Emit each updated neighbor at most once.
 Omit unchanged neighbors. Empty links and updates are valid. Do not merge or delete original memories.

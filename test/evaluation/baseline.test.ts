@@ -6,7 +6,7 @@
  *
  * See docs/evaluation.md#quality-maintenance-procedure and docs/testing.md#test-discipline.
  */
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -49,6 +49,12 @@ import {
   summarizeLinkedReview,
   type LinkedReview,
 } from "../../experiments/baseline/linked-review.js";
+import {
+  compareMatchedRuns,
+  MatchedComparisonError,
+  readMatchedRun,
+  runLinkedReviewFile,
+} from "../../experiments/baseline/matched.js";
 import { aggregateMetrics } from "../../experiments/baseline/metrics.js";
 import { collectionInfo } from "../../experiments/baseline/qdrant-snapshots.js";
 import {
@@ -64,7 +70,14 @@ import {
   reproductionConditions,
 } from "../../experiments/baseline/reproduce.js";
 import type { RetrievalBaseline } from "../../experiments/baseline/retrieval.js";
-import type { ModelCallRecord } from "../../experiments/replay/artifacts.js";
+import type {
+  ModeSummary,
+  ModelCallRecord,
+  RetrievalRecord,
+  RetrievalResultRecord,
+  RunReport,
+} from "../../experiments/replay/artifacts.js";
+import type { Note } from "../../src/note-store/index.js";
 import { defaultPrompts } from "../../src/index.js";
 
 const BINDING = {
@@ -1052,5 +1065,340 @@ describe("qdrant collection metadata", () => {
       const absent = await collectionInfo({ url }, "missing");
       expect(absent).toBeUndefined();
     });
+  });
+});
+
+describe("matched isolated comparison", () => {
+  const note = (id: string, context: string): Note => ({
+    id,
+    content: `Source of ${id}`,
+    timestamp: "2026-10-01T10:00:00Z",
+    updatedAt: "2026-10-01T10:00:01Z",
+    context,
+    keywords: ["keyword"],
+    tags: ["tag"],
+    links: [],
+  });
+
+  const result = (
+    noteId: string,
+    origin: "match" | "link",
+    score: number,
+  ): RetrievalResultRecord => {
+    const searched = note(noteId, `Context of ${noteId}`);
+    return {
+      noteId,
+      sourceId: noteId,
+      origin,
+      score: origin === "match" ? score : null,
+      note: searched,
+      characters: { content: 10, attributes: 5, total: 15 },
+    };
+  };
+
+  const modeSummary = (
+    mode: string,
+    overrides: Partial<ModeSummary> = {},
+  ): ModeSummary => ({
+    representation: mode,
+    queries: 2,
+    queriesWithExpectations: 1,
+    firstResultRequired: { recovered: 1, denominator: 1 },
+    allRequiredDirectTopK: { recovered: 1, denominator: 1 },
+    allRequiredWithLinks: { recovered: 1, denominator: 1 },
+    linkRecoveredQueries: 0,
+    linkRecoveredSources: 0,
+    multiSourceQueries: 0,
+    returnedNotes: 3,
+    returnedCharacters: { direct: 30, linked: 15, total: 45 },
+    latency: { samples: 2, medianMs: 1, p95Ms: 1, minMs: 1, maxMs: 1 },
+    ...overrides,
+  });
+
+  const record = (
+    mode: string,
+    queryId: string,
+    required: readonly string[],
+    results: readonly RetrievalResultRecord[],
+    linkedLimit: number,
+  ): RetrievalRecord => ({
+    mode,
+    representation: "amem-note-v1",
+    collection: "collection",
+    queryId,
+    query: `query ${queryId}`,
+    scope: null,
+    rationale: `rationale ${queryId}`,
+    requiredSourceIds: [...required],
+    limits: { direct: 5, linked: linkedLimit },
+    latencyMs: 1,
+    results: [...results],
+    recovery: {
+      firstResultRequired: true,
+      directRequired: [...required],
+      linkedOnlyRequired: [],
+      missingRequired: [],
+    },
+  });
+
+  const writeRun = async (
+    root: string,
+    runId: string,
+    overrides: {
+      status?: string;
+      revision?: string;
+      promptTextSource?: string;
+      providerRequestMode?: string;
+      insertionOrder?: string[];
+      excludedSources?: string[];
+      modelId?: string;
+      memory?: { neighbors: number; directLimit: number; linkedLimit: number };
+      additions?: number;
+      firstResultRecovered?: number;
+      insertionFailures?: number;
+      insertions?: number;
+    } = {},
+  ): Promise<void> => {
+    const directory = path.join(baselinePath(root, "runs"), runId);
+    await mkdir(directory, { recursive: true });
+    const fixtureOrder = overrides.insertionOrder ?? ["source-1", "source-2"];
+    const excluded = overrides.excludedSources ?? [];
+    const inserted = fixtureOrder.filter((id) => !excluded.includes(id));
+    const insertions = overrides.insertions ?? inserted.length;
+    const additions = overrides.additions ?? 1;
+    const linkedResults = [
+      ...inserted.map((sourceId) => result(sourceId, "match", 0.5)),
+      ...Array.from({ length: additions }, (_value, index) =>
+        result(`linked-${String(index + 1)}`, "link", 0),
+      ),
+    ];
+    await writeJsonFile(path.join(directory, "manifest.json"), {
+      runId,
+      status: overrides.status ?? "completed",
+      revision: overrides.revision ?? "task/test@abc",
+      fixture: {
+        sourceHash: sha256Text("fixture"),
+        queryHash: sha256Text("queries"),
+        sourceCount: fixtureOrder.length,
+        queryCount: 1,
+        insertionOrder: inserted,
+      },
+      prompts: { ...defaultPrompts },
+      encoder: {
+        spaceId: "sha256:space",
+        dimensions: 4,
+        settings: null,
+      },
+      model: {
+        endpoint: "http://127.0.0.1:9/chat",
+        id: overrides.modelId ?? "test-model",
+      },
+      storage: {
+        kind: "in-memory",
+        endpoint: null,
+        schemaVersion: 1,
+        representation: "amem-note-v1",
+        collections: {},
+      },
+      memory: overrides.memory ?? {
+        neighbors: 5,
+        directLimit: 5,
+        linkedLimit: 3,
+      },
+      budget: null,
+      timing: {
+        startedAt: "2026-10-05T10:00:00Z",
+        finishedAt: "2026-10-05T10:01:00Z",
+        conditions: {
+          promptTextSource: overrides.promptTextSource ?? "current-defaults",
+          providerRequestMode: overrides.providerRequestMode ?? "unchanged",
+        },
+      },
+    });
+    await writeJsonFile(path.join(directory, "report.json"), {
+      runId,
+      revision: overrides.revision ?? "task/test@abc",
+      status: overrides.status ?? "completed",
+      counts: {
+        sources: fixtureOrder.length,
+        queries: 1,
+        insertions,
+        insertionFailures: overrides.insertionFailures ?? 0,
+        finalNotes: insertions,
+        directedLinks: 1,
+        embeddingCalls: insertions,
+        modelCalls: { construct: insertions, evolve: 1, total: insertions + 1 },
+        failedModelCalls: 0,
+      },
+      retrieval: {
+        "evolved-direct": modeSummary("evolved-direct", {
+          firstResultRequired: {
+            recovered: overrides.firstResultRecovered ?? 1,
+            denominator: 1,
+          },
+        }),
+        "evolved-linked": modeSummary("evolved-linked", {
+          firstResultRequired: {
+            recovered: overrides.firstResultRecovered ?? 1,
+            denominator: 1,
+          },
+          returnedCharacters: {
+            direct: 30,
+            linked: 15 * additions,
+            total: 30 + 15 * additions,
+          },
+        }),
+      },
+      exclusions: { sources: [...excluded], queries: [], note: "test" },
+    } as unknown as RunReport);
+    await writeFile(
+      path.join(directory, "retrieval.jsonl"),
+      `${[record("evolved-linked", "q1", ["source-1"], linkedResults, 3)]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n")}\n`,
+      "utf8",
+    );
+  };
+
+  it("reports linked additions and direct recovery for a matched pair", async () => {
+    const root = await tempDirectory();
+    await writeRun(root, "before-run", {
+      promptTextSource: "retained-baseline",
+      additions: 2,
+      firstResultRecovered: 1,
+    });
+    await writeRun(root, "after-run", {
+      promptTextSource: "current-defaults",
+      additions: 1,
+      firstResultRecovered: 0,
+    });
+
+    const comparison = await compareMatchedRuns({
+      root,
+      beforeRunId: "before-run",
+      afterRunId: "after-run",
+      now: () => new Date("2026-10-05T12:00:00Z"),
+    });
+
+    expect(comparison.matched.difference).toBe("prompt text source only");
+    expect(comparison.before.additions).toHaveLength(2);
+    expect(comparison.after.additions).toHaveLength(1);
+    expect(comparison.deltas.linkedAdditions).toBe(-1);
+    expect(comparison.deltas.directFirstResultRecovered).toBe(-1);
+    expect(comparison.after.additions[0]?.context).toBe("Context of linked-1");
+    const written = JSON.parse(
+      await readFile(baselinePath(root, "matchedComparison"), "utf8"),
+    ) as { after: { runId: string } };
+    expect(written.after.runId).toBe("after-run");
+  });
+
+  it("refuses a pair that differs in anything but the prompt source", async () => {
+    const root = await tempDirectory();
+    await writeRun(root, "before-run", {
+      promptTextSource: "retained-baseline",
+    });
+    await writeRun(root, "after-run", {
+      promptTextSource: "current-defaults",
+    });
+    await writeRun(root, "different-order", {
+      promptTextSource: "current-defaults",
+      insertionOrder: ["source-2", "source-1"],
+    });
+    await writeRun(root, "different-exclusion", {
+      promptTextSource: "current-defaults",
+      excludedSources: ["source-2"],
+    });
+    await writeRun(root, "different-limits", {
+      promptTextSource: "current-defaults",
+      memory: { neighbors: 5, directLimit: 5, linkedLimit: 2 },
+    });
+    await writeRun(root, "different-model", {
+      promptTextSource: "current-defaults",
+      modelId: "another-model",
+    });
+    await writeRun(root, "failed-run", {
+      promptTextSource: "current-defaults",
+      status: "failed",
+    });
+
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "different-order",
+      }),
+    ).rejects.toThrow(MatchedComparisonError);
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "different-exclusion",
+      }),
+    ).rejects.toThrow(/source membership/);
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "different-limits",
+      }),
+    ).rejects.toThrow(/limits/);
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "different-model",
+      }),
+    ).rejects.toThrow(/model transports/);
+    await expect(
+      compareMatchedRuns({
+        root,
+        beforeRunId: "before-run",
+        afterRunId: "failed-run",
+      }),
+    ).rejects.toThrow(/not completed/);
+  });
+
+  it("binds a run's reviewed verdicts to that run's retrieval evidence", async () => {
+    const root = await tempDirectory();
+    await writeRun(root, "before-run", {
+      promptTextSource: "retained-baseline",
+      additions: 1,
+    });
+    await writeRun(root, "after-run", {
+      promptTextSource: "current-defaults",
+      additions: 1,
+    });
+    const afterDirectory = path.join(baselinePath(root, "runs"), "after-run");
+    const review = {
+      formatVersion: 1,
+      reviewedAt: "2026-10-05T12:00:00Z",
+      revision: "task/test@abc",
+      retrievalSha256: await sha256File(
+        path.join(afterDirectory, "retrieval.jsonl"),
+      ),
+      entries: [
+        {
+          queryId: "q1",
+          noteId: "linked-1",
+          verdict: "unrelated",
+          reason: "the addition belongs to another mechanism",
+        },
+      ],
+      limits: ["one addition reviewed"],
+    };
+    await writeJsonFile(path.join(afterDirectory, runLinkedReviewFile), review);
+
+    const evidence = await readMatchedRun(root, "after-run");
+    expect(evidence.semanticReview?.assessed).toBe(1);
+    expect(evidence.semanticReview?.unrelated).toBe(1);
+    expect(evidence.semanticReview?.denominator).toBe(1);
+
+    await writeJsonFile(path.join(afterDirectory, runLinkedReviewFile), {
+      ...review,
+      retrievalSha256: sha256Text("not this evidence"),
+    });
+    await expect(readMatchedRun(root, "after-run")).rejects.toThrow(
+      /does not belong to this run's retrieval evidence/,
+    );
   });
 });
