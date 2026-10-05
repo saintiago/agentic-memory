@@ -130,9 +130,16 @@ Nexus runs from WSL; its host credentials and runtime settings remain outside th
 The Jira project is [AMEM](https://malton-family.atlassian.net/jira/software/projects/AMEM/boards/68)
 and repository is [saintiago/agentic-memory](https://github.com/saintiago/agentic-memory).
 
-Delivery selects Task issues labeled `memory-build` in To Do, ordered by Rank. The existing project
-configuration names the workspace and pull-request fields and all delivery/refinement statuses.
-Do not duplicate their IDs in implementation code or read this configuration from the memory library.
+The Nexus project parent selects eligible Task issues in Rank order. Concrete changes enter at
+Draft and proceed through Requirements, UX Proposal, Storybook Refinement and Architecture before
+finite delivery. Authors and evaluators decide stage applicability; irrelevant stages receive an
+evaluated skip. Ideas enter Idea Refinement first. Architecture publishes the accepted documentation
+and creates linked implementation Tasks labeled `memory-build` in To Do; the parent delivers them
+through In Progress, In Review and Done. Waiting for Feedback requires the requested human input.
+
+The project configuration names eligible statuses, stage mappings, implementation-ticket settings,
+and workspace/pull-request fields. Do not duplicate their IDs in implementation code or read this
+configuration from the memory library. Host workflow definitions and profiles remain outside the repo.
 
 Nexus preparation installs the locked dependencies with `npm ci` and delivery runs the aggregate
 `npm run validate` check. Subsequent components keep the aggregate check complete. Relevant

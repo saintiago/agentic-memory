@@ -24,7 +24,7 @@
     "project": "AMEM",
     "credential": "jira",
     "selection": {
-      "query": "project = AMEM AND issuetype = Task AND labels = memory-build AND status = \"To Do\"",
+      "query": "project = AMEM AND issuetype = Task AND status in (\"Draft\", \"Requirements\", \"UX Proposal\", \"Storybook Refinement\", \"Architecture\", \"To Do\", \"In Progress\", \"In Review\")",
       "orderBy": "Rank ASC"
     },
     "fields": {
@@ -39,7 +39,7 @@
     },
     "ideas": {
       "selection": {
-        "query": "project = AMEM AND issuetype = Task AND status = \"Idea\"",
+        "query": "project = AMEM AND issuetype = Task AND status in (\"Idea\", \"Idea Refinement\")",
         "orderBy": "Rank ASC"
       },
       "statuses": {
@@ -48,6 +48,20 @@
         "approved": "Draft",
         "waitingForFeedback": "Waiting for Feedback"
       }
+    },
+    "preparation": {
+      "statuses": {
+        "requirements": "Requirements",
+        "uxProposal": "UX Proposal",
+        "storybookRefinement": "Storybook Refinement",
+        "architecture": "Architecture"
+      }
+    },
+    "implementation": {
+      "issueType": "Task",
+      "labels": ["memory-build"],
+      "status": "To Do",
+      "linkType": "Relates"
     }
   },
   "delivery": {
@@ -55,6 +69,9 @@
     "baseBranch": "main",
     "reviewCheck": "Nexus Lens review",
     "postMergeChecks": [],
-    "completion": { "pollIntervalSeconds": 30, "waitLimitSeconds": 3600 }
+    "completion": {
+      "pollIntervalSeconds": 30,
+      "waitLimitSeconds": 3600
+    }
   }
 }
