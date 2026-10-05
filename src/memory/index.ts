@@ -1,7 +1,8 @@
 /**
  * Memory public contract: add source content, search for direct matches and bounded linked
- * additions, and inspect stored notes. This module owns the input and result types exchanged with
- * the host and the orchestration that implements them.
+ * additions, inspect stored notes, and prepare reviewed corrections of existing note contexts.
+ * This module owns the input and result types exchanged with the host and the orchestration that
+ * implements them.
  *
  * See docs/memory.md and docs/architecture.md#public-contracts.
  */
@@ -21,6 +22,12 @@ export type {
   MemoryPersistence,
   MemoryStage,
 } from "./memory-error.js";
+export { contextCorrectionInputSchema } from "./context-correction.js";
+export type {
+  ContextCorrectionInput,
+  ContextCorrectionPreparation,
+  ContextCorrectionPreparer,
+} from "./context-correction.js";
 export { insertionPlanSchema, insertionPlanVersion } from "./insertion-plan.js";
 export type { InsertionPlan } from "./insertion-plan.js";
 export {
