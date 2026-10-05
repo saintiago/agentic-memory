@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
+import type { RetrievalRecord } from "../replay/artifacts.js";
 import { sha256File } from "./io.js";
 import { baselinePath } from "./layout.js";
 import type { RetrievalBaseline } from "./retrieval.js";
@@ -61,23 +62,26 @@ export interface LinkedAddition {
 }
 
 /** Every linked addition beyond expected evidence, in record order. */
-export const linkedAdditionsBeyondExpected = (
-  retrieval: RetrievalBaseline,
+export const linkedAdditionsFromRecords = (
+  records: readonly RetrievalRecord[],
 ): LinkedAddition[] => {
   const expectedByQuery = new Map(
-    retrieval.records.map((record) => [
+    records.map((record) => [
       record.queryId,
       new Set(record.requiredSourceIds),
     ]),
   );
   const additions: LinkedAddition[] = [];
   const seen = new Set<string>();
-  for (const record of retrieval.records) {
+  for (const record of records) {
     for (const result of record.results) {
       if (result.origin !== "link") {
         continue;
       }
-      if (expectedByQuery.get(record.queryId)?.has(result.noteId) ?? false) {
+      if (
+        expectedByQuery.get(record.queryId)?.has(result.sourceId ?? "") ??
+        false
+      ) {
         continue;
       }
       const key = `${record.queryId}\u0000${result.noteId}`;
@@ -95,6 +99,11 @@ export const linkedAdditionsBeyondExpected = (
   }
   return additions;
 };
+
+/** Every linked addition beyond expected evidence in one retained retrieval baseline. */
+export const linkedAdditionsBeyondExpected = (
+  retrieval: RetrievalBaseline,
+): LinkedAddition[] => linkedAdditionsFromRecords(retrieval.records);
 
 /** The review's verdicts counted with the assessed sample and the addition total as denominators. */
 export interface LinkedReviewSummary {
@@ -119,13 +128,12 @@ const keyOf = (queryId: string, noteId: string): string =>
  * twice; additions the review did not assess stay explicit as `unassessed` instead of counting as
  * useful or unrelated.
  */
-export const summarizeLinkedReview = (input: {
-  retrieval: RetrievalBaseline;
+export const summarizeLinkedReviewAgainst = (input: {
+  additions: readonly LinkedAddition[];
   review: LinkedReview;
 }): LinkedReviewSummary => {
-  const additions = linkedAdditionsBeyondExpected(input.retrieval);
   const known = new Set(
-    additions.map((addition) => keyOf(addition.queryId, addition.noteId)),
+    input.additions.map((addition) => keyOf(addition.queryId, addition.noteId)),
   );
   const reviewed = new Set<string>();
   for (const entry of input.review.entries) {
@@ -151,14 +159,24 @@ export const summarizeLinkedReview = (input: {
     revision: input.review.revision,
     retrievalSha256: input.review.retrievalSha256,
     assessed,
-    denominator: additions.length,
-    unassessed: additions.length - assessed,
+    denominator: input.additions.length,
+    unassessed: input.additions.length - assessed,
     useful: count("useful"),
     unrelated: count("unrelated"),
     unresolved: count("unresolved"),
     limits: input.review.limits,
   };
 };
+
+/** Summarize one review of the retained retrieval baseline's linked additions. */
+export const summarizeLinkedReview = (input: {
+  retrieval: RetrievalBaseline;
+  review: LinkedReview;
+}): LinkedReviewSummary =>
+  summarizeLinkedReviewAgainst({
+    additions: linkedAdditionsBeyondExpected(input.retrieval),
+    review: input.review,
+  });
 
 /**
  * Read the retained linked-addition review and bind it to the retained retrieval evidence. A

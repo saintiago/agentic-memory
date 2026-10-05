@@ -233,15 +233,18 @@ npm run baseline -- receipts --root <private-root>
 npm run baseline -- restore --root <private-root> --work <private-root>/restore-work --qdrant-url <url>
 npm run baseline -- reproduce --root <private-root> --revision <executing-revision> \
   --qdrant-url <url> --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> \
-  [--prompts baseline|current] [--reverse-order]
+  [--prompts baseline|current] [--reverse-order] [--exclude-source <id> ...]
 npm run baseline -- defects --root <private-root>
+npm run baseline -- compare --root <private-root> --before <run-id> --after <run-id> \
+  [--label <name>]
 npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
 npm run baseline -- metrics --root <private-root>
 ```
 
 The root holds `baseline/` (journal copy, collection snapshot, manifest, receipts and the declared
 queries fixed before any run), `restore-work/` and `restore-report.json`, `accounting.json`,
-`failed-evidence.json`, `reproduction/`, `runs/`, `retrieval.json` and `baseline-metrics.json`.
+`failed-evidence.json`, `reproduction/`, `runs/`, `retrieval.json`, `matched-comparison.json` and
+`baseline-metrics.json`.
 `capture` refuses an existing evidence directory, so each new baseline needs a new root.
 
 `capture` takes the journal with SQLite's online backup before the collection snapshot and attests
@@ -258,12 +261,24 @@ with the executing revision the operator states explicitly, records the retained
 and the prompt source as run conditions, and uses the retained baseline prompt text by default
 (`--prompts current` selects this revision's defaults), so before/after evidence stays attributable.
 A `--reverse-order` run of the same fixture gives the first-run sources candidate context for their
-evolution calls. `defects` re-validates every recorded response, null included, with the public
+evolution calls. `--exclude-source` keeps a named source out of insertion, so a matched before/after
+pair can exclude the same sources and hold identical membership even when one prompt cannot ingest
+them. `compare` pairs two completed reproduction runs whose fixture, insertion order, included
+membership, queries, limits, revision and provider settings agree and whose recorded prompt text
+sources differ. This includes every recorded model setting (endpoint, ID, thinking, output-token
+limit, timeout and retries) and the evaluated query identities in both direct and linked modes,
+with matching query exclusions and complete query records. It refuses any other pairing, and writes `matched-comparison.json` with each run's
+direct recovery and linked additions — and the reviewed verdicts when a run retains its
+`linked-additions-review.json` — so an isolated prompt comparison is measured rather than inferred. `defects` re-validates every recorded response, null included, with the public
 schemas and the captured candidate identities, and separates unusable-output failures from provider
-or connectivity failures by the transport category the recorder now retains; `retrieval` runs the
-declared queries direct and with the declared linked budget. The operator's bounded semantic review
-of the linked additions beyond expected evidence lives in `linked-additions-review.json` (one
-useful, unrelated or unresolved verdict with a reason per reviewed addition); `metrics` aggregates
+or connectivity failures by the transport category the recorder now retains; each classified run
+keeps the prompt text source its manifest recorded and the report groups the failing calls by that
+source, so a prompt change's before/after adherence is reportable rather than inferred; `retrieval`
+runs the declared queries direct and with the declared linked budget. The operator's bounded semantic review
+of the linked additions beyond expected evidence (matched by fixture `sourceId`; generated `noteId`
+identifies the review entry) lives in `linked-additions-review.json` (one
+useful, unrelated or unresolved verdict with a reason per reviewed addition), either for the
+restored baseline retrieval or next to one reproduction run; `metrics` aggregates
 the numbers with denominators, reports the reviewed verdicts with the assessed-sample denominator,
 and keeps unmeasured evidence — an absent review included — null or explicit instead of zero.
 

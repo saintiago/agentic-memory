@@ -31,6 +31,8 @@ export const baselineLayout = {
   retrieval: "retrieval.json",
   /** The operator's bounded semantic review of the linked additions beyond expected evidence. */
   linkedReview: "linked-additions-review.json",
+  /** The matched isolated before/after comparison of two reproduction runs. */
+  matchedComparison: "matched-comparison.json",
   /** The aggregated numbers with their denominators. */
   metrics: "baseline-metrics.json",
 } as const;

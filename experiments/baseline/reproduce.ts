@@ -85,6 +85,12 @@ export interface ReproduceOptions {
   promptSource: PromptTextSource;
   runId?: string;
   /**
+   * Fixture sources deliberately kept out of insertion. A matched before/after pair excludes the
+   * same sources so both corpora have identical membership; the manifest records them as
+   * exclusions.
+   */
+  excludeSources?: readonly string[];
+  /**
    * Insert the fixture sources in reverse, so sources that run first in the fixture order get
    * candidate context in this run. Evolution failures need an existing neighborhood; recording
    * both orders gives every representative at least one context-bearing insertion.
@@ -149,7 +155,12 @@ export const reproduceFailures = async (
   }
   const insertionOrder =
     options.reverseInsertionOrder === true
-      ? sources.map((source) => source.sourceId).reverse()
+      ? sources
+          .filter(
+            (source) => !options.excludeSources?.includes(source.sourceId),
+          )
+          .map((source) => source.sourceId)
+          .reverse()
       : undefined;
 
   const exchanges = new RecordedExchanges();
@@ -219,6 +230,9 @@ export const reproduceFailures = async (
       sourceHash: fixtureHash(sourcesText),
       queryHash: fixtureHash(queriesText),
       ...(insertionOrder === undefined ? {} : { insertionOrder }),
+      ...(options.excludeSources === undefined
+        ? {}
+        : { excludeSources: options.excludeSources }),
       environment,
       recordRawExchanges: true,
       artifactCredentials: [options.model.apiKey].filter(
