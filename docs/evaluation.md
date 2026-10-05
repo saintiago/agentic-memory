@@ -218,6 +218,42 @@ Include later related and unrelated insertions on isolated copies to assess whet
 expand again. Report deterministic protocol verification separately from real model-quality evidence;
 keep remaining failure, fidelity and relevance limitations explicit.
 
+### Baseline tooling
+
+`experiments/baseline/` implements this procedure as an operator CLI over one private evidence root.
+It reads the live journal and collection through their public and provider contracts and never writes
+them; the evidence root stays outside the repository, and only the tooling and its deterministic
+tests are committed.
+
+```bash
+npm run baseline -- capture --root <private-root> --journal <live-journal> --qdrant-url <url> \
+  --queries <private-root>/declared-queries.jsonl --revision <revision> \
+  --model-endpoint <endpoint> --model-id <id> --service-url <service>
+npm run baseline -- receipts --root <private-root>
+npm run baseline -- restore --root <private-root> --work <private-root>/restore-work --qdrant-url <url>
+npm run baseline -- reproduce --root <private-root> --qdrant-url <url> \
+  --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> [--reverse-order]
+npm run baseline -- defects --root <private-root>
+npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
+npm run baseline -- metrics --root <private-root>
+```
+
+The root holds `baseline/` (journal copy, collection snapshot, manifest, receipts and the declared
+queries fixed before any run), `restore-work/` and `restore-report.json`, `accounting.json`,
+`failed-evidence.json`, `reproduction/`, `runs/`, `retrieval.json` and `baseline-metrics.json`.
+`capture` refuses an existing evidence directory, so each new baseline needs a new root.
+
+`capture` takes the journal with SQLite's online backup before the collection snapshot and attests
+quiescence with a second receipt-state copy; `restore` copies the pair into an isolated journal
+directory and collection and fails unless every retention check passes. `receipts` keeps the raw
+failed-output limit and the diagnostics explicit, and writes the representative fixture; `reproduce`
+replays it in an isolated recorded run with the live host's provider adjustments, and a
+`--reverse-order` run of the same fixture gives the first-run sources candidate context for their
+evolution calls. `defects` re-validates every recorded response with the public schemas and the
+captured candidate identities; `retrieval` runs the declared queries direct and with the declared
+linked budget; `metrics` aggregates the numbers with denominators and keeps unmeasured evidence null
+instead of zero.
+
 ## Performance and cost
 
 Measure cold startup separately from warm insert/search. Report medians and p95 with sample count,

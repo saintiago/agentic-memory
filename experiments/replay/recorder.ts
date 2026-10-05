@@ -67,6 +67,8 @@ export interface InsertionCapture {
    * the declared canonical serialization. Null when the insertion never reached candidate selection.
    */
   neighbors: { count: number; characters: number } | null;
+  /** The candidate identities the insertion's evolution call was given, when it was reached. */
+  candidateIds: string[] | null;
   /** Batch writes with the current-note state each record replaced and their acknowledgment. */
   writes: Array<{
     acknowledged: boolean;
@@ -186,6 +188,7 @@ export class ReplayRecorder {
       constructResponse: null,
       firstEmbedding: null,
       neighbors: null,
+      candidateIds: null,
       writes: [],
     };
   }
@@ -277,15 +280,25 @@ export class ReplayRecorder {
     }
   }
 
-  /** Record one model call: aggregate it now, write it with the note identity of its insertion. */
-  async recordModelCall(record: ModelCallRecord): Promise<void> {
+  /**
+   * Record one model call: fill the candidate identities the store boundary observed for an
+   * evolution call, aggregate the call and write it with the note identity of its insertion.
+   */
+  async recordModelCall(
+    record: Omit<ModelCallRecord, "candidateIds">,
+  ): Promise<void> {
+    const capture = this.#insertion;
+    const enriched: ModelCallRecord = {
+      ...record,
+      candidateIds:
+        record.stage === "evolve" ? (capture?.candidateIds ?? null) : null,
+    };
     this.#calls[record.stage] += 1;
     this.#calls.total += 1;
     this.#callDurations[record.stage].push(record.durationMs);
     if (record.error !== null) {
       this.#calls.failed += 1;
     }
-    const capture = this.#insertion;
     if (
       capture !== null &&
       record.stage === "construct" &&
@@ -294,12 +307,12 @@ export class ReplayRecorder {
       capture.constructResponse = record.response;
     }
     if (capture === null) {
-      await this.#artifacts.appendModelCall(record);
+      await this.#artifacts.appendModelCall(enriched);
     } else {
       // The note identity is known only when the insertion resolves; flush the calls then.
-      this.#pendingCalls.push(record);
+      this.#pendingCalls.push(enriched);
     }
-    this.#observeUsage(record);
+    this.#observeUsage(enriched);
     this.#observeCallBudget();
   }
 
@@ -423,6 +436,7 @@ export class ReplayRecorder {
           0,
         ),
       };
+      capture.candidateIds = candidates.map((candidate) => candidate.note.id);
     }
   }
 

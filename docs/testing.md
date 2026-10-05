@@ -114,6 +114,12 @@ criteria. Preserve runs outside the core runtime so comparisons remain inspectab
 runs when drawing conclusions about improvement; one successful run is not a guarantee. Manual
 source paraphrases can introduce ambiguity before the model sees them and must be audited too.
 
+The quality-baseline tooling is covered deterministically: journal copying and schema refusal,
+declared-query parsing, receipt accounting and representative selection, evidence-integrity refusal,
+metric denominators and the Qdrant collection-metadata location all run against local fixtures. The
+operator procedure itself produces private live evidence under
+[evaluation](evaluation.md#quality-maintenance-procedure), not repository test fixtures.
+
 ## Live boundaries and performance
 
 Routine validation requires no production credentials or paid calls. Targeted live model checks use

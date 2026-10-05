@@ -8,13 +8,14 @@ runtime library never imports them.
 
 ## Layout
 
-| Path        | Purpose                                                                                   |
-| ----------- | ----------------------------------------------------------------------------------------- |
-| `fixtures/` | Small synthetic JSONL fixtures authored for this repository, with their expected sources  |
-| `replay/`   | Fixture contract, instrumentation, run artifacts, comparison modes, measures and runner   |
-| `demo/`     | The deterministic demonstration: in-memory collections and fixture-driven stand-ins       |
-| `live/`     | The opt-in live run: real Qdrant collections, the pinned encoder and a host transport     |
-| `graph/`    | The offline inspection tool: one self-contained HTML report and its JSON evidence per run |
+| Path        | Purpose                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `fixtures/` | Small synthetic JSONL fixtures authored for this repository, with their expected sources                          |
+| `replay/`   | Fixture contract, instrumentation, run artifacts, comparison modes, measures and runner                           |
+| `demo/`     | The deterministic demonstration: in-memory collections and fixture-driven stand-ins                               |
+| `live/`     | The opt-in live run: real Qdrant collections, the pinned encoder and a host transport                             |
+| `graph/`    | The offline inspection tool: one self-contained HTML report and its JSON evidence per run                         |
+| `baseline/` | The private quality-baseline operator CLI: capture, restore, account, reproduce, classify, retrieve and aggregate |
 
 ## Deterministic demonstration
 
@@ -79,6 +80,33 @@ collection. The runtime collection is opened through the library's Qdrant NoteSt
 `agenticMemoryEvaluation` metadata key and the runtime store refuses to open it. Unless
 `AMEM_LIVE_KEEP_COLLECTIONS=true`, the run deletes exactly the collections it created when it
 finishes.
+
+## Quality baseline
+
+`npm run baseline -- <command>` implements the quality-maintenance procedure from
+[the evaluation specification](../docs/evaluation.md#quality-maintenance-procedure) over one
+private evidence root outside the repository. It never writes the live journal or collection:
+
+```bash
+npm run baseline -- capture --root <private-root> --journal <live-journal> \
+  --qdrant-url http://127.0.0.1:6333 --queries <private-root>/declared-queries.jsonl \
+  --revision <revision> --model-endpoint <endpoint> --model-id <id> --service-url <service>
+npm run baseline -- receipts --root <private-root>
+npm run baseline -- restore --root <private-root> --work <private-root>/restore-work --qdrant-url <url>
+npm run baseline -- reproduce --root <private-root> --qdrant-url <url> \
+  --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> [--reverse-order]
+npm run baseline -- defects --root <private-root>
+npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
+npm run baseline -- metrics --root <private-root>
+```
+
+`capture` copies the live journal with SQLite's online backup before taking the collection
+snapshot and attests quiescence with a second receipt-state copy. `receipts` records what the
+journal can and cannot show and writes the representative failed-source fixture; `reproduce`
+replays that fixture in an isolated, recorded collection with the live host's provider
+adjustments, and a second `--reverse-order` run gives the sources that ran first in the fixture
+candidate context for their evolution calls. The evidence root and its artifacts stay private;
+only this tooling and its deterministic tests are committed.
 
 ## Graph inspection
 

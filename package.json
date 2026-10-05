@@ -36,6 +36,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:embeddings": "vitest run --config vitest.embeddings.config.ts",
     "demo:evaluation": "vitest run --config vitest.demo.config.ts --reporter=verbose",
+    "baseline": "node --import tsx experiments/baseline/main.ts",
     "replay:live": "vitest run --config vitest.live.config.ts --reporter=verbose",
     "graph:inspect": "vitest run --config vitest.graph.config.ts --reporter=verbose",
     "inspector:build": "node scripts/build-inspector-ui.mjs",

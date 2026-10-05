@@ -25,6 +25,12 @@ export interface ModelCallRecord {
   sourceId: string | null;
   /** The note the insertion allocated, once the runner can correlate the call with it. */
   noteId: string | null;
+  /**
+   * The candidate identities the evolution call was given, captured at the store boundary; null
+   * when the call is not an evolution call or the insertion had no candidates. They let a
+   * classifier validate the response's references against the same candidate set Memory used.
+   */
+  candidateIds: string[] | null;
   /** The complete assembled prompt when raw exchange recording is enabled. */
   request: string | null;
   /** The parsed response the transport returned, when it returned one. */
