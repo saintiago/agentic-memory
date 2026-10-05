@@ -43,6 +43,10 @@ Default to an empty updates array. Update a neighbor only if the incoming origin
 explicitly repairs, contradicts, supersedes or changes a condition of that neighbor's specific
 claim. First identify the original claim and what now replaces it. If the original claim and
 its applicability still stand as written, leave the neighbor unchanged.
+Insertion order is not evidence order. Respect source timestamps and explicit historical sequence:
+an earlier defect does not refute its later repair just because it is inserted afterward. Do not
+recast a documented implemented repair as an intention or failure on that basis. If the evidence
+order or its effect on the claim is unclear, leave the neighbor unchanged.
 A qualification limits that same claim; it does not add another problem under a broader theme.
 A defect and its later repair can justify an update. Two defects with different causes or repairs,
 or findings about different lifecycle stages, do not qualify each other even when they concern
