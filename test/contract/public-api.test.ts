@@ -9,8 +9,12 @@ import { noteSchema } from "../../src/note-store/index.js";
 import type {
   AddInput,
   AgenticMemory,
+  Attributes,
   ConstructionResponse,
   ConstructionSource,
+  ContextCorrectionInput,
+  ContextCorrectionPreparation,
+  ContextCorrectionPreparer,
   Cursor,
   Embedder,
   EmbeddingSpace,
@@ -195,8 +199,40 @@ describe("package root exports", () => {
     >().toEqualTypeOf<string>();
     expectTypeOf<MemoryError["reason"]>().toEqualTypeOf<string>();
     expectTypeOf<MemoryOperation>().toEqualTypeOf<
-      "add" | "get" | "page" | "search" | "prepare" | "apply"
+      | "add"
+      | "get"
+      | "page"
+      | "search"
+      | "prepare"
+      | "prepareContextCorrection"
+      | "apply"
     >();
+  });
+
+  it("keeps the reviewed context correction contract usable through the package root", () => {
+    expect(packageExports.contextCorrectionInputSchema).toBe(
+      memory.contextCorrectionInputSchema,
+    );
+    expectTypeOf<AgenticMemory["prepareContextCorrection"]>()
+      .parameter(0)
+      .toEqualTypeOf<ContextCorrectionInput>();
+    expectTypeOf<
+      AgenticMemory["prepareContextCorrection"]
+    >().returns.toEqualTypeOf<Promise<ContextCorrectionPreparation>>();
+    expectTypeOf<ContextCorrectionInput>().toEqualTypeOf<{
+      expected: Note;
+      attributes: Attributes;
+    }>();
+    expectTypeOf<ContextCorrectionPreparation["note"]>().toEqualTypeOf<Note>();
+    expectTypeOf<ContextCorrectionPreparation["plan"]>().toEqualTypeOf<
+      InsertionPlan | undefined
+    >();
+    expectTypeOf<ContextCorrectionPreparer["prepareContextCorrection"]>()
+      .parameter(0)
+      .toEqualTypeOf<ContextCorrectionInput>();
+    expectTypeOf<
+      ContextCorrectionPreparer["prepareContextCorrection"]
+    >().returns.toEqualTypeOf<Promise<ContextCorrectionPreparation>>();
   });
 
   it("keeps the durable insertion contracts usable through the package root", () => {

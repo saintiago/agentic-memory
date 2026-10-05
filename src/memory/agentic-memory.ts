@@ -9,6 +9,8 @@
  * Insertion is available in one call through `add` and as the durable, two-step `prepare`/`apply`
  * path the ingestion queue consumes. Both share this algorithm: `prepare` returns the immutable
  * plan without writing, and `apply` writes the exact supplied plan without regeneration.
+ * `prepareContextCorrection` prepares a reviewed replacement of one existing note through the same
+ * immutable plan format; it reads and embeds without constructing, searching or writing.
  *
  * See docs/memory.md, docs/architecture.md#insertion-and-evolution and
  * docs/architecture.md#retrieval.
@@ -39,6 +41,12 @@ import {
   type MemoryOperation,
   type MemoryStage,
 } from "./memory-error.js";
+import {
+  contextCorrectionInputSchema,
+  type ContextCorrectionInput,
+  type ContextCorrectionPreparation,
+  type ContextCorrectionPreparer,
+} from "./context-correction.js";
 import {
   insertionPlanSchema,
   insertionPlanVersion,
@@ -171,8 +179,20 @@ const DEFAULT_LINKED_LIMIT = 5;
 /** The retrieval operations. They never write, so their failures are always `unchanged`. */
 type RetrievalOperation = Extract<MemoryOperation, "get" | "page" | "search">;
 
-/** The insertion operations. Preparation never writes; application is the single batch write. */
-type InsertionOperation = Extract<MemoryOperation, "add" | "prepare" | "apply">;
+/**
+ * The pre-write mutations: insertion preparation, correction preparation and plan application.
+ * Any failure before the single batch write leaves stored notes unchanged.
+ */
+type MutationOperation = Extract<
+  MemoryOperation,
+  "add" | "prepare" | "prepareContextCorrection" | "apply"
+>;
+
+/** The operations that embed the note representation they prepare. */
+type EmbeddingOperation = Extract<
+  MemoryOperation,
+  "add" | "prepare" | "prepareContextCorrection"
+>;
 
 /**
  * Validate one insertion request. The public reason stays fixed: schema issues can quote
@@ -199,7 +219,7 @@ const readInsertionInput = <Output>(
 
 /** An insertion failure before the batch write attempt leaves stored notes unchanged. */
 const insertionFailure = (
-  operation: InsertionOperation,
+  operation: MutationOperation,
   stage: MemoryStage,
   reason: string,
   noteId?: string,
@@ -292,6 +312,52 @@ const selectLinkedTargets = (
 const detachNote = (note: Note): Note => noteSchema.parse(note);
 
 /**
+ * Compare two note or attribute values completely, independent of JSON object key order: every
+ * string, array element and UUID spelling must match exactly, while a present `undefined` counts
+ * as an absent optional field. Update time is part of the complete comparison, never the only
+ * revision token.
+ */
+const sameJsonValue = (left: unknown, right: unknown): boolean => {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((element, index) => sameJsonValue(element, right[index]))
+    );
+  }
+  if (
+    typeof left !== "object" ||
+    left === null ||
+    typeof right !== "object" ||
+    right === null
+  ) {
+    return false;
+  }
+  const meaningful = (value: object): [string, unknown][] =>
+    Object.entries(value).filter(([, nested]) => nested !== undefined);
+  const rightEntries = new Map(meaningful(right));
+  const leftEntries = meaningful(left);
+  return (
+    leftEntries.length === rightEntries.size &&
+    leftEntries.every(
+      ([key, value]) =>
+        rightEntries.has(key) && sameJsonValue(value, rightEntries.get(key)),
+    )
+  );
+};
+
+/** The semantic attributes of one note, as a correction proposal describes them. */
+const noteAttributes = (note: Note): Attributes => ({
+  context: note.context,
+  keywords: note.keywords,
+  tags: note.tags,
+});
+
+/**
  * Sample the batch preparation time once, immediately before the write that persists the current
  * note versions. It records when the version was prepared for persistence; it is not the
  * observation `timestamp`, a commit acknowledgment or a change cursor.
@@ -325,9 +391,10 @@ interface InsertionRequest {
 /**
  * The library's memory operations. Insertions on one instance are serialized in invocation order;
  * the host still owns collecting source material, awaiting writes and reconciling uncertain
- * outcomes. This queue is not a durable job system or a distributed writer lock.
+ * outcomes. This queue is not a durable job system or a distributed writer lock. Correction
+ * preparation joins that order; retrieval and inspection keep their ordinary concurrency.
  */
-export class AgenticMemory {
+export class AgenticMemory implements ContextCorrectionPreparer {
   readonly #store: NoteStore;
   readonly #embedder: Embedder;
   readonly #model: LanguageModel;
@@ -384,6 +451,62 @@ export class AgenticMemory {
   async prepare(input: PrepareInput): Promise<InsertionPlan> {
     const request = readInsertionInput("prepare", prepareInputSchema, input);
     return await this.#enqueue(() => this.#buildPlan("prepare", request));
+  }
+
+  /**
+   * Prepare one reviewed correction of an existing note. The proposal is validated and detached at
+   * the call boundary; the current note is read and compared inside the invocation order, so a
+   * stale proposal is rejected without writes and without poisoning later operations. A no-op
+   * returns the current note; a change returns the revised note and a frozen one-record plan the
+   * existing `apply` writes unchanged. There is no construction, search, model call or link change.
+   *
+   * See docs/memory.md#existing-context-correction.
+   */
+  async prepareContextCorrection(
+    input: ContextCorrectionInput,
+  ): Promise<ContextCorrectionPreparation> {
+    const parsed = contextCorrectionInputSchema.safeParse(input);
+    if (!parsed.success) {
+      throw insertionFailure(
+        "prepareContextCorrection",
+        "input",
+        "The input is not a valid context correction request.",
+        undefined,
+        parsed.error,
+      );
+    }
+    const { expected, attributes } = parsed.data;
+    return await this.#enqueue(async () => {
+      const current = await this.#readInspected(expected);
+      if (!sameJsonValue(expected, current)) {
+        throw insertionFailure(
+          "prepareContextCorrection",
+          "read",
+          "The inspected note does not match the current stored note.",
+          expected.id,
+        );
+      }
+      if (sameJsonValue(attributes, noteAttributes(current))) {
+        return { note: detachNote(current) };
+      }
+      // Only the semantic attributes change; identity, source content, timestamp, metadata,
+      // links and `updatedAt` all come from the current stored note.
+      const revised: Note = {
+        ...current,
+        context: attributes.context,
+        keywords: attributes.keywords,
+        tags: attributes.tags,
+      };
+      const vector = await this.#embed(
+        "prepareContextCorrection",
+        embeddingText(revised),
+        current.id,
+      );
+      // The update time is sampled only after the embedding succeeded. A no-op never reaches
+      // this point, so it conserves the record and its update time exactly.
+      const note: Note = { ...revised, updatedAt: batchPreparationTime() };
+      return { note, plan: this.#plan(current.id, [{ note, vector }]) };
+    });
   }
 
   /**
@@ -529,6 +652,36 @@ export class AgenticMemory {
       () => undefined,
     );
     return await result;
+  }
+
+  /**
+   * Read the note a correction proposal inspected, matching identities as `get` does. A missing
+   * note and a failed read are distinct unchanged failures the caller reports before any write.
+   */
+  async #readInspected(expected: Note): Promise<Note> {
+    let found: Note[];
+    try {
+      found = (await this.#store.get([expected.id])).map(detachNote);
+    } catch (cause) {
+      throw insertionFailure(
+        "prepareContextCorrection",
+        "read",
+        "The note store failed to read the inspected note.",
+        expected.id,
+        cause,
+      );
+    }
+    const identity = expected.id.toLowerCase();
+    const current = found.find((note) => note.id.toLowerCase() === identity);
+    if (current === undefined) {
+      throw insertionFailure(
+        "prepareContextCorrection",
+        "read",
+        "The inspected note no longer exists in the collection.",
+        expected.id,
+      );
+    }
+    return current;
   }
 
   /**
@@ -743,7 +896,7 @@ export class AgenticMemory {
   }
 
   async #embed(
-    operation: "add" | "prepare",
+    operation: EmbeddingOperation,
     text: string,
     noteId: string,
   ): Promise<number[]> {

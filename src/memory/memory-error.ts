@@ -8,10 +8,17 @@
 
 /**
  * The memory operations a host can invoke. `prepare` and `apply` are the durable insertion path
- * the ingestion queue consumes; `add` is the same insertion performed in one call.
+ * the ingestion queue consumes; `add` is the same insertion performed in one call, and
+ * `prepareContextCorrection` prepares a reviewed replacement of one existing note.
  */
 export type MemoryOperation =
-  "add" | "get" | "page" | "search" | "prepare" | "apply";
+  | "add"
+  | "get"
+  | "page"
+  | "search"
+  | "prepare"
+  | "prepareContextCorrection"
+  | "apply";
 
 /**
  * The stage an operation reached: input validation, construction or evolution generation, an
