@@ -235,7 +235,8 @@ npm run baseline -- reproduce --root <private-root> --revision <executing-revisi
   --qdrant-url <url> --model-endpoint <endpoint> --model-id <id> --embedding-cache <cache> \
   [--prompts baseline|current] [--reverse-order] [--exclude-source <id> ...]
 npm run baseline -- defects --root <private-root>
-npm run baseline -- compare --root <private-root> --before <run-id> --after <run-id>
+npm run baseline -- compare --root <private-root> --before <run-id> --after <run-id> \
+  [--label <name>]
 npm run baseline -- retrieval --root <private-root> --qdrant-url <url> --embedding-cache <cache>
 npm run baseline -- metrics --root <private-root>
 ```

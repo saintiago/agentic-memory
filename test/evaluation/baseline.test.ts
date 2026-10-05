@@ -1290,6 +1290,20 @@ describe("matched isolated comparison", () => {
       await readFile(baselinePath(root, "matchedComparison"), "utf8"),
     ) as { after: { runId: string } };
     expect(written.after.runId).toBe("after-run");
+
+    await compareMatchedRuns({
+      root,
+      beforeRunId: "before-run",
+      afterRunId: "after-run",
+      label: "reverse",
+    });
+    const labelled = JSON.parse(
+      await readFile(
+        path.join(root, "matched-comparison-reverse.json"),
+        "utf8",
+      ),
+    ) as { after: { runId: string } };
+    expect(labelled.after.runId).toBe("after-run");
   });
 
   it("refuses a pair that differs in anything but the prompt source", async () => {

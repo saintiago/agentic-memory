@@ -299,6 +299,11 @@ export const compareMatchedRuns = async (input: {
   root: string;
   beforeRunId: string;
   afterRunId: string;
+  /**
+   * A short label for the pair; the comparison is written as `matched-comparison-<label>.json`.
+   * Omitted, the canonical `matched-comparison.json` is written.
+   */
+  label?: string;
   now?: () => Date;
 }): Promise<MatchedComparison> => {
   const before = await readMatchedRun(input.root, input.beforeRunId);
@@ -447,9 +452,11 @@ export const compareMatchedRuns = async (input: {
         "retained review of that run's retrieval evidence.",
     ],
   };
-  await writeJsonFile(
-    baselinePath(input.root, "matchedComparison"),
-    comparison,
-  );
+  const comparisonFile = baselinePath(input.root, "matchedComparison");
+  const artifact =
+    input.label === undefined
+      ? comparisonFile
+      : comparisonFile.replace(/\.json$/, `-${input.label}.json`);
+  await writeJsonFile(artifact, comparison);
   return comparison;
 };
