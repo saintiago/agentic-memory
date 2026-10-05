@@ -91,6 +91,23 @@ export class BaselineRestoreError extends Error {
   }
 }
 
+/**
+ * Whether one retained capture records its prompt settings, and whether that text still equals
+ * this revision's defaults. The capture guard already binds the recorded text to the defaults in
+ * force at capture time; a later generation change legitimately makes the two differ, so only the
+ * recorded text is required for retention, while the comparison keeps that difference visible.
+ */
+export const promptSettingsStatus = (
+  manifest: Pick<BaselineManifest, "prompts">,
+): { retained: boolean; matchesCurrentDefaults: boolean } => ({
+  retained:
+    manifest.prompts.construction.trim() !== "" &&
+    manifest.prompts.evolution.trim() !== "",
+  matchesCurrentDefaults:
+    manifest.prompts.construction === defaultPrompts.construction &&
+    manifest.prompts.evolution === defaultPrompts.evolution,
+});
+
 export interface RestoreOptions {
   root: string;
   qdrant: QdrantTarget;
@@ -319,16 +336,17 @@ export const restoreBaseline = async (
             .join(", ")}`,
   });
 
-  const promptsRetained =
-    manifest.prompts.construction === defaultPrompts.construction &&
-    manifest.prompts.evolution === defaultPrompts.evolution;
+  const promptSettings = promptSettingsStatus(manifest);
   checks.push({
     name: "prompt and model settings retained",
-    ok: promptsRetained,
-    detail: promptsRetained
-      ? `The capture records the exact prompts of revision ${manifest.revision} and the ` +
-        `declared model ${manifest.model.id}.`
-      : "The retained prompt text does not match this revision's defaults.",
+    ok: promptSettings.retained,
+    detail: promptSettings.retained
+      ? `The capture records the prompt text in force for revision ${manifest.revision} and the ` +
+        `declared model ${manifest.model.id}` +
+        (promptSettings.matchesCurrentDefaults
+          ? ", matching this revision's defaults."
+          : "; this revision's defaults differ, as expected after a generation change.")
+      : "The capture does not retain the construction and evolution prompt text.",
   });
 
   const queriesRetained =

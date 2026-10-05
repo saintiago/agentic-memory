@@ -245,8 +245,10 @@ queries fixed before any run), `restore-work/` and `restore-report.json`, `accou
 
 `capture` takes the journal with SQLite's online backup before the collection snapshot and attests
 quiescence with a second receipt-state copy; `restore` copies the pair into an isolated journal
-directory and collection and fails unless every retention check passes. `receipts` keeps the raw
-failed-output limit and the diagnostics explicit, and writes the representative fixture; `reproduce`
+directory and collection and fails unless every retention check passes. The retained prompt text is
+the one in force at capture; a later generation change may make it differ from the current defaults
+without invalidating the baseline. `receipts` keeps the raw failed-output limit and the diagnostics
+explicit, and writes the representative fixture; `reproduce`
 replays it in an isolated recorded run with the live host's provider adjustments, and a
 `--reverse-order` run of the same fixture gives the first-run sources candidate context for their
 evolution calls. `defects` re-validates every recorded response with the public schemas and the

@@ -44,6 +44,8 @@ import {
   selectRepresentativeFailures,
   summarizeReceipts,
 } from "../../experiments/baseline/receipts.js";
+import { promptSettingsStatus } from "../../experiments/baseline/restore.js";
+import { defaultPrompts } from "../../src/index.js";
 
 const BINDING = {
   endpoint: "http://127.0.0.1:6333",
@@ -440,6 +442,27 @@ describe("retained baseline integrity", () => {
     expect(metrics.limits.join(" ")).toContain(
       "isolated restore validation has not run",
     );
+  });
+
+  it("retains captured prompt text when a generation change replaces the defaults", () => {
+    expect(
+      promptSettingsStatus({
+        prompts: { construction: "old construct", evolution: "old evolve" },
+      }),
+    ).toEqual({ retained: true, matchesCurrentDefaults: false });
+    expect(
+      promptSettingsStatus({
+        prompts: {
+          construction: defaultPrompts.construction,
+          evolution: defaultPrompts.evolution,
+        },
+      }),
+    ).toEqual({ retained: true, matchesCurrentDefaults: true });
+    expect(
+      promptSettingsStatus({
+        prompts: { construction: "", evolution: "old evolve" },
+      }),
+    ).toEqual({ retained: false, matchesCurrentDefaults: false });
   });
 });
 
