@@ -190,6 +190,16 @@ representation change explicitly. Include the retained related different-mechani
 control requests under both variants. Use read-only request replay or isolated copies, leaving the
 live corpus and journal unchanged. Keep private inputs and exchanges outside the repository.
 
+For request replay, call the existing [LanguageModel interface](language-model.md#interface) with
+`{ stage: "evolve", prompt }`, then validate the complete parsed response through Memory's public
+`readEvolutionResponse` using the supplied neighbor IDs. Substitute the documented evolution
+instructions and envelope decision guidance for this prompt correction; retain shared guidance,
+the response schema and the exact serialized memory data, including candidate order and timestamps.
+Preserve the full before prompt rather than regenerating it from changed defaults. Do not select
+a fresh neighborhood for this request-level comparison. Use the existing instrumented host transport
+for explicit recording,
+redaction and usage accounting within the declared budget; do not add a retry or repair call.
+
 Review every resulting update against the target's original source and the incoming evidence.
 Acceptance requires a valid update of the warranted target, clear attribution of the later repair,
 and retention of the original cause, explicit reproduction evidence, scope and uncertainty. The
