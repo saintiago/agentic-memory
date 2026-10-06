@@ -10,6 +10,8 @@ import { z } from "zod";
 
 import {
   queueObservationSchema,
+  queueRecoveryRequestSchema,
+  queueRecoverySchema,
   queueReceiptSchema,
   queueStatusSchema,
 } from "../src/ingestion-queue/index.js";
@@ -20,6 +22,21 @@ export const observationRequestSchema = queueObservationSchema;
 
 /** `GET /v1/receipts/:id` and the submission response body: one accepted observation's state. */
 export const receiptSchema = queueReceiptSchema;
+
+/** One opaque URL-safe continuation token; clients return it unchanged. */
+export const cursorTokenSchema = z.string().min(1);
+
+/** `GET /v1/receipts`: one acceptance-sequence page of current receipts. */
+export const receiptPageSchema = z.strictObject({
+  receipts: z.array(receiptSchema),
+  cursor: cursorTokenSchema.optional(),
+});
+
+/** `POST /v1/receipts/:id/recover`: the operator's inspected failed-attempt count. */
+export const recoveryRequestSchema = queueRecoveryRequestSchema;
+
+/** The recovery response: the current receipt and whether this request requeued it. */
+export const recoveryResponseSchema = queueRecoverySchema;
 
 /** `POST /v1/search`: query text and the public retrieval limits. */
 export const searchRequestSchema = z.strictObject({
@@ -43,9 +60,6 @@ export const searchResponseSchema = z.strictObject({
   searchedAt: z.iso.datetime({ offset: true }),
   results: z.array(searchResultSchema),
 });
-
-/** One opaque URL-safe continuation token; clients return it unchanged. */
-export const cursorTokenSchema = z.string().min(1);
 
 /** `GET /v1/notes`: one page of current notes with an optional continuation cursor. */
 export const notesPageSchema = z.strictObject({
@@ -91,6 +105,9 @@ export const serviceErrorSchema = z.strictObject({
 
 export type ObservationRequest = z.infer<typeof observationRequestSchema>;
 export type ReceiptBody = z.infer<typeof receiptSchema>;
+export type ReceiptPage = z.infer<typeof receiptPageSchema>;
+export type RecoveryRequest = z.infer<typeof recoveryRequestSchema>;
+export type RecoveryResponse = z.infer<typeof recoveryResponseSchema>;
 export type SearchRequest = z.infer<typeof searchRequestSchema>;
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
 export type NotesPage = z.infer<typeof notesPageSchema>;

@@ -11,6 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createMemoryMcpServer } from "../../mcp/server.js";
+import { saveOutputSchema } from "../../mcp/tools.js";
 import {
   createMemoryServiceClient,
   type MemoryServiceClientOptions,
@@ -200,6 +201,29 @@ describe("AMEM memory MCP tools", () => {
         "created",
       ],
     });
+  });
+
+  it("accepts the service receipt with retained recovery evidence", () => {
+    // A recovered failed observation keeps its evidence on the receipt; the published save
+    // result is the service's current receipt contract, so the MCP boundary does not reject it.
+    const parsed = saveOutputSchema.safeParse({
+      id: uuid(1),
+      sourceKey: "audited-source",
+      status: "stored",
+      acceptedAt: "2026-10-05T21:00:00.000+02:00",
+      updatedAt: "2026-10-05T21:05:00.000+02:00",
+      attemptCount: 2,
+      noteId: uuid(2),
+      recoveries: [
+        {
+          requestedAt: "2026-10-05T21:02:00.000+02:00",
+          attemptCount: 1,
+          lastError: "The model output is not usable.",
+        },
+      ],
+      created: false,
+    });
+    expect(parsed.success).toBe(true);
   });
 
   it("returns the service's complete attributed search results", async () => {

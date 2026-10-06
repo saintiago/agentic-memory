@@ -25,6 +25,8 @@ The implementation lives here:
 | `dashboard.ts`          | The bundled dashboard: in-process inspection composition, routes and event channel           |
 | `loopback-authority.ts` | The `Host`/`Origin` loopback rules the HTTP API and the event handshake share                |
 | `client.ts`             | The typed, validating client boundary consumers and the dashboard host use                   |
+| `maintenance.ts`        | Offline reviewed context correction: proposal validation, writer-owned providers, outcomes   |
+| `maintain.ts`           | Entry point of `npm run memory:maintain -- correct-context --input <proposal.json>`          |
 | `supervisor.ts`         | Restarts a stopped ingestion worker inside the service process                               |
 | `openapi.json`          | The published OpenAPI 3.1 definition of exactly the implemented routes                       |
 | `model-transport.ts`    | The OpenAI-compatible LanguageModel transport the service composes                           |
@@ -179,6 +181,42 @@ Consumers reach the service through the loopback authority it serves (`127.0.0.1
 before routing, and a browser `Origin` must name a trusted loopback authority; this is the
 deployment's DNS-rebinding guard, not a general remote-access boundary.
 
+## Operator receipt recovery
+
+Receipt outcomes stay inspectable and recoverable without providers: `GET /v1/receipts` pages the
+journal in acceptance order (opaque cursor, all outcomes, no source payloads), and
+`POST /v1/receipts/:id/recover` with `{ expectedAttemptCount }` requeues one retained failed
+observation after its cause was corrected. The recovery response reports `recovered: true` after a
+durable requeue and `recovered: false` for an ineffective repeat; it means queued work, not
+confirmed storage, so follow the receipt for the outcome. A missing receipt answers `404`, an
+invalid identity or count `400`, and an ineligible, future-count or writer-blocked request `409`
+with the queue's safe reason. Select the failed work with the client's `receipts` and `recover`
+operations instead of querying the journal directly.
+
+## Offline context correction
+
+For a reviewed correction of an existing note's generated context, stop the service and run the
+offline command with the same settings that launched it:
+
+```bash
+npm run memory:maintain -- correct-context --input /path/to/proposal.json
+```
+
+The proposal is Memory's `ContextCorrectionInput`: the complete inspected note as `expected` and
+the reviewed replacement `attributes`. The command validates it before any provider work, opens
+the configured journal and takes the queue's exclusive writer ownership through `correctContext`,
+then loads the pinned encoder and compatible collection only while that ownership is held. It
+starts no listener, dashboard, ingestion worker or model call; a running service owns the queue and
+is refused, and no second writer touches the collection.
+
+One JSON line goes to stdout: `{ noteId, changed, note }` with the complete acknowledged or
+unchanged note. Failures print `{ error: { code, message } }` to stderr and exit nonzero, with a
+code the operator can act on: `invalid-proposal`, `invalid-configuration`, `stale-proposal`,
+`preparation-failed`, `ownership-conflict`, `conflict` or `internal`. `conflict` covers queue
+state that must settle first, including a pending correction whose application is unresolved;
+restart the matched service to replay the committed plan exactly, then inspect status and current
+data. A lost command response is not success: re-read the note and the queue status.
+
 ## Checks
 
 `npm run validate` covers the service component tests:
@@ -213,6 +251,15 @@ deployment's DNS-rebinding guard, not a general remote-access boundary.
   subscriptions and projection worker;
 - restart recovery through the service: accepted observations and partially applied plans are
   replayed by a new process over the same queue directory.
+- operator receipt routes: acceptance-sequence enumeration with opaque pagination and all
+  outcomes, explicit recovery of a failed observation while providers are unavailable, retained
+  recovery evidence, and the documented missing/invalid/ineligible errors through the matched
+  client;
+- offline context correction: proposal and command-line validation before journal or provider
+  work, acknowledged and unchanged outcomes without a model call, ownership conflicts in both
+  directions (a running service and a concurrent second service), interruption after the plan
+  commit, exact replay before later ingestion on restart and fresh inspection of the corrected
+  record.
 
 The authoritative behavior is [docs/service.md](../docs/service.md); the queue semantics the
 service composes are [docs/ingestion-queue.md](../docs/ingestion-queue.md).

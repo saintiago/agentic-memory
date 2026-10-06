@@ -44,6 +44,7 @@
     "inspector:responsive": "npm run inspector:build && vitest run --config vitest.responsive.config.ts --reporter=verbose",
     "service": "node scripts/build-inspector-ui.mjs && node --import tsx service/main.ts",
     "mcp": "node --import tsx mcp/main.ts",
+    "memory:maintain": "node --import tsx service/maintain.ts",
     "validate": "turbo run format:check lint typecheck boundaries test build && npm run inspector:build",
     "verify:pack": "npm run build && node scripts/verify-packed-package.mjs"
   },

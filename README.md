@@ -74,6 +74,13 @@ polling.
 [service/README.md](service/README.md) lists its settings, supervision example and the client
 boundary.
 
+Operator recovery stays on the service API: `GET /v1/receipts` enumerates retained outcomes and
+`POST /v1/receipts/:id/recover` requeues one failed observation once its cause is corrected. For a
+reviewed correction of an existing note's generated context, stop the service and run
+`npm run memory:maintain -- correct-context --input <proposal.json>`: the offline command takes
+the same writer ownership, applies one reviewed plan and leaves a pending plan to replay before
+later ingestion when the service restarts.
+
 `npm run inspector` starts the development host of the same dashboard against a separately running
 service API — it opens no database and loads no encoder. The dashboard never writes a memory; it
 builds the Sigma UI in `inspector/ui`, which shows projected positions with directed links,
