@@ -50,8 +50,9 @@ export interface JournalRecord {
 }
 
 /**
- * The one pending context-correction slot, while the journal holds it. A missing plan is
- * committed-plan evidence with lost data, so the queue blocks instead of preparing again.
+ * The one pending correction slot, while the journal holds it; either maintenance action shares
+ * it. A missing plan is committed-plan evidence with lost data, so the queue blocks instead of
+ * preparing again.
  */
 export interface PendingCorrection {
   readonly noteId: string;
@@ -87,7 +88,7 @@ export interface JournalStatus {
    * oldest pending receipt's error.
    */
   readonly pendingError: string | undefined;
-  /** The pending context correction's selected note and safe diagnostic, while it exists. */
+  /** The pending correction's selected note and safe diagnostic, while it exists. */
   readonly correction: { noteId: string; lastError?: string } | undefined;
 }
 
