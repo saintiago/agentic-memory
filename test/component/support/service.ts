@@ -114,6 +114,8 @@ export class PagedStore implements NoteStore {
   readonly partialWriteFailures: Error[] = [];
   nearestError: Error | undefined;
   pageEmbeddedError: Error | undefined;
+  /** Fail every read of the inspected note until this is cleared. */
+  getError: Error | undefined;
   /** Hold the next put until the gate resolves, to observe an in-flight operation. */
   #putGate: Deferred<void> | undefined;
   /** Hold the next page read until the gate resolves, to observe an in-flight HTTP read. */
@@ -171,6 +173,9 @@ export class PagedStore implements NoteStore {
   }
 
   async get(ids: string[]): Promise<Note[]> {
+    if (this.getError !== undefined) {
+      throw this.getError;
+    }
     return ids.flatMap((id) => {
       const entry = this.records.get(id.toLowerCase());
       return entry === undefined ? [] : [structuredClone(entry.note)];

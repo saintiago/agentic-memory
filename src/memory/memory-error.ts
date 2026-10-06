@@ -36,6 +36,13 @@ export type MemoryStage =
 /** Whether stored notes are known to be unchanged, or a write attempt left an uncertain outcome. */
 export type MemoryPersistence = "unchanged" | "uncertain";
 
+/**
+ * What a failed context-correction read established about the inspected proposal. `stale` means
+ * the read succeeded and confirmed the proposal no longer matches the stored note; `unknown`
+ * means the read itself failed, so current storage was not observed.
+ */
+export type ContextCorrectionReadOutcome = "stale" | "unknown";
+
 /** The details of one memory failure. */
 export interface MemoryErrorDetails {
   readonly operation: MemoryOperation;
@@ -48,6 +55,11 @@ export interface MemoryErrorDetails {
   readonly reason: string;
   /** The identity an add allocated before it failed. */
   readonly noteId?: string;
+  /**
+   * The read outcome of a failed context-correction preparation, so a maintenance owner can
+   * distinguish a confirmed stale proposal from a read that could not observe storage.
+   */
+  readonly readOutcome?: ContextCorrectionReadOutcome;
   /** The prepared batch of a rejected write attempt, so the host can reconcile its state. */
   readonly affectedNoteIds?: readonly string[];
   /** The underlying provider or validation failure, preserved for diagnosis. */
@@ -62,6 +74,8 @@ export class MemoryError extends Error {
   /** The safe failure description, without credentials, prompts or source text. */
   declare readonly reason: string;
   declare readonly noteId?: string;
+  /** The confirmed staleness or unobserved read of one failed context-correction preparation. */
+  declare readonly readOutcome?: ContextCorrectionReadOutcome;
   declare readonly affectedNoteIds?: readonly string[];
 
   constructor(details: MemoryErrorDetails) {
@@ -79,6 +93,9 @@ export class MemoryError extends Error {
     this.reason = details.reason;
     if (details.noteId !== undefined) {
       this.noteId = details.noteId;
+    }
+    if (details.readOutcome !== undefined) {
+      this.readOutcome = details.readOutcome;
     }
     if (details.affectedNoteIds !== undefined) {
       this.affectedNoteIds = [...details.affectedNoteIds];

@@ -21,13 +21,14 @@ export class QueueConflictError extends Error {
 /**
  * The queue's durable state refuses the requested transition: an ineligible failed receipt, a
  * future attempt count, or writer work that must settle first. The reason is a safe operator
- * diagnostic, independent of provider error text.
+ * diagnostic, independent of provider error text; the underlying failure stays attached as
+ * `cause` for diagnosis.
  */
 export class QueueStateConflictError extends Error {
   readonly reason: string;
 
-  constructor(reason: string) {
-    super(reason);
+  constructor(reason: string, cause?: unknown) {
+    super(reason, cause === undefined ? undefined : { cause });
     this.name = "QueueStateConflictError";
     this.reason = reason;
   }

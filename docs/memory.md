@@ -198,10 +198,12 @@ Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `prepareContext
 `get`, `page`, `search`),
 `stage`, a safe `reason` and message, and `persistence` (`unchanged` or `uncertain`). An insertion
 error after ID allocation also includes `noteId`; a write-attempt error includes `affectedNoteIds`
-for the prepared batch. Preserve the underlying cause for diagnosis without embedding credentials or
-complete prompts in public messages. The cause keeps the provider's own failure contract, including
-a model transport's machine-readable category, so a caller can classify the failure without reading
-provider text.
+for the prepared batch. A failed context-correction read also includes `readOutcome`: `stale` for a
+read that confirmed a missing or mismatched inspected note, `unknown` for a read that failed before
+observing storage, so a maintenance owner never reports an unreadable store as staleness. Preserve
+the underlying cause for diagnosis without embedding credentials or complete prompts in public
+messages. The cause keeps the provider's own failure contract, including a model transport's
+machine-readable category, so a caller can classify the failure without reading provider text.
 
 Stages are `input`, `construct`, `embed`, `candidates`, `evolve`, `persist`, `read`. Model schema
 failures use the corresponding model stage. All failures before a write attempt are `unchanged`.
@@ -261,10 +263,11 @@ model call or neighbor evolution. The operator derives replacement meaning from 
 checks structural validity and staleness, not semantic truth. Preparation never writes.
 
 Preparation failures carry `operation: prepareContextCorrection`, the selected `noteId`, the relevant
-`input`, `read` or `embed` stage and `persistence: unchanged`. Apply retains its existing validation,
-acknowledgment and uncertain-write behavior. The provider-owned `ContextCorrectionPreparer` is the
-focused read-only capability supplied to a maintenance owner; ordinary ingestion still needs only
-`prepare` and `apply`.
+`input`, `read` or `embed` stage and `persistence: unchanged`. A `read` failure carries `readOutcome`
+so the caller can tell a confirmed stale proposal from a read that could not observe storage. Apply
+retains its existing validation, acknowledgment and uncertain-write behavior. The provider-owned
+`ContextCorrectionPreparer` is the focused read-only capability supplied to a maintenance owner;
+ordinary ingestion still needs only `prepare` and `apply`.
 
 ## Verification
 

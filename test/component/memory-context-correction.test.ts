@@ -136,6 +136,7 @@ describe("reviewed context correction preparation", () => {
     expect(error.stage).toBe("read");
     expect(error.persistence).toBe("unchanged");
     expect(error.noteId).toBe(NOTE_ID);
+    expect(error.readOutcome).toBe("stale");
     expect(harness.store.calls).toEqual(["get"]);
     expect(harness.store.writes).toEqual([]);
     expect(harness.embedder.texts).toEqual([]);
@@ -166,6 +167,7 @@ describe("reviewed context correction preparation", () => {
       expect(error.stage).toBe("read");
       expect(error.persistence).toBe("unchanged");
       expect(error.noteId).toBe(NOTE_ID);
+      expect(error.readOutcome).toBe("stale");
     }
     expect(harness.store.writes).toEqual([]);
     expect(harness.embedder.texts).toEqual([]);
@@ -206,6 +208,8 @@ describe("reviewed context correction preparation", () => {
     expect(error.stage).toBe("read");
     expect(error.persistence).toBe("unchanged");
     expect(error.noteId).toBe(NOTE_ID);
+    // A failed read leaves storage unobserved; it is not a confirmed stale proposal.
+    expect(error.readOutcome).toBe("unknown");
     expect(error.cause).toBeInstanceOf(Error);
     expect(harness.store.writes).toEqual([]);
   });

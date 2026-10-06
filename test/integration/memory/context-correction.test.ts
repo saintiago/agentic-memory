@@ -184,6 +184,7 @@ describe("context correction journey", () => {
     expect(stale).toBeInstanceOf(MemoryError);
     expect((stale as MemoryError).stage).toBe("read");
     expect((stale as MemoryError).persistence).toBe("unchanged");
+    expect((stale as MemoryError).readOutcome).toBe("stale");
     const [recordAfterStale] = (await reopened.pageEmbedded(10)).records;
     expect(recordAfterStale).toEqual(recordAfterReopen);
   });

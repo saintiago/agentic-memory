@@ -213,9 +213,12 @@ One JSON line goes to stdout: `{ noteId, changed, note }` with the complete ackn
 unchanged note. Failures print `{ error: { code, message } }` to stderr and exit nonzero, with a
 code the operator can act on: `invalid-proposal`, `invalid-configuration`, `stale-proposal`,
 `preparation-failed`, `ownership-conflict`, `conflict` or `internal`. `conflict` covers queue
-state that must settle first, including a pending correction whose application is unresolved;
-restart the matched service to replay the committed plan exactly, then inspect status and current
-data. A lost command response is not success: re-read the note and the queue status.
+state that must settle first, including a pending correction whose application or durable
+confirmation is unresolved; restart the matched service to replay the committed plan exactly, then
+inspect status and current data. `stale-proposal` is reserved for a completed read that found the
+inspected note absent or different; a read that could not observe the store is `preparation-failed`.
+`internal` is an unexpected failure and never claims the note is unchanged. A lost command response
+is not success: re-read the note and the queue status.
 
 ## Checks
 
@@ -226,7 +229,8 @@ data. A lost command response is not success: re-read the note and the queue sta
 - opaque cursor round-trips through the note and inspection pages;
 - availability: submission while the providers are unavailable, retrieval `503`, status reporting,
   recovery once initialization succeeds, and capability outages reported until each failed
-  operation serves again (unrelated successes and invalid input never clear an outage);
+  operation serves again (unrelated successes and invalid input never clear an outage), including a
+  pending or blocked context correction that reports ingestion unavailable until exact replay;
 - a blocking encoder hosted in its own worker thread: HTTP requests, receipts and status keep
   answering while inference occupies the thread, and the real worker entry reports a failed pinned
   load as a safe diagnostic;
@@ -258,8 +262,9 @@ data. A lost command response is not success: re-read the note and the queue sta
 - offline context correction: proposal and command-line validation before journal or provider
   work, acknowledged and unchanged outcomes without a model call, ownership conflicts in both
   directions (a running service and a concurrent second service), interruption after the plan
-  commit, exact replay before later ingestion on restart and fresh inspection of the corrected
-  record.
+  commit, a failed read reported as a preparation failure rather than staleness, an unconfirmed
+  written correction reported for exact replay when the journal cannot record its outcome, exact
+  replay before later ingestion on restart and fresh inspection of the corrected record.
 
 The authoritative behavior is [docs/service.md](../docs/service.md); the queue semantics the
 service composes are [docs/ingestion-queue.md](../docs/ingestion-queue.md).

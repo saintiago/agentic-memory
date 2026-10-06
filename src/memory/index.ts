@@ -17,6 +17,7 @@ export type {
 } from "./agentic-memory.js";
 export { MemoryError } from "./memory-error.js";
 export type {
+  ContextCorrectionReadOutcome,
   MemoryErrorDetails,
   MemoryOperation,
   MemoryPersistence,

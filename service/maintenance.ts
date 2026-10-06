@@ -206,8 +206,14 @@ const classifyFailure = (
     return { code: "conflict", message: cause.reason };
   }
   if (cause instanceof MemoryError) {
-    return cause.operation === "prepareContextCorrection" &&
-      cause.stage === "read"
+    // Only a read that confirmed the inspected note stale is a staleness outcome. A read that
+    // could not observe storage is an unchanged preparation failure, never a stale proposal: the
+    // operator must resolve the failed read instead of replacing a proposal that may be current.
+    const stale =
+      cause.operation === "prepareContextCorrection" &&
+      cause.stage === "read" &&
+      cause.readOutcome === "stale";
+    return stale
       ? { code: "stale-proposal", message: cause.reason }
       : { code: "preparation-failed", message: cause.reason };
   }
@@ -223,7 +229,9 @@ const classifyFailure = (
   return {
     code: "internal",
     message:
-      "The context correction command could not complete; no reviewed change was applied.",
+      "The context correction command could not complete and its outcome is unconfirmed. " +
+      "Inspect the current note and the queue's pending correction; if the correction remains " +
+      "pending, restart the matched service to replay the committed plan exactly.",
   };
 };
 

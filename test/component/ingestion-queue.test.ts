@@ -2756,6 +2756,58 @@ describe("context correction", () => {
     );
   });
 
+  it("reports an unconfirmed application and replays it when clearing the slot fails", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+
+    // The journal refuses the deletion that would acknowledge the applied correction.
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    journal.exec(
+      "CREATE TRIGGER refuse_correction_acknowledgement BEFORE DELETE ON correction_slot " +
+        "BEGIN SELECT RAISE(ABORT, 'the journal refuses the acknowledgement'); END",
+    );
+
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "The revised context."),
+        correction,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toContain("applied");
+    // The replacement is written; the slot keeps the plan and truthful evidence for replay.
+    expect(harness.store.stored(note.id)?.context).toBe("The revised context.");
+    const plan = correction.preparations[0]!.plan!;
+    expect(
+      journal
+        .prepare(
+          "SELECT plan, attempt_count, next_retry_at, last_error FROM correction_slot WHERE id = 1",
+        )
+        .get(),
+    ).toMatchObject({
+      plan: JSON.stringify(plan),
+      attempt_count: 1,
+      next_retry_at: expect.any(String),
+      last_error: expect.stringContaining("applied"),
+    });
+    journal.exec("DROP TRIGGER refuse_correction_acknowledgement");
+    journal.close();
+
+    // The retained retry replays the identical plan and clears the slot.
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.status()).contextCorrection === undefined,
+      "the unconfirmed correction to replay",
+    );
+    expect(harness.preparer.applies).toEqual([plan, plan]);
+    expect(harness.store.stored(note.id)?.context).toBe("The revised context.");
+  });
+
   it("blocks a committed correction whose plan was lost instead of preparing again", async () => {
     const directory = await temporaryDirectory();
     const store = new RecordingStore();

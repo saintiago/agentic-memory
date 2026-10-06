@@ -62,7 +62,8 @@ ineligible state, future count or unresolved writer work returns `409` with the 
 It is an operator API, not a new agent MCP tool. Its response means queued work, not confirmed storage;
 follow the existing receipt for outcome. The service adds no generation, source rewriting or automatic
 retry of failed model output. Status forwards pending context-correction evidence from the queue;
-observation counts are not repurposed as correction counts.
+a pending correction keeps ingestion reported unavailable until its committed plan is replayed or an
+operator resolves it; observation counts are not repurposed as correction counts.
 Receipt enumeration likewise remains available without providers and uses queue-owned pagination,
 not note pagination or direct journal queries. The service client validates these additive responses;
 deploy it together with the service and MCP adapter because strict old receipt schemas may reject
@@ -86,7 +87,9 @@ the offline host validates its proposal first using Memory's exported input sche
 
 Validate the proposal before provider work. Print a structured result with note identity, `changed`
 and the complete acknowledged note, or a safe error identifying staleness, ownership conflict,
-unchanged preparation failure or pending uncertain application as applicable. Exit nonzero on failure.
+unchanged preparation failure or pending uncertain application as applicable. A read that could not
+observe the inspected note is an unchanged preparation failure, not staleness: only a read that
+completed and found the note absent or different reports a stale proposal. Exit nonzero on failure.
 Do not print credentials. Keep output with the private comparison artifacts. If interruption leaves
 a pending correction, restart the matched service for exact replay and inspect status/current data;
 do not compose a new proposal from an old search result. Subsequent proposals require a fresh
