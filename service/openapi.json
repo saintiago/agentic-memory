@@ -670,16 +670,16 @@
           "oldestPendingAt": { "type": "string", "format": "date-time" },
           "oldestPendingAgeMs": { "type": "integer", "minimum": 0 },
           "lastError": { "type": "string", "minLength": 1 },
-          "contextCorrection": {
-            "$ref": "#/components/schemas/ContextCorrection"
+          "correction": {
+            "$ref": "#/components/schemas/Correction"
           }
         }
       },
-      "ContextCorrection": {
+      "Correction": {
         "type": "object",
         "additionalProperties": false,
         "required": ["noteId"],
-        "description": "The pending offline context correction that holds later ingestion.",
+        "description": "The pending reviewed correction for either maintenance action, which holds later ingestion.",
         "properties": {
           "noteId": { "type": "string", "format": "uuid" },
           "lastError": { "type": "string", "minLength": 1 }

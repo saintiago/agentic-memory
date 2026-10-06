@@ -348,7 +348,7 @@ export class Journal {
     });
   }
 
-  /** The pending context correction, while the journal holds its committed-plan slot. */
+  /** The pending correction, while the journal holds its committed-plan slot. */
   correction(): Promise<PendingCorrection | undefined> {
     return this.#channel.request({ operation: "correction" });
   }

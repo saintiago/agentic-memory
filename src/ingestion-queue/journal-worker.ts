@@ -446,8 +446,8 @@ class JournalState {
       // legacy import is idempotent and stays possible while a legacy uncertainty blocks writes.
       if (this.correction() !== undefined) {
         throw stateProblem(
-          "A context correction is pending, so the queue refuses legacy imports until it " +
-            "completes or is replayed.",
+          "A correction is pending, so the queue refuses legacy imports until it completes " +
+            "or is replayed.",
         );
       }
       const insert = this.#db.prepare(
@@ -785,7 +785,7 @@ class JournalState {
     });
   }
 
-  /** The one pending context-correction slot, if the journal holds it. */
+  /** The one pending correction slot, if the journal holds it. */
   correction(): PendingCorrection | undefined {
     const row = this.#db
       .prepare("SELECT * FROM correction_slot WHERE id = 1")
@@ -794,8 +794,8 @@ class JournalState {
   }
 
   /**
-   * The safe reason that refuses a new context correction before its expected state is read, or
-   * undefined when preparation may start. The same durable conditions guard every mutation with a
+   * The safe reason that refuses a new correction before its expected state is read, or undefined
+   * when preparation may start. The same durable conditions guard every mutation with a
    * known-unwritten premise.
    */
   correctionRefusal(): string | undefined {
@@ -828,7 +828,7 @@ class JournalState {
     return this.#transaction(() => {
       const present = this.correction();
       if (present === undefined) {
-        throw requestProblem("The queue has no pending context correction.");
+        throw requestProblem("The queue has no pending correction.");
       }
       this.#db
         .prepare(
@@ -844,7 +844,7 @@ class JournalState {
   markCorrectionFailure(failure: JournalCorrectionFailure, now: string): void {
     this.#transaction(() => {
       if (this.correction() === undefined) {
-        throw requestProblem("The queue has no pending context correction.");
+        throw requestProblem("The queue has no pending correction.");
       }
       this.#db
         .prepare(
@@ -859,7 +859,7 @@ class JournalState {
   clearCorrection(): void {
     this.#transaction(() => {
       if (this.correction() === undefined) {
-        throw requestProblem("The queue has no pending context correction.");
+        throw requestProblem("The queue has no pending correction.");
       }
       this.#db.prepare("DELETE FROM correction_slot WHERE id = 1").run();
     });
@@ -947,7 +947,7 @@ class JournalState {
     }
     if (this.correction() !== undefined) {
       return (
-        "A context correction is pending, so the queue refuses further mutation until it " +
+        "A correction is pending, so the queue refuses further mutation until it " +
         "completes or is replayed."
       );
     }
@@ -985,7 +985,7 @@ class JournalState {
   #requiredCorrection(): PendingCorrection {
     const present = this.correction();
     if (present === undefined) {
-      throw new Error("The queue journal lost its pending context correction.");
+      throw new Error("The queue journal lost its pending correction.");
     }
     return present;
   }

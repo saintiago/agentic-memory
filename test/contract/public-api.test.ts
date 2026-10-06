@@ -390,6 +390,18 @@ describe("package root exports", () => {
     expectTypeOf<IngestionQueue["correctContext"]>().returns.toEqualTypeOf<
       Promise<{ note: Note; changed: boolean }>
     >();
+    expectTypeOf<IngestionQueue["correctLinks"]>()
+      .parameter(0)
+      .toEqualTypeOf<LinkCorrectionInput>();
+    expectTypeOf<IngestionQueue["correctLinks"]>()
+      .parameter(1)
+      .toEqualTypeOf<LinkCorrectionPreparer>();
+    expectTypeOf<IngestionQueue["correctLinks"]>().returns.toEqualTypeOf<
+      Promise<{ note: Note; changed: true }>
+    >();
+    expectTypeOf<QueueStatus["correction"]>().toEqualTypeOf<
+      { noteId: string; lastError?: string } | undefined
+    >();
   });
 
   it("keeps the documented prompt and response types usable through the package root", () => {

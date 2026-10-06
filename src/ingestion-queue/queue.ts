@@ -16,10 +16,13 @@ import {
   ModelResponseError,
   contextCorrectionInputSchema,
   insertionPlanSchema,
+  linkCorrectionInputSchema,
   representationVersion,
   type ContextCorrectionInput,
   type ContextCorrectionPreparer,
   type InsertionPlan,
+  type LinkCorrectionInput,
+  type LinkCorrectionPreparer,
   type PrepareInput,
 } from "../memory/index.js";
 import type { Note } from "../note-store/index.js";
@@ -126,6 +129,15 @@ export interface IngestionQueue {
     input: ContextCorrectionInput,
     preparer: ContextCorrectionPreparer,
   ): Promise<{ note: Note; changed: boolean }>;
+  /**
+   * Prepare and apply exactly one reviewed link removal under the same exclusive writer ownership
+   * and pending slot as context correction. A reviewed removal always changes the note, so this
+   * action has no no-op result.
+   */
+  correctLinks(
+    input: LinkCorrectionInput,
+    preparer: LinkCorrectionPreparer,
+  ): Promise<{ note: Note; changed: true }>;
   /** Acquire worker ownership and drain durable pending work. */
   start(): Promise<void>;
   /** Stop claiming work, settle the active operation and release worker ownership. */
@@ -398,35 +410,36 @@ const sameJson = (left: unknown, right: unknown): boolean => {
 };
 
 /**
- * Validate one prepared correction plan before its slot is committed: it satisfies the public
- * insertion-plan contract, belongs to this queue's binding and the inspected note, contains
- * exactly that one record with a vector matching its declared dimensions, and preserves the
- * inspected source fields and links. Only the reviewed semantic attributes may differ. A plan
- * the queue could not read back is refused here, so
- * invalid preparation never becomes durable evidence that blocks later work.
+ * Validate the shape every prepared correction plan shares before its slot is committed: it
+ * satisfies the public insertion-plan contract, belongs to this queue's binding and the inspected
+ * note, contains exactly that one record with a vector matching its declared dimensions, and
+ * preserves the inspected identity, source content, timestamp and metadata. The caller adds the
+ * checks its reviewed operation needs. A plan the queue could not read back is refused here, so
+ * invalid preparation never becomes durable evidence that blocks later work. The validated record
+ * note is returned for those action-specific checks.
  */
-const assertCorrectionPlan = (
+const assertCorrectionPlanShape = (
   plan: InsertionPlan,
   binding: QueueBinding,
   expected: Note,
-): void => {
+): Note => {
   const parsed = insertionPlanSchema.safeParse(plan);
   if (!parsed.success) {
     throw new QueueStateConflictError(
-      "The prepared context correction plan does not satisfy the documented contract.",
+      "The prepared correction plan does not satisfy the documented contract.",
     );
   }
   const correction = parsed.data;
   assertPlanBinding(correction, binding, expected.id);
   if (correction.records.length !== 1) {
     throw new QueueStateConflictError(
-      "The prepared context correction plan must contain exactly one note record.",
+      "The prepared correction plan must contain exactly one note record.",
     );
   }
   const record = correction.records[0];
   if (record?.vector.length !== correction.embeddingSpace.dimensions) {
     throw new QueueStateConflictError(
-      "The prepared context correction vector does not match its declared embedding space.",
+      "The prepared correction vector does not match its declared embedding space.",
     );
   }
   const note = record?.note;
@@ -435,12 +448,75 @@ const assertCorrectionPlan = (
     note.id.toLowerCase() !== expected.id.toLowerCase() ||
     note.content !== expected.content ||
     note.timestamp !== expected.timestamp ||
-    !sameJson(note.metadata ?? null, expected.metadata ?? null) ||
-    !sameJson(note.links, expected.links)
+    !sameJson(note.metadata ?? null, expected.metadata ?? null)
   ) {
     throw new QueueStateConflictError(
-      "The prepared context correction does not preserve the inspected note's identity, " +
-        "source fields and links.",
+      "The prepared correction does not preserve the inspected note's identity and source " +
+        "fields.",
+    );
+  }
+  return note;
+};
+
+/** Whether two link lists name the same directed targets in the same order. */
+const sameLinkOrder = (
+  left: readonly string[],
+  right: readonly string[],
+): boolean =>
+  left.length === right.length &&
+  left.every(
+    (link, index) => link.toLowerCase() === (right[index] ?? "").toLowerCase(),
+  );
+
+/**
+ * Validate one prepared context correction: besides the shared plan shape, the links stay exactly
+ * as inspected; only the reviewed semantic attributes may differ.
+ */
+const assertContextCorrectionPlan = (
+  plan: InsertionPlan,
+  binding: QueueBinding,
+  expected: Note,
+): void => {
+  const note = assertCorrectionPlanShape(plan, binding, expected);
+  if (!sameJson(note.links, expected.links)) {
+    throw new QueueStateConflictError(
+      "The prepared context correction does not preserve the inspected note's links.",
+    );
+  }
+};
+
+/**
+ * Validate one prepared link correction: besides the shared plan shape, the semantic attributes
+ * stay exactly as inspected and exactly the selected outgoing targets are removed, with every
+ * remaining link in its stored order. A link plan cannot pass the context check, which requires
+ * the links to be unchanged, so each action validates its own contract.
+ */
+const assertLinkCorrectionPlan = (
+  plan: InsertionPlan,
+  binding: QueueBinding,
+  expected: Note,
+  removeTargetIds: readonly string[],
+): void => {
+  const note = assertCorrectionPlanShape(plan, binding, expected);
+  if (
+    note.context !== expected.context ||
+    !sameJson(note.keywords, expected.keywords) ||
+    !sameJson(note.tags, expected.tags)
+  ) {
+    throw new QueueStateConflictError(
+      "The prepared link correction does not preserve the inspected note's semantic attributes.",
+    );
+  }
+  const removals = new Set(
+    removeTargetIds.map((target) => target.toLowerCase()),
+  );
+  const remaining = expected.links.filter(
+    (link) => !removals.has(link.toLowerCase()),
+  );
+  if (!sameLinkOrder(note.links, remaining)) {
+    throw new QueueStateConflictError(
+      "The prepared link correction does not remove exactly the selected outgoing targets in " +
+        "their remaining stored order.",
     );
   }
 };
@@ -574,7 +650,7 @@ class DurableQueue implements IngestionQueue {
             oldestPendingAgeMs: Math.max(0, now - Date.parse(oldestPendingAt)),
           }),
       ...(lastError === undefined ? {} : { lastError }),
-      ...(correction === undefined ? {} : { contextCorrection: correction }),
+      ...(correction === undefined ? {} : { correction }),
     });
   }
 
@@ -681,9 +757,69 @@ class DurableQueue implements IngestionQueue {
         "The context correction needs a preparation capability.",
       );
     }
-    // Maintenance takes the same canonical ownership as draining and import: no worker may drain
-    // and no other maintenance operation may run while the reviewed change is prepared and
-    // applied. Producers may still submit.
+    const expected = parsedInput.data.expected;
+    return await this.#maintain(
+      expected,
+      () => preparer.prepareContextCorrection(parsedInput.data),
+      (plan) => {
+        assertContextCorrectionPlan(plan, this.binding, expected);
+      },
+    );
+  }
+
+  async correctLinks(
+    input: LinkCorrectionInput,
+    preparer: LinkCorrectionPreparer,
+  ): Promise<{ note: Note; changed: true }> {
+    this.#assertOpen();
+    const parsedInput = linkCorrectionInputSchema.safeParse(input);
+    if (!parsedInput.success) {
+      throw new QueueRequestError(
+        "The link correction input is not valid.",
+        parsedInput.error,
+      );
+    }
+    if (typeof preparer?.prepareLinkCorrection !== "function") {
+      throw new QueueRequestError(
+        "The link correction needs a preparation capability.",
+      );
+    }
+    const { expected, removeTargetIds } = parsedInput.data;
+    const result = await this.#maintain(
+      expected,
+      async () => ({
+        note: expected,
+        plan: await preparer.prepareLinkCorrection(parsedInput.data),
+      }),
+      (plan) => {
+        assertLinkCorrectionPlan(plan, this.binding, expected, removeTargetIds);
+      },
+    );
+    // A reviewed removal always changes the note, so a missing plan is an invalid preparation
+    // rather than the context action's supported no-op outcome.
+    if (!result.changed) {
+      throw new QueueStateConflictError(
+        "The link correction preparation returned no plan for a reviewed removal.",
+      );
+    }
+    return { note: result.note, changed: true };
+  }
+
+  /**
+   * Run one reviewed maintenance action under the canonical writer lock and the singleton
+   * pending-correction slot. Maintenance takes the same ownership as draining and import: no
+   * worker may drain and no other maintenance operation may run while the reviewed change is
+   * prepared and applied. Producers may still submit. Both actions share this path; only their
+   * input contract, preparation capability and plan validation differ.
+   */
+  async #maintain(
+    expected: Note,
+    prepare: () => Promise<{
+      readonly note: Note;
+      readonly plan?: InsertionPlan;
+    }>,
+    validatePlan: (plan: InsertionPlan) => void,
+  ): Promise<{ note: Note; changed: boolean }> {
     const lock = await WorkerLock.acquire(this.journalPath, "correction");
     try {
       this.#assertOpen();
@@ -691,10 +827,7 @@ class DurableQueue implements IngestionQueue {
       if (refusal !== undefined) {
         throw new QueueStateConflictError(refusal);
       }
-      const expected = parsedInput.data.expected;
-      const preparation = await preparer.prepareContextCorrection(
-        parsedInput.data,
-      );
+      const preparation = await prepare();
       if (preparation.plan === undefined) {
         if (preparation.note.id.toLowerCase() !== expected.id.toLowerCase()) {
           throw new QueueStateConflictError(
@@ -704,7 +837,7 @@ class DurableQueue implements IngestionQueue {
         return { note: preparation.note, changed: false };
       }
       try {
-        assertCorrectionPlan(preparation.plan, this.binding, expected);
+        validatePlan(preparation.plan);
       } catch (cause) {
         // A returned plan is caller-supplied input, not persisted journal evidence: its refusal
         // is a typed state conflict, never the internal blocked-plan diagnostic.
@@ -723,7 +856,7 @@ class DurableQueue implements IngestionQueue {
         const pending = await this.#journal.correction();
         throw new QueueStateConflictError(
           pending?.lastError ??
-            "The context correction could not be applied; its committed plan remains pending.",
+            "The correction could not be applied; its committed plan remains pending.",
         );
       }
       return { note, changed: true };
@@ -964,9 +1097,7 @@ class DurableQueue implements IngestionQueue {
   async #applyCorrection(noteId: string): Promise<Note | undefined> {
     const pending = await this.#journal.correction();
     if (pending === undefined) {
-      throw new QueueStateConflictError(
-        "The queue has no pending context correction.",
-      );
+      throw new QueueStateConflictError("The queue has no pending correction.");
     }
     let plan: InsertionPlan;
     try {
@@ -988,7 +1119,7 @@ class DurableQueue implements IngestionQueue {
       );
     } catch (cause) {
       throw new QueueStateConflictError(
-        `The context correction for note ${noteId} could not record its application ` +
+        `The pending correction for note ${noteId} could not record its application ` +
           "attempt; the committed plan remains pending for exact replay.",
         cause,
       );
@@ -998,7 +1129,7 @@ class DurableQueue implements IngestionQueue {
       note = await this.#memory.apply(plan);
       if (note.id.toLowerCase() !== noteId.toLowerCase()) {
         throw new QueuePlanError(
-          "Applying the context correction produced another note identity than the selected one.",
+          "Applying the correction produced another note identity than the selected one.",
         );
       }
     } catch (cause) {
@@ -1056,7 +1187,7 @@ class DurableQueue implements IngestionQueue {
       );
     } catch (cause) {
       throw new QueueStateConflictError(
-        `The context correction for note ${noteId} could not durably record its outcome; ` +
+        `The correction for note ${noteId} could not durably record its outcome; ` +
           "the committed plan remains pending and must be replayed exactly.",
         cause,
       );
@@ -1071,7 +1202,7 @@ class DurableQueue implements IngestionQueue {
   #readCorrectionPlan(pending: PendingCorrection): InsertionPlan {
     if (pending.plan === undefined) {
       throw new QueuePlanError(
-        `The committed context correction for note ${pending.noteId} has no stored plan, so ` +
+        `The committed correction for note ${pending.noteId} has no stored plan, so ` +
           "the original application cannot be replayed.",
       );
     }
@@ -1080,13 +1211,13 @@ class DurableQueue implements IngestionQueue {
       value = JSON.parse(pending.plan);
     } catch {
       throw new QueuePlanError(
-        `The stored context correction plan for note ${pending.noteId} is unreadable.`,
+        `The stored correction plan for note ${pending.noteId} is unreadable.`,
       );
     }
     const parsed = insertionPlanSchema.safeParse(value);
     if (!parsed.success) {
       throw new QueuePlanError(
-        `The stored context correction plan for note ${pending.noteId} does not satisfy the ` +
+        `The stored correction plan for note ${pending.noteId} does not satisfy the ` +
           "documented contract.",
       );
     }
@@ -1097,7 +1228,7 @@ class DurableQueue implements IngestionQueue {
         pending.noteId.toLowerCase()
     ) {
       throw new QueuePlanError(
-        `The stored context correction for note ${pending.noteId} is not its one-record plan.`,
+        `The stored correction for note ${pending.noteId} is not its one-record plan.`,
       );
     }
     return parsed.data;

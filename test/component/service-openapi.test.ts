@@ -166,8 +166,8 @@ describe("published OpenAPI definition", () => {
       "lastError",
     ]);
     const queueStatus = document.components.schemas.QueueStatus;
-    expect(queueStatus?.properties?.contextCorrection).toMatchObject({
-      $ref: "#/components/schemas/ContextCorrection",
+    expect(queueStatus?.properties?.correction).toMatchObject({
+      $ref: "#/components/schemas/Correction",
     });
   });
 });

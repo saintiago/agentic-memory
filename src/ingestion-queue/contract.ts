@@ -144,7 +144,11 @@ export const queueRecoverySchema = z.strictObject({
 
 export type QueueRecovery = z.infer<typeof queueRecoverySchema>;
 
-/** Receipt outcomes and pending backlog of one queue. Counts include every accepted receipt. */
+/**
+ * Receipt outcomes, pending backlog and the pending reviewed correction of one queue. Counts
+ * include every accepted receipt; the pending correction is separately visible because it keeps
+ * ingestion unavailable until it is applied or resolved.
+ */
 export const queueStatusSchema = z.strictObject({
   worker: z.enum(["running", "stopped"]),
   accepted: z.int().nonnegative(),
@@ -160,7 +164,7 @@ export const queueStatusSchema = z.strictObject({
   oldestPendingAt: instant("An acceptance time").optional(),
   oldestPendingAgeMs: z.int().nonnegative().optional(),
   lastError: z.string().min(1).optional(),
-  contextCorrection: z
+  correction: z
     .strictObject({
       noteId: z.uuid(),
       lastError: z.string().min(1).optional(),

@@ -25,6 +25,8 @@ import {
   type IngestionQueue,
   type InsertionPlan,
   type LegacyReceipt,
+  type LinkCorrectionInput,
+  type LinkCorrectionPreparer,
   type MemoryPreparer,
   type Note,
   type PrepareInput,
@@ -52,6 +54,10 @@ import {
 const NOTE_TIMESTAMP = "2026-09-27T15:44:27.001+02:00";
 const CANDIDATE_ID = "6f2bb0d4-1c1e-4a2b-8f43-1c9a3d4c5e02";
 const OTHER_ID = "b1c2d3e4-f506-4a7b-8c9d-0e1f2a3b4c05";
+const FIRST_LINK_ID = "8d5c4b3a-2f1e-4d0c-9b8a-7c6d5e4f3a04";
+const SECOND_LINK_ID = "5c4d3e2f-1a0b-4c9d-8e7f-6a5b4c3d2e07";
+const THIRD_LINK_ID = "3e2d1c0b-9a8f-4e6d-8c7b-6a5d4e3f2a08";
+const UNRELATED_LINK_ID = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b09";
 const LEGACY_RECEIPT_ID = "9d1e2f30-4a5b-4c6d-8e7f-0a1b2c3d4e05";
 /** A credential-shaped marker that public failure text must never repeat. */
 const CREDENTIAL_MARKER = "sk-live-CREDENTIAL-MARKER-0123456789";
@@ -76,6 +82,10 @@ const candidate = (overrides: Partial<Note> = {}): Note => ({
   metadata: { origin: "host" },
   ...overrides,
 });
+
+/** One inspected source note with three outgoing links in a known stored order. */
+const linkedCandidate = (): Note =>
+  candidate({ links: [FIRST_LINK_ID, SECOND_LINK_ID, THIRD_LINK_ID] });
 
 const unchanged = (): unknown => ({
   links: [],
@@ -2484,7 +2494,7 @@ describe("context correction", () => {
     // Maintenance creates no observation receipt, and acknowledgment cleared the slot.
     const status = await harness.queue.status();
     expect(status.accepted).toBe(0);
-    expect(status.contextCorrection).toBeUndefined();
+    expect(status.correction).toBeUndefined();
     expect((await harness.queue.pageReceipts()).receipts).toEqual([]);
 
     // Repeating the reviewed attributes is a no-op preparation: no plan and no write.
@@ -2545,7 +2555,7 @@ describe("context correction", () => {
         ),
       ).rejects.toBeInstanceOf(QueueStateConflictError);
       expect(harness.store.calls).not.toContain("put");
-      expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+      expect((await harness.queue.status()).correction).toBeUndefined();
     }
     const failing: ContextCorrectionPreparer = {
       prepareContextCorrection: async () => {
@@ -2560,7 +2570,7 @@ describe("context correction", () => {
     ).rejects.toThrow("The correction preparation failed.");
 
     expect(harness.store.calls).not.toContain("put");
-    expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+    expect((await harness.queue.status()).correction).toBeUndefined();
   });
 
   it("schedules no retry for a blocking correction failure and resumes on restart", async () => {
@@ -2619,8 +2629,7 @@ describe("context correction", () => {
     await harness.queue.stop();
     await harness.queue.start();
     await settle(
-      async () =>
-        (await harness.queue.status()).contextCorrection === undefined,
+      async () => (await harness.queue.status()).correction === undefined,
       "the corrected configuration to resume the replay",
       120_000,
     );
@@ -2665,7 +2674,7 @@ describe("context correction", () => {
 
     // The pending slot is visible with its safe diagnostic and holds every later mutation.
     const status = await harness.queue.status();
-    expect(status.contextCorrection).toEqual({
+    expect(status.correction).toEqual({
       noteId: note.id,
       lastError: diagnostic,
     });
@@ -2723,21 +2732,16 @@ describe("context correction", () => {
     restarted.model.queue("construct", CONSTRUCTED);
     restarted.model.queue("evolve", unchanged);
     restarted.store.putError = undefined;
-    expect((await restarted.queue.status()).contextCorrection?.noteId).toBe(
-      note.id,
-    );
+    expect((await restarted.queue.status()).correction?.noteId).toBe(note.id);
     await restarted.queue.start();
 
     // The retained backoff is honoured: half the delay is not enough.
     await vi.advanceTimersByTimeAsync(500);
-    expect((await restarted.queue.status()).contextCorrection?.noteId).toBe(
-      note.id,
-    );
+    expect((await restarted.queue.status()).correction?.noteId).toBe(note.id);
     expect(restarted.preparer.applies).toHaveLength(0);
 
     await settle(
-      async () =>
-        (await restarted.queue.status()).contextCorrection === undefined,
+      async () => (await restarted.queue.status()).correction === undefined,
       "the committed correction to be replayed",
     );
     expect(restarted.preparer.applies).toEqual([plan]);
@@ -2800,8 +2804,7 @@ describe("context correction", () => {
     // The retained retry replays the identical plan and clears the slot.
     await harness.queue.start();
     await settle(
-      async () =>
-        (await harness.queue.status()).contextCorrection === undefined,
+      async () => (await harness.queue.status()).correction === undefined,
       "the unconfirmed correction to replay",
     );
     expect(harness.preparer.applies).toEqual([plan, plan]);
@@ -2842,14 +2845,13 @@ describe("context correction", () => {
     await restarted.queue.start();
     await settle(
       async () =>
-        (await restarted.queue.status()).contextCorrection?.lastError !==
-        undefined,
+        (await restarted.queue.status()).correction?.lastError !== undefined,
       "the corrupt slot diagnostic",
     );
     const status = await restarted.queue.status();
-    expect(status.contextCorrection?.noteId).toBe(note.id);
-    expect(status.contextCorrection?.lastError).toContain("no stored plan");
-    expect(status.lastError).toBe(status.contextCorrection?.lastError);
+    expect(status.correction?.noteId).toBe(note.id);
+    expect(status.correction?.lastError).toContain("no stored plan");
+    expect(status.lastError).toBe(status.correction?.lastError);
 
     // Ingestion stays held until the operator restores a consistent journal/collection pair.
     await vi.advanceTimersByTimeAsync(60_000);
@@ -2932,6 +2934,434 @@ describe("context correction", () => {
     gate.resolve();
     await expect(first).resolves.toMatchObject({ changed: true });
     expect(harness.store.stored(note.id)?.context).toBe("The held revision.");
+  });
+});
+
+describe("link correction", () => {
+  it("removes exactly the reviewed targets through the shared slot without creating a receipt", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: linkedCandidate(),
+      vector: [1, 0, 0, 0],
+    });
+
+    const result = await harness.queue.correctLinks(
+      { expected: note, removeTargetIds: [SECOND_LINK_ID] },
+      harness.memory,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.note).toMatchObject({
+      id: note.id,
+      content: note.content,
+      timestamp: note.timestamp,
+      context: note.context,
+      keywords: note.keywords,
+      tags: note.tags,
+      links: [FIRST_LINK_ID, THIRD_LINK_ID],
+      metadata: note.metadata,
+    });
+    expect(result.note.updatedAt).toEqual(expect.any(String));
+
+    // The reviewed one-record plan was committed before the write and applied exactly once with
+    // the actual stored vector and update time; no encoding or model call participates.
+    expect(harness.preparer.applies).toHaveLength(1);
+    const plan = harness.preparer.applies[0]!;
+    expect(plan.records).toHaveLength(1);
+    expect(plan.records[0]?.note).toEqual(result.note);
+    expect(plan.records[0]?.vector).toEqual([1, 0, 0, 0]);
+    expect(harness.store.writes[0]?.map((record) => record.note.id)).toEqual([
+      note.id,
+    ]);
+    expect(harness.store.stored(note.id)).toEqual(result.note);
+    expect(harness.store.storedVector(note.id)).toEqual([1, 0, 0, 0]);
+    expect(harness.embedder.texts).toEqual([]);
+    expect(harness.model.requests).toEqual([]);
+
+    // Maintenance creates no observation receipt, and acknowledgment cleared the shared slot.
+    const status = await harness.queue.status();
+    expect(status.accepted).toBe(0);
+    expect(status.correction).toBeUndefined();
+    expect((await harness.queue.pageReceipts()).receipts).toEqual([]);
+  });
+
+  it("validates the link-removal contract and plan before committing or writing", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: linkedCandidate(),
+      vector: [1, 0, 0, 0],
+    });
+
+    // Invalid reviewed input is refused before any preparation capability runs.
+    const unprepared: LinkCorrectionPreparer = {
+      prepareLinkCorrection: async () => {
+        throw new Error("preparation must not run for invalid input");
+      },
+    };
+    const invalidInputs: unknown[] = [
+      { expected: note, removeTargetIds: [] },
+      {
+        expected: note,
+        removeTargetIds: [FIRST_LINK_ID, FIRST_LINK_ID.toLowerCase()],
+      },
+      { expected: note, removeTargetIds: [UNRELATED_LINK_ID] },
+      { expected: note, removeTargetIds: ["not-a-uuid"] },
+      { expected: note, removeTargetIds: [FIRST_LINK_ID], extra: true },
+    ];
+    for (const invalid of invalidInputs) {
+      await expect(
+        harness.queue.correctLinks(invalid as LinkCorrectionInput, unprepared),
+      ).rejects.toBeInstanceOf(QueueRequestError);
+    }
+    await expect(
+      harness.queue.correctLinks(
+        { expected: note, removeTargetIds: [FIRST_LINK_ID] },
+        {} as LinkCorrectionPreparer,
+      ),
+    ).rejects.toBeInstanceOf(QueueRequestError);
+    expect(harness.store.calls).not.toContain("put");
+    expect((await harness.queue.status()).correction).toBeUndefined();
+
+    // Every plan that does not satisfy this action's contract is refused before its slot is
+    // committed and before any write is attempted.
+    const source = await harness.memory.prepareLinkCorrection({
+      expected: note,
+      removeTargetIds: [SECOND_LINK_ID],
+    });
+    // A mutable view of the frozen prepared plan, so a case can corrupt exactly one field.
+    interface MutablePlan {
+      noteId: string;
+      embeddingSpace: { id: string };
+      records: Array<{
+        note: Record<string, unknown> & { id: string };
+        vector: number[];
+      }>;
+    }
+    const mutate = (change: (plan: MutablePlan) => void): InsertionPlan => {
+      const plan = structuredClone(source) as unknown as MutablePlan;
+      change(plan);
+      return plan as unknown as InsertionPlan;
+    };
+    const invalidPlans = [
+      // Binding and single source identity.
+      mutate((plan) => {
+        plan.noteId = OTHER_ID;
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.id = OTHER_ID;
+      }),
+      mutate((plan) => {
+        plan.embeddingSpace.id = "another-embedding-space";
+      }),
+      mutate((plan) => {
+        plan.records = [];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.vector = [1, 0, 0];
+      }),
+      // Preserved inspected source fields.
+      mutate((plan) => {
+        plan.records[0]!.note.content = "Changed source content.";
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.timestamp = "2026-09-27T15:44:28.001+02:00";
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.metadata = { origin: "another host" };
+      }),
+      // Preserved semantic attributes.
+      mutate((plan) => {
+        plan.records[0]!.note.context = "Changed context.";
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.keywords = ["changed"];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.tags = ["changed"];
+      }),
+      // Exactly the selected directed removals, in remaining stored order.
+      mutate((plan) => {
+        plan.records[0]!.note.links = [
+          FIRST_LINK_ID,
+          SECOND_LINK_ID,
+          THIRD_LINK_ID,
+        ];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.links = [SECOND_LINK_ID, THIRD_LINK_ID];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.links = [FIRST_LINK_ID];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.links = [THIRD_LINK_ID, FIRST_LINK_ID];
+      }),
+      mutate((plan) => {
+        plan.records[0]!.note.links = [
+          FIRST_LINK_ID,
+          THIRD_LINK_ID,
+          UNRELATED_LINK_ID,
+        ];
+      }),
+    ];
+    for (const invalid of invalidPlans) {
+      const preparer: LinkCorrectionPreparer = {
+        prepareLinkCorrection: async () => invalid,
+      };
+      await expect(
+        harness.queue.correctLinks(
+          { expected: note, removeTargetIds: [SECOND_LINK_ID] },
+          preparer,
+        ),
+      ).rejects.toBeInstanceOf(QueueStateConflictError);
+      expect(harness.store.calls).not.toContain("put");
+      expect((await harness.queue.status()).correction).toBeUndefined();
+    }
+
+    // A stale proposal interleaved with storage changes rejects without a slot or a write.
+    harness.store.seed({
+      note: { ...linkedCandidate(), content: "Intervening stored content." },
+      vector: [1, 0, 0, 0],
+    });
+    await expect(
+      harness.queue.correctLinks(
+        { expected: note, removeTargetIds: [SECOND_LINK_ID] },
+        harness.memory,
+      ),
+    ).rejects.toThrow();
+    expect(harness.store.calls).not.toContain("put");
+    expect((await harness.queue.status()).correction).toBeUndefined();
+  });
+
+  it("holds every mutation behind one pending removal and replays it before ingestion", async () => {
+    const directory = await temporaryDirectory();
+    const harness = await createHarness({ directory });
+    const note = harness.store.seed({
+      note: linkedCandidate(),
+      vector: [1, 0, 0, 0],
+    });
+
+    harness.store.putError = new Error("the connection was reset");
+    const diagnostic =
+      "The note store rejected the prepared batch, so its outcome is uncertain.";
+    const failure = await rejection(
+      harness.queue.correctLinks(
+        { expected: note, removeTargetIds: [FIRST_LINK_ID] },
+        harness.memory,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toBe(diagnostic);
+
+    // The shared slot is visible with its safe diagnostic and holds both maintenance actions,
+    // later imports and observation accounting stays unchanged.
+    const status = await harness.queue.status();
+    expect(status.correction).toEqual({
+      noteId: note.id,
+      lastError: diagnostic,
+    });
+    expect(status.lastError).toBe(diagnostic);
+    expect(status.accepted).toBe(0);
+    const heldContext = new RecordingCorrectionPreparer(harness.memory);
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(note, "Another revision."),
+        heldContext,
+      ),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    await expect(
+      harness.queue.correctLinks(
+        { expected: note, removeTargetIds: [SECOND_LINK_ID] },
+        harness.memory,
+      ),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    await expect(
+      harness.queue.importLegacyReceipts([
+        {
+          status: "pending",
+          sourceKey: "later",
+          content: "The later observation.",
+        },
+      ]),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    expect(heldContext.preparations).toHaveLength(0);
+
+    // The committed plan, the recorded attempt and its retry timing stay in the slot.
+    const plan = harness.preparer.applies[0]!;
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    const slot = journal
+      .prepare(
+        "SELECT plan, attempt_count, next_retry_at FROM correction_slot WHERE id = 1",
+      )
+      .get() as {
+      plan: string;
+      attempt_count: number;
+      next_retry_at: string;
+    };
+    expect(slot.attempt_count).toBe(1);
+    expect(slot.next_retry_at).toEqual(expect.any(String));
+    expect(JSON.parse(slot.plan)).toEqual(plan);
+    journal.close();
+    await harness.queue.close();
+
+    // Reopening replays the exact committed removal before draining later work.
+    const restarted = await createHarness({
+      directory,
+      store: harness.store,
+      embedder: harness.embedder,
+      model: harness.model,
+    });
+    const waiting = await restarted.queue.submit({
+      sourceKey: "waiting",
+      content: "The waiting observation.",
+    });
+    restarted.model.queue("construct", CONSTRUCTED);
+    restarted.model.queue("evolve", unchanged);
+    restarted.store.putError = undefined;
+    expect((await restarted.queue.status()).correction?.noteId).toBe(note.id);
+    await restarted.queue.start();
+    await vi.advanceTimersByTimeAsync(500);
+    expect((await restarted.queue.status()).correction?.noteId).toBe(note.id);
+    expect(restarted.preparer.applies).toHaveLength(0);
+
+    await settle(
+      async () => (await restarted.queue.status()).correction === undefined,
+      "the committed link removal to be replayed",
+    );
+    expect(restarted.preparer.applies).toEqual([plan]);
+    // The actual committed plan is replayed: same links, update time and stored vector.
+    expect(restarted.store.stored(note.id)).toEqual(plan.records[0]?.note);
+    expect(restarted.store.storedVector(note.id)).toEqual(
+      plan.records[0]?.vector,
+    );
+    await settle(
+      async () =>
+        (await restarted.queue.receipt(waiting.id))?.status === "stored",
+      "later ingestion to drain",
+    );
+    // No link correction was prepared again; only the waiting observation was.
+    expect(restarted.preparer.prepares).toHaveLength(1);
+  });
+
+  it("preserves an unconfirmed removal and replays the actual plan after a journal failure", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: linkedCandidate(),
+      vector: [1, 0, 0, 0],
+    });
+
+    // The journal refuses the deletion that would acknowledge the applied removal.
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    journal.exec(
+      "CREATE TRIGGER refuse_correction_acknowledgement BEFORE DELETE ON correction_slot " +
+        "BEGIN SELECT RAISE(ABORT, 'the journal refuses the acknowledgement'); END",
+    );
+
+    const failure = await rejection(
+      harness.queue.correctLinks(
+        { expected: note, removeTargetIds: [THIRD_LINK_ID] },
+        harness.memory,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toContain("applied");
+    // The removal is written; the slot keeps the plan and truthful evidence for replay.
+    expect(harness.store.stored(note.id)?.links).toEqual([
+      FIRST_LINK_ID,
+      SECOND_LINK_ID,
+    ]);
+    const plan = harness.preparer.applies[0]!;
+    const slot = journal
+      .prepare(
+        "SELECT plan, attempt_count, next_retry_at, last_error FROM correction_slot " +
+          "WHERE id = 1",
+      )
+      .get() as {
+      plan: string;
+      attempt_count: number;
+      next_retry_at: string;
+      last_error: string;
+    };
+    expect(slot.attempt_count).toBe(1);
+    expect(slot.next_retry_at).toEqual(expect.any(String));
+    expect(slot.last_error).toContain("applied");
+    expect(JSON.parse(slot.plan)).toEqual(plan);
+    journal.exec("DROP TRIGGER refuse_correction_acknowledgement");
+    journal.close();
+
+    // The retained retry replays the identical plan and clears the slot.
+    await harness.queue.start();
+    await settle(
+      async () => (await harness.queue.status()).correction === undefined,
+      "the unconfirmed link removal to replay",
+    );
+    expect(harness.preparer.applies).toEqual([plan, plan]);
+    expect(harness.store.stored(note.id)).toEqual(plan.records[0]?.note);
+    expect(harness.store.storedVector(note.id)).toEqual(
+      plan.records[0]?.vector,
+    );
+  });
+
+  it("reopens a pre-existing pending context plan without a further journal-schema migration", async () => {
+    const directory = await temporaryDirectory();
+    const harness = await createHarness({ directory });
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+    harness.store.putError = new Error("the connection was reset");
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "The revised context."),
+        correction,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    const plan = correction.preparations[0]!.plan!;
+    await harness.queue.close();
+
+    // The generalized build reopens the context-only journal as it is: the schema version stays
+    // the same and the committed slot row keeps its original values.
+    const before = new DatabaseSync(
+      path.join(directory, "ingestion-queue.sqlite"),
+    );
+    const version = before
+      .prepare("SELECT value FROM queue_metadata WHERE key = 'journalVersion'")
+      .get() as { value: string };
+    const slot = before
+      .prepare(
+        "SELECT note_id, plan, attempt_count FROM correction_slot WHERE id = 1",
+      )
+      .get() as { note_id: string; plan: string; attempt_count: number };
+    before.close();
+    expect(version.value).toBe("3");
+    expect(slot).toMatchObject({ note_id: note.id, attempt_count: 1 });
+    expect(JSON.parse(slot.plan)).toEqual(plan);
+
+    harness.store.putError = undefined;
+    const restarted = await createHarness({
+      directory,
+      store: harness.store,
+      embedder: harness.embedder,
+      model: harness.model,
+    });
+    expect((await restarted.queue.status()).correction?.noteId).toBe(note.id);
+    await restarted.queue.start();
+    await settle(
+      async () => (await restarted.queue.status()).correction === undefined,
+      "the pre-existing context plan to replay",
+    );
+    expect(restarted.preparer.applies).toEqual([plan]);
+    expect(restarted.store.stored(note.id)).toEqual(plan.records[0]?.note);
+    const after = new DatabaseSync(
+      path.join(directory, "ingestion-queue.sqlite"),
+    );
+    const upgraded = after
+      .prepare("SELECT value FROM queue_metadata WHERE key = 'journalVersion'")
+      .get() as { value: string };
+    after.close();
+    expect(upgraded.value).toBe("3");
   });
 });
 
@@ -3128,7 +3558,7 @@ describe("journal upgrade", () => {
       undefined,
       undefined,
     ]);
-    expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+    expect((await harness.queue.status()).correction).toBeUndefined();
     expect(harness.queue.binding).toEqual(binding);
 
     // The file now declares the current schema, with no invented recovery history and no slot.

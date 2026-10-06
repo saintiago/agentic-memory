@@ -248,9 +248,10 @@ export class MemoryService {
       journalError = "The durable queue journal is unavailable.";
     }
     const error = this.#providers.error() ?? journalError;
-    // A pending context correction holds every later collection write until its committed plan
-    // is replayed or an operator resolves it, so ingestion is not available while the slot exists.
-    const correctionPending = queue?.contextCorrection !== undefined;
+    // A pending correction — either reviewed maintenance action — holds every later collection
+    // write until its committed plan is replayed or an operator resolves it, so ingestion is not
+    // available while the slot exists.
+    const correctionPending = queue?.correction !== undefined;
     return serviceStatusSchema.parse({
       collection: this.#collection,
       embeddingSpace: {

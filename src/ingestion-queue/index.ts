@@ -2,7 +2,7 @@
  * Durable ingestion queue public contract: concurrent submissions with source-key
  * deduplication, one collection writer, retry and status reporting, persisted insertion plans and
  * restart replay, idempotent legacy receipt migration, receipt traversal, explicit failed-receipt
- * recovery and reviewed context corrections.
+ * recovery and reviewed corrections of contexts and outgoing links.
  *
  * See docs/ingestion-queue.md and docs/architecture.md#public-contracts.
  */

@@ -5,6 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  AgenticMemory,
+  QueueStateConflictError,
+  openIngestionQueue,
+  referenceEmbeddingSpace,
+  type Note,
+} from "../../src/index.js";
 import { startMemoryService } from "../../service/lifecycle.js";
 import { runMaintenanceCommand } from "../../service/maintenance.js";
 import {
@@ -20,10 +27,11 @@ import {
 } from "./support/service.js";
 
 /**
- * Workflow tests for the offline reviewed context correction: the command prepares and applies a
- * correction under the queue's exclusive writer ownership, an interrupted application replays
- * exactly before later ingestion when the matched service restarts, and fresh inspection serves
- * the corrected record. No browser control or agent tool is involved.
+ * Workflow tests for the offline reviewed context correction and the shared pending-correction
+ * status: the command prepares and applies a correction under the queue's exclusive writer
+ * ownership, an interrupted application replays exactly before later ingestion when the matched
+ * service restarts, either maintenance action holds ingestion through the same slot, and fresh
+ * inspection serves the corrected record. No browser control or agent tool is involved.
  *
  * See docs/service.md#operator-context-correction, docs/testing.md#quality-recovery-and-maintenance-checks
  * and docs/ingestion-queue.md#context-maintenance.
@@ -80,7 +88,7 @@ interface StatusBody {
     readonly accepted: number;
     readonly backlog: number;
     readonly counts: Record<string, number>;
-    readonly contextCorrection?: {
+    readonly correction?: {
       readonly noteId: string;
       readonly lastError?: string;
     };
@@ -601,8 +609,7 @@ describe("offline context correction", () => {
     await waitFor(async () => {
       const status = await statusOf(service);
       return (
-        status.queue?.contextCorrection === undefined &&
-        status.availability.ingestion
+        status.queue?.correction === undefined && status.availability.ingestion
       );
     }, "the committed correction to replay");
     expect(providers.store.stored(uuid(1))?.context).toBe(
@@ -645,7 +652,7 @@ describe("offline context correction", () => {
     const held = await statusOf(service);
     expect(held.availability.ingestion).toBe(false);
     expect(held.queue?.worker).toBe("running");
-    expect(held.queue?.contextCorrection?.noteId).toBe(uuid(1));
+    expect(held.queue?.correction?.noteId).toBe(uuid(1));
     // A maintenance correction creates no observation receipt.
     expect(held.queue?.accepted).toBe(0);
     expect(held.queue?.counts).toEqual({
@@ -661,8 +668,7 @@ describe("offline context correction", () => {
     await waitFor(async () => {
       const status = await statusOf(service);
       return (
-        status.queue?.contextCorrection === undefined &&
-        status.availability.ingestion
+        status.queue?.correction === undefined && status.availability.ingestion
       );
     }, "the replay to acknowledge the correction");
     const replayed = await statusOf(service);
@@ -674,6 +680,86 @@ describe("offline context correction", () => {
       correction.attributes.context,
     );
     expect(providers.model.requests).toHaveLength(0);
+  });
+
+  it("reports a pending committed link removal and holds ingestion until it replays", async () => {
+    const directory = await temporaryDirectory();
+    const providers = new ControlledProviders();
+    providers.store.seed(record(1, [uuid(2), uuid(3)]));
+    const expected = providers.store.stored(uuid(1)) as Note;
+
+    // The reviewed removal is committed while no service owns the queue, and its first
+    // application is interrupted before the acknowledgement, so the slot stays pending. The
+    // offline link command itself is a later task; this exercises the shared queue slot and the
+    // service's status and availability contract for either maintenance action.
+    const memory = new AgenticMemory(
+      providers.store,
+      providers.embedder,
+      providers.model,
+    );
+    const queue = await openIngestionQueue({
+      directory,
+      binding: {
+        endpoint: "http://127.0.0.1:6333",
+        collection: "service-tests",
+        embeddingSpace: { ...referenceEmbeddingSpace },
+      },
+      memory,
+      pollIntervalMs: 10,
+    });
+    providers.store.putError = new Error("the connection was reset");
+    const failure = await queue
+      .correctLinks({ expected, removeTargetIds: [uuid(2)] }, memory)
+      .catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    await queue.close();
+
+    // Hold the replay write so the pending slot is observable through the service API.
+    providers.store.putError = undefined;
+    const gate = providers.store.holdWrites();
+    gates.push(gate);
+    const service = await startServiceHarness({
+      providers,
+      dataDirectory: directory,
+    });
+    harnesses.push(service);
+    await waitFor(
+      () => providers.store.putStarted === 2,
+      "the committed link removal to start replaying",
+    );
+    const held = await statusOf(service);
+    expect(held.availability.ingestion).toBe(false);
+    expect(held.queue?.worker).toBe("running");
+    expect(held.queue?.correction?.noteId).toBe(uuid(1));
+    // Link maintenance creates no observation receipt and changes no account.
+    expect(held.queue?.accepted).toBe(0);
+    expect(held.queue?.counts).toEqual({
+      queued: 0,
+      processing: 0,
+      retrying: 0,
+      stored: 0,
+      failed: 0,
+      blocked: 0,
+    });
+
+    gate.resolve();
+    await waitFor(async () => {
+      const status = await statusOf(service);
+      return (
+        status.queue?.correction === undefined && status.availability.ingestion
+      );
+    }, "the committed link removal to replay");
+    const replayed = await statusOf(service);
+    expect(replayed.availability.ingestion).toBe(true);
+    expect(replayed.queue?.accepted).toBe(0);
+    expect(providers.store.stored(uuid(1))).toMatchObject({
+      context: expected.context,
+      keywords: expected.keywords,
+      tags: expected.tags,
+      links: [uuid(3)],
+    });
+    expect(providers.model.requests).toHaveLength(0);
+    expect(providers.embedder.embedsStarted).toBe(0);
   });
 
   it("reports ingestion unavailable for a blocked correction whose plan is missing", async () => {
@@ -712,15 +798,13 @@ describe("offline context correction", () => {
     harnesses.push(service);
     await waitFor(async () => {
       const status = await statusOf(service);
-      return status.queue?.contextCorrection?.lastError !== undefined;
+      return status.queue?.correction?.lastError !== undefined;
     }, "the corrupt-slot diagnostic");
     const blocked = await statusOf(service);
     expect(blocked.availability.retrieval).toBe(true);
     expect(blocked.availability.ingestion).toBe(false);
     expect(blocked.queue?.worker).toBe("running");
-    expect(blocked.queue?.contextCorrection?.lastError).toContain(
-      "no stored plan",
-    );
+    expect(blocked.queue?.correction?.lastError).toContain("no stored plan");
     expect(blocked.queue?.accepted).toBe(0);
     expect(providers.store.writes).toHaveLength(0);
     expect(providers.store.stored(uuid(1))?.context).toBe(expected.context);
