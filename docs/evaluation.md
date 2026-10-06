@@ -198,7 +198,7 @@ the response schema and the exact serialized memory data, including candidate or
 Preserve the full before prompt rather than regenerating it from changed defaults. Do not select
 a fresh neighborhood for this request-level comparison. Use the existing instrumented host transport
 for explicit recording,
-redaction and usage accounting within the declared budget; do not add a retry or repair call.
+redaction and usage accounting; do not add a retry or repair call.
 
 Review every resulting update against the target's original source and the incoming evidence.
 Acceptance requires a valid update of the warranted target, clear attribution of the later repair,
@@ -209,12 +209,14 @@ updated neighbors for unsupported revisions and the controls for unwarranted cha
 another repair note, an update of another neighbor, shorter prose or absence of contamination alone
 does not demonstrate that the missed update was repaired.
 
-Repeat the comparison within the declared call/token budget. Report target updates, semantically
+Report the retained before/corrected comparisons, target updates, semantically
 faithful revisions, control changes and invalid or failed calls with their denominators, retaining
 misses and semantic defects even when another trial succeeds. Separate request-level evidence from
 isolated ingestion/persistence evidence and production delivery. Small stochastic samples establish
 bounded observations, not a reliability rate or guaranteed future update; no global success threshold
-is selected by this procedure.
+is selected by this procedure. An agent-chosen call/token cap is not an acceptance gate for this
+repair. Disclose incomplete accounting and uncertain usage; they do not invalidate the retained
+semantic evidence. Do not make additional comparison calls to reconstruct lost historical usage.
 
 ## Quality maintenance procedure
 
