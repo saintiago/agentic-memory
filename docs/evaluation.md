@@ -181,6 +181,43 @@ search results reflect acknowledged corrections. Use isolated copies for destruc
 never reset the live corpus to obtain a cleaner comparison. Private evidence remains outside the
 public repository. This is bounded change acceptance, not a global accuracy or availability promise.
 
+### Missed warranted evolution
+
+For a reproduced missed update, retain the exact original evolution request, target identity and
+response as the before evidence. Compare the focused prompt/input correction against that same
+source evidence and supplied neighborhood, with identical provider settings; record any input
+representation change explicitly. Include the retained related different-mechanism and unrelated
+control requests under both variants. Use read-only request replay or isolated copies, leaving the
+live corpus and journal unchanged. Keep private inputs and exchanges outside the repository.
+
+For request replay, call the existing [LanguageModel interface](language-model.md#interface) with
+`{ stage: "evolve", prompt }`, then validate the complete parsed response through Memory's public
+`readEvolutionResponse` using the supplied neighbor IDs. Substitute the documented evolution
+instructions and envelope decision guidance for this prompt correction; retain shared guidance,
+the response schema and the exact serialized memory data, including candidate order and timestamps.
+Preserve the full before prompt rather than regenerating it from changed defaults. Do not select
+a fresh neighborhood for this request-level comparison. Use the existing instrumented host transport
+for explicit recording,
+redaction and usage accounting; do not add a retry or repair call.
+
+Review every resulting update against the target's original source and the incoming evidence.
+Acceptance requires a valid update of the warranted target, clear attribution of the later repair,
+and retention of the original cause, explicit reproduction evidence, scope and uncertainty. The
+historical defect must not read as an unresolved current defect after the attributed repair;
+the repair must not become independent verification or a guarantee beyond its source. Inspect other
+updated neighbors for unsupported revisions and the controls for unwarranted changes. A link to
+another repair note, an update of another neighbor, shorter prose or absence of contamination alone
+does not demonstrate that the missed update was repaired.
+
+Report the retained before/corrected comparisons, target updates, semantically
+faithful revisions, control changes and invalid or failed calls with their denominators, retaining
+misses and semantic defects even when another trial succeeds. Separate request-level evidence from
+isolated ingestion/persistence evidence and production delivery. Small stochastic samples establish
+bounded observations, not a reliability rate or guaranteed future update; no global success threshold
+is selected by this procedure. An agent-chosen call/token cap is not an acceptance gate for this
+repair. Disclose incomplete accounting and uncertain usage; they do not invalidate the retained
+semantic evidence. Do not make additional comparison calls to reconstruct lost historical usage.
+
 ## Quality maintenance procedure
 
 Evaluation is an operator client of the public service and library contracts, not a direct journal

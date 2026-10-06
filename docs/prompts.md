@@ -54,10 +54,14 @@ Choose at least three useful broader tags, including the domain and kind of mate
 Consider the incoming memory alongside its nearest existing memories.
 Link meaningful relationships, not merely shared words. Refine the incoming tags when useful.
 Decide links and updates separately. A useful link does not require a context update.
-Default to an empty updates array. Update a neighbor only if the incoming original content
-explicitly repairs, contradicts, supersedes or changes a condition of that neighbor's specific
-claim. First identify the original claim and what now replaces it. If the original claim and
-its applicability still stand as written, leave the neighbor unchanged.
+For each neighbor, compare its original claim with the incoming original evidence before
+deciding whether to leave it unchanged. Update it when the incoming content explicitly repairs,
+contradicts, supersedes or changes a condition of that same claim. First identify the original
+claim and what now replaces it. If no specific claim changes, leave the neighbor unchanged.
+When a later source explicitly reports repairing the same defect, describe the historical defect
+and attributed repair. Do not leave the obsolete defect description as current merely because
+the repair is also stored in another note. Omit an update if the neighbor's context already
+faithfully reflects the supported conclusion.
 Insertion order is not evidence order. Respect source timestamps and explicit historical sequence:
 an earlier defect does not refute its later repair just because it is inserted afterward. Do not
 recast a documented implemented repair as an intention or failure on that basis. If the evidence
@@ -68,17 +72,18 @@ A general rule and its specialized application may be linked, but do not merge t
 adding a general deleted-input mapping case does not revise an already complete suite-ownership
 repair. Omit corroborating evidence and cross-case summaries when they change no existing claim.
 Never describe an earlier source as later corroboration of a newer finding.
-A defect and its later repair can justify an update. Two defects with different causes or repairs,
-or findings about different lifecycle stages, do not qualify each other even when they concern
-the same subsystem or goal. Disabled capture settings and evidence lost during recovery are
-separate defects; deletion/reuse and preparation storage are separate mechanisms; classifying
-removed inputs and validating a release are separate decisions. Keep each in its own note.
+Two defects with different causes or repairs, or findings about different lifecycle stages, do not
+qualify each other even when they concern the same subsystem or goal. Disabled capture settings
+and evidence lost during recovery are separate defects; deletion/reuse and preparation storage are
+separate mechanisms; classifying removed inputs and validating a release are separate decisions.
+Keep each in its own note.
 Do not synthesize linked notes into the neighbor's context. Never append the incoming case,
 mechanism or status as a parallel finding, corroboration, comparison or "distinct issue".
 Explaining that a separate issue does not change the neighbor is itself an unnecessary update.
 Anchor a warranted revision in the neighbor's original content; generated context is only a
 prior interpretation. Replace the affected claim with its supported revised conclusion, attribute
-the change to its evidence, and retain the neighbor's own causes, applicability and uncertainty.
+the change to its evidence, and retain the neighbor's own causes, explicit reproduction evidence,
+applicability and uncertainty.
 Select a link only when the original contents share a direct evidence relationship: a defect
 and its repair, a qualification or supersession of the same claim, or a comparison that changes
 how either source's scope or applicability should be read. Notes about different mechanisms,
@@ -86,8 +91,8 @@ components or workflows are not related by a shared project, ticket, domain, fai
 broad theme. Judge a link from the original contents, not their generated contexts.
 
 When evolving context, rewrite rather than append. Prefer one or two short sentences.
-Replace superseded interpretations; retain earlier causes or attempts only when necessary
-to explain the supported conclusion. Omit repetition and a running event history.
+Replace superseded interpretations while retaining the neighbor's source-specific evidence and
+caveats. Omit repetition and a running event history.
 Keep each note focused on its own subject. Do not copy the current status of another subject
 into it, and do not add another subject's case as a related example. Preserve the meaning of the
 original source and attribute any later change to its evidence.
@@ -127,8 +132,8 @@ Use only supplied neighbor IDs in links and updates. newTags is the incoming not
 Copy each selected neighbor's id exactly from the supplied neighbors. Do not use incoming.id,
 an identifier mentioned inside content, a placeholder, or a descriptive subject as a target ID.
 For each changed neighbor, provide its complete revised context, keywords and tags.
-Use updates: [] unless the incoming content changes a specific claim in a neighbor's original content.
-If that claim and its applicability remain valid as written, omit the update even when selecting a link.
+Use updates: [] when the incoming content warrants no specific claim revision in any neighbor.
+Omit neighbors whose context already faithfully reflects the supported conclusion, even when linking.
 Repeated support, a general rule or another application of that rule is not a changed claim.
 observationOrder lists note IDs by source timestamp, earliest first, independently of insertion order.
 Read it with the original contents: an earlier defect is historical evidence, not a later test of its repair.
