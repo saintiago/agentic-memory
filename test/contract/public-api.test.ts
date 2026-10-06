@@ -15,6 +15,8 @@ import type {
   ContextCorrectionInput,
   ContextCorrectionPreparation,
   ContextCorrectionPreparer,
+  ContextCorrectionReadOutcome,
+  CorrectionReadOutcome,
   Cursor,
   Embedder,
   EmbeddingSpace,
@@ -209,6 +211,10 @@ describe("package root exports", () => {
       ReturnType<typeof packageExports.embeddingText>
     >().toEqualTypeOf<string>();
     expectTypeOf<MemoryError["reason"]>().toEqualTypeOf<string>();
+    expectTypeOf<ContextCorrectionReadOutcome>().toEqualTypeOf<CorrectionReadOutcome>();
+    expectTypeOf<MemoryError["readOutcome"]>().toEqualTypeOf<
+      ContextCorrectionReadOutcome | undefined
+    >();
     expectTypeOf<MemoryOperation>().toEqualTypeOf<
       | "add"
       | "get"

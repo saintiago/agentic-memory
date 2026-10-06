@@ -251,8 +251,9 @@ describe("link correction journey", () => {
     const [current] = await store.get([source.id]);
     expect(current?.links).toEqual([further.id]);
 
-    // The removed edge is gone; the target still arrives through the bridge's valid edge, while
-    // the freed budget slot exposes the remaining link of the corrected source.
+    // The removed edge is gone; the target still arrives through the bridge's valid edge and the
+    // corrected source keeps its remaining link. This limit already returned both linked notes
+    // before removal, so the case asserts routes and order, not a newly freed budget slot.
     const after = await memory.search(
       "queue removal needs an operator approval",
       {

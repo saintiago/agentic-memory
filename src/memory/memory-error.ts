@@ -45,6 +45,12 @@ export type MemoryPersistence = "unchanged" | "uncertain";
  */
 export type CorrectionReadOutcome = "stale" | "unknown";
 
+/**
+ * The original supported name of the correction read outcome. Link correction shares the same
+ * contract, so this name remains an alias of `CorrectionReadOutcome` for existing consumers.
+ */
+export type ContextCorrectionReadOutcome = CorrectionReadOutcome;
+
 /** The details of one memory failure. */
 export interface MemoryErrorDetails {
   readonly operation: MemoryOperation;
