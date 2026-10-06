@@ -179,10 +179,13 @@ const writeJournal = async (
     insertMetadata.run("journalVersion", options.version ?? "3");
     insertMetadata.run("representation", "amem-note-v1");
     insertMetadata.run("binding", JSON.stringify(options.binding ?? BINDING));
+    const recoveryColumn = options.version === "2" ? "" : ", recoveries";
+    const recoveryValues = options.version === "2" ? "" : ", ?";
     const insert = db.prepare(
       "INSERT INTO receipts (sequence, id, source_key, note_id, status, content, timestamp, " +
         "accepted_at, updated_at, attempt_count, last_error, stored_at, plan_committed, " +
-        "requires_reconciliation, reconciled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        `requires_reconciliation, reconciled${recoveryColumn}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ` +
+        `?, ?, ?, ?, ?${recoveryValues})`,
     );
     for (const entry of options.receipts ?? [receipt()]) {
       insert.run(
@@ -201,6 +204,13 @@ const writeJournal = async (
         entry.planCommitted ? 1 : 0,
         entry.requiresReconciliation ? 1 : 0,
         entry.reconciled ? 1 : 0,
+        ...(options.version === "2"
+          ? []
+          : [
+              entry.recoveries === undefined
+                ? null
+                : JSON.stringify(entry.recoveries),
+            ]),
       );
     }
   } finally {
@@ -275,6 +285,45 @@ describe("journal copy", () => {
     expect(journal.receipts[1]?.lastError).toContain("evolution response");
   });
 
+  it("reads retained recovery evidence from a version-3 journal", async () => {
+    const directory = await tempDirectory();
+    const file = path.join(directory, "recovered.sqlite");
+    const recoveries = [
+      {
+        requestedAt: "2026-10-05T10:00:00Z",
+        attemptCount: 1,
+        lastError:
+          "The evolution response does not satisfy the documented contract.",
+      },
+    ];
+    await writeJournal(file, {
+      receipts: [
+        receipt({
+          sequence: 1,
+          attemptCount: 2,
+          lastError: undefined,
+          recoveries,
+        }),
+      ],
+    });
+    const journal = readJournalCopy(file);
+    expect(journal.version).toBe("3");
+    expect(journal.receipts[0]?.recoveries).toEqual(recoveries);
+  });
+
+  it("refuses recovery evidence outside the queue contract", async () => {
+    const directory = await tempDirectory();
+    const file = path.join(directory, "damaged.sqlite");
+    await writeJournal(file);
+    const db = new DatabaseSync(file);
+    try {
+      db.prepare("UPDATE receipts SET recoveries = ?").run("{not json}");
+    } finally {
+      db.close();
+    }
+    expect(() => readJournalCopy(file)).toThrow(JournalCopyError);
+  });
+
   it("reads a retained previous-version journal without recovery evidence", async () => {
     const directory = await tempDirectory();
     const file = path.join(directory, "retained.sqlite");
@@ -301,6 +350,7 @@ describe("journal copy", () => {
     expect(journal.version).toBe("2");
     expect(journal.binding).toEqual(BINDING);
     expect(journal.latestSequence).toBe(2);
+    expect(journal.receipts[0]?.recoveries).toBeUndefined();
     expect(
       journal.receipts.map((entry) => [
         entry.sequence,
@@ -378,7 +428,10 @@ describe("receipt accounting", () => {
       failed(3, evolution, 38),
       failed(4, unusable, 1),
     ];
-    const accounting = summarizeReceipts(receipts, { revision: "test" });
+    const accounting = summarizeReceipts(receipts, {
+      revision: "test",
+      journalVersion: "2",
+    });
     expect(accounting.acceptedObservations.count).toBe(4);
     expect(accounting.statusCounts).toMatchObject({ stored: 2, failed: 2 });
     expect(accounting.attempts.total).toBe(41);
@@ -405,6 +458,62 @@ describe("receipt accounting", () => {
     ]);
     expect(accounting.recoveryEvidence.available).toBe(false);
     expect(accounting.recoveryEvidence.recoveredReceipts).toBeNull();
+    expect(accounting.recoveryEvidence.recoveryEntries).toBeNull();
+  });
+
+  it("reports retained recovery evidence instead of an unavailable count", () => {
+    const receipts = [
+      receipt({
+        sequence: 1,
+        attemptCount: 2,
+        lastError: undefined,
+        recoveries: [
+          {
+            requestedAt: "2026-10-05T10:00:00Z",
+            attemptCount: 1,
+            lastError: evolution,
+          },
+        ],
+      }),
+      receipt({
+        sequence: 2,
+        id: uuid(2),
+        sourceKey: "source-2",
+        noteId: uuid(102),
+        attemptCount: 3,
+        lastError: undefined,
+        recoveries: [
+          {
+            requestedAt: "2026-10-05T10:00:00Z",
+            attemptCount: 1,
+            lastError: evolution,
+          },
+          {
+            requestedAt: "2026-10-05T11:00:00Z",
+            attemptCount: 2,
+            lastError: evolution,
+          },
+        ],
+      }),
+      receipt({
+        sequence: 3,
+        id: uuid(3),
+        sourceKey: "source-3",
+        noteId: uuid(103),
+      }),
+    ];
+    const accounting = summarizeReceipts(receipts, {
+      revision: "test",
+      journalVersion: "3",
+    });
+    expect(accounting.recoveryEvidence).toMatchObject({
+      available: true,
+      recoveredReceipts: 2,
+      recoveryEntries: 3,
+    });
+    expect(accounting.recoveryEvidence.reason).toContain(
+      "effective recovery requests",
+    );
   });
 
   it("selects the most-repeated failure before longer content and alternates classes", () => {
@@ -459,7 +568,7 @@ describe("retained baseline integrity", () => {
         file: baselinePath(root, "journal"),
         sha256: await sha256File(baselinePath(root, "journal")),
         bytes: await fileBytes(baselinePath(root, "journal")),
-        schemaVersion: "2",
+        schemaVersion: "3",
         representation: "amem-note-v1",
         latestSequence: 1,
         binding: BINDING,
@@ -643,7 +752,11 @@ describe("retained baseline integrity", () => {
       count: 1,
       denominator: "1 accepted observations",
     });
-    expect(metrics.ingestion.recovery.recoveredReceipts).toBeNull();
+    expect(metrics.ingestion.recovery).toMatchObject({
+      available: true,
+      recoveredReceipts: 0,
+      recoveryEntries: 0,
+    });
     expect(metrics.restore).toBeNull();
     expect(metrics.retrieval).toBeNull();
     expect(metrics.reproduction).toBeNull();

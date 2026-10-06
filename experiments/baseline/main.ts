@@ -203,6 +203,7 @@ const runReceipts = async (args: string[]): Promise<void> => {
   const baseline = await readRetainedBaseline(root);
   const accounting = summarizeReceipts(baseline.receipts, {
     revision: baseline.manifest.revision,
+    journalVersion: baseline.journal.version,
   });
   const selected = selectRepresentativeFailures(baseline.receipts);
   const fixture = await writeReproductionFixture(
@@ -231,6 +232,14 @@ const runReceipts = async (args: string[]): Promise<void> => {
       `${String(accounting.attempts.byCurrentOutcome.failed)} of them fall on the ` +
       `${String(counts.failed)} receipts currently failed. Per-attempt failure history: ` +
       "unavailable (the journal retains cumulative claims and latest errors only).",
+  );
+  const recovery = accounting.recoveryEvidence;
+  console.log(
+    recovery.available
+      ? `Retained recovery evidence: ${String(recovery.recoveredReceipts)} recovered receipt(s), ` +
+          `${String(recovery.recoveryEntries)} effective request(s).`
+      : "Retained recovery evidence: unavailable (this journal copy predates the " +
+          "recovery-evidence column).",
   );
   for (const diagnostic of accounting.failedDiagnostics) {
     console.log(
@@ -437,7 +446,10 @@ const runMetrics = async (args: string[]): Promise<void> => {
   console.log(
     `Ingestion: accepted ${String(acceptedObservations.count)}, stored ` +
       `${String(storedOutcomes.count)}, failed ${String(failedOutcomes.count)}; ` +
-      `recovery evidence available: ${String(recovery.available)}.`,
+      (recovery.available
+        ? `retained recovery evidence: ${String(recovery.recoveredReceipts)} recovered ` +
+          `receipt(s), ${String(recovery.recoveryEntries)} effective request(s).`
+        : "recovery evidence unavailable (this journal copy predates the recovery-evidence column)."),
   );
   console.log(
     `Cumulative attempts: ${String(attempts.total.count)} ` +

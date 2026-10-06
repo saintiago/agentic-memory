@@ -22,8 +22,10 @@ import {
   jsonValueSchema,
   queueBindingSchema,
   queueReceiptStatuses,
+  queueRecoveryEvidenceSchema,
   type JsonValue,
   type QueueBinding,
+  type QueueRecoveryEvidence,
   type QueueReceiptStatus,
 } from "../../src/index.js";
 
@@ -33,10 +35,17 @@ const loadSqlite = (): typeof import("node:sqlite") =>
 
 /**
  * The journal schema versions whose receipt rows this reader understands. Version 3 only added
- * recovery evidence and the correction slot, so the retained receipt columns are shared. Any
- * other version is refused, not guessed at.
+ * the recovery-evidence column and the correction slot, so the other retained receipt columns are
+ * shared. Any other version is refused, not guessed at.
  */
 export const supportedJournalVersions = ["2", "3"] as const;
+
+/** The supported journal versions whose receipt rows retain optional recovery evidence. */
+export const recoveryEvidenceVersions = ["3"] as const;
+
+/** Whether one supported journal version's receipt rows retain recovery evidence. */
+export const retainsRecoveryEvidence = (version: string): boolean =>
+  recoveryEvidenceVersions.some((supported) => supported === version);
 
 /** One receipt row of the retained journal copy, with the fields baseline evidence needs. */
 export const journalCopyReceiptSchema = z.strictObject({
@@ -64,6 +73,7 @@ export const journalCopyReceiptSchema = z.strictObject({
   planCommitted: z.boolean(),
   requiresReconciliation: z.boolean(),
   reconciled: z.boolean(),
+  recoveries: z.array(queueRecoveryEvidenceSchema).optional(),
 });
 
 export type JournalCopyReceipt = z.infer<typeof journalCopyReceiptSchema>;
@@ -143,6 +153,29 @@ const receiptStatus = (value: string): QueueReceiptStatus => {
   return known;
 };
 
+const optionalRecoveries = (
+  value: SQLOutputValue | undefined,
+): QueueRecoveryEvidence[] | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new JournalCopyError(
+      "The journal copy holds unreadable recovery evidence.",
+    );
+  }
+  const recoveries = z.array(queueRecoveryEvidenceSchema).safeParse(parsed);
+  if (!recoveries.success) {
+    throw new JournalCopyError(
+      "The journal copy holds recovery evidence outside the queue contract.",
+    );
+  }
+  return recoveries.data;
+};
+
 /**
  * Read the journal copy's metadata and receipts. The connection is read-only; a missing file or a
  * different schema fails before any receipt is reported.
@@ -200,11 +233,16 @@ export const readJournalCopy = (path: string): JournalCopy => {
         "The journal copy's binding metadata is not a valid queue binding.",
       );
     }
+    const recoveryColumn = retainsRecoveryEvidence(knownVersion)
+      ? ", recoveries"
+      : "";
     const rows = db
       .prepare(
         "SELECT sequence, id, source_key, note_id, status, content, timestamp, provenance, " +
           "accepted_at, updated_at, attempt_count, next_retry_at, last_error, stored_at, " +
-          "plan_committed, requires_reconciliation, reconciled FROM receipts ORDER BY sequence",
+          "plan_committed, requires_reconciliation, reconciled" +
+          recoveryColumn +
+          " FROM receipts ORDER BY sequence",
       )
       .all() as ReadonlyArray<Record<string, SQLOutputValue>>;
     const receipts = rows.map((row) =>
@@ -231,6 +269,9 @@ export const readJournalCopy = (path: string): JournalCopy => {
             "requires_reconciliation",
           ) !== 0,
         reconciled: requiredInteger(row["reconciled"], "reconciled") !== 0,
+        recoveries: retainsRecoveryEvidence(knownVersion)
+          ? optionalRecoveries(row["recoveries"])
+          : undefined,
       }),
     );
     return {

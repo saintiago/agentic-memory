@@ -216,6 +216,7 @@ export const aggregateMetrics = async (
   const baseline = await readRetainedBaseline(root);
   const accounting = summarizeReceipts(baseline.receipts, {
     revision: baseline.manifest.revision,
+    journalVersion: baseline.journal.version,
   });
   const restore = await readOptionalJson(baselinePath(root, "restoreReport"));
   const retrieval = await readOptionalJson(baselinePath(root, "retrieval"));

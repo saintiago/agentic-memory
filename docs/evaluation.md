@@ -152,6 +152,10 @@ contexts where retained. Corrections must remove unrelated subjects and repeated
 reduce that excess text and preserve attribution, supported meaning, conditions and uncertainty.
 Judge against original sources, including necessary related evidence; shorter text alone is not
 acceptance. Review subsequent evolution of those subjects to check the expansion does not return.
+For recovery-rewritten neighbors, review the complete resulting context against its original source
+and the attributed incoming source. A shared subsystem does not establish that a repair addresses
+the neighbor's specific defect; correct unsupported repair attributions or explicitly defer them
+with their actual semantic reason, separately from length observations.
 
 Use the four known-topic audit queries and the recorded paraphrases where available, with expected
 evidence declared in advance. If exact query text is unavailable, label replacements rather than
@@ -215,8 +219,11 @@ noise. If old edges prevent the accepted comparison from showing improvement, re
 limitation for an explicit scope decision rather than silently widening maintenance permissions.
 
 Include later related and unrelated insertions on isolated copies to assess whether corrected subjects
-expand again. Report deterministic protocol verification separately from real model-quality evidence;
-keep remaining failure, fidelity and relevance limitations explicit.
+expand again. Insert the later sources through the public Memory contract against the restored
+collection under the captured revision's prompts and record the raw exchanges with their usage; the
+restored journal copy stays read-only evidence and the live pair is never written. Report
+deterministic protocol verification separately from real model-quality evidence; keep remaining
+failure, fidelity and relevance limitations explicit.
 
 ### Baseline tooling
 
@@ -255,7 +262,9 @@ this invocation verified is ever cleaned up. The retained prompt text is the one
 capture; a later generation change may make it differ from the current defaults without invalidating
 the baseline. `receipts` keeps the raw failed-output limit explicit, reports cumulative claims
 grouped by each receipt's current outcome with the total-attempt denominator, states that
-per-attempt failure history is not retained, and writes the representative fixture; `reproduce`
+per-attempt failure history is not retained, reports the recovery evidence the journal schema
+retains per receipt with the missing-column limit explicit for earlier journals, and writes the
+representative fixture; `reproduce`
 replays it in an isolated recorded run with the live host's provider adjustments, labels the run
 with the executing revision the operator states explicitly, records the retained baseline revision
 and the prompt source as run conditions, and uses the retained baseline prompt text by default

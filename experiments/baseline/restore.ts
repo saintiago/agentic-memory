@@ -159,6 +159,7 @@ const receiptIdentity = (receipt: JournalCopyReceipt): string =>
     planCommitted: receipt.planCommitted,
     requiresReconciliation: receipt.requiresReconciliation,
     reconciled: receipt.reconciled,
+    recoveries: receipt.recoveries ?? null,
   });
 
 const pageAllNotes = async (store: NoteStore): Promise<Note[]> => {

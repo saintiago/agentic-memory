@@ -1,7 +1,8 @@
 /**
  * Receipt accounting and failure evidence: how many accepted observations reached which outcome,
- * how many attempts the outcomes took, which safe diagnostics the failed receipts retained, and
- * which representative failures an isolated reproduction should replay.
+ * how many attempts the outcomes took, which safe diagnostics the failed receipts retained, which
+ * effective recoveries the journal retains, and which representative failures an isolated
+ * reproduction should replay.
  *
  * The revision that took this baseline retains no raw failed output: the journal keeps a safe
  * diagnostic, not the provider response. This module states that limit explicitly and selects
@@ -31,7 +32,10 @@ import {
   writeJsonl,
 } from "./io.js";
 import { baselinePath } from "./layout.js";
-import type { JournalCopyReceipt } from "./journal-copy.js";
+import {
+  retainsRecoveryEvidence,
+  type JournalCopyReceipt,
+} from "./journal-copy.js";
 
 /** Receipt counts by outcome, with the accepted total as the shared denominator. */
 export interface ReceiptCounts {
@@ -98,7 +102,10 @@ export interface ReceiptAccounting {
   };
   recoveryEvidence: {
     available: boolean;
+    /** Receipts whose retained evidence records at least one effective recovery. */
     recoveredReceipts: number | null;
+    /** Effective recovery requests retained across receipts. */
+    recoveryEntries: number | null;
     reason: string;
   };
 }
@@ -106,7 +113,7 @@ export interface ReceiptAccounting {
 /** Summarize one retained receipt inventory for the baseline report. */
 export const summarizeReceipts = (
   receipts: readonly JournalCopyReceipt[],
-  options: { revision: string },
+  options: { revision: string; journalVersion: string },
 ): ReceiptAccounting => {
   const statusCounts = countReceipts(receipts);
   const byCurrentOutcome = Object.fromEntries(
@@ -127,6 +134,10 @@ export const summarizeReceipts = (
     diagnostics.set(receipt.lastError, ids);
   }
   const stored = receipts.filter((receipt) => receipt.status === "stored");
+  const recovered = receipts.filter(
+    (receipt) => (receipt.recoveries?.length ?? 0) > 0,
+  );
+  const recoveryRetained = retainsRecoveryEvidence(options.journalVersion);
   return {
     revision: options.revision,
     acceptedObservations: {
@@ -175,13 +186,21 @@ export const summarizeReceipts = (
       denominator: stored.length,
     },
     recoveryEvidence: {
-      available: false,
-      recoveredReceipts: null,
-      reason:
-        "The retained journal copy carries no receipt recovery evidence, so recovered receipts " +
-        "cannot be distinguished from unrecovered ones and the recovered count stays unknown " +
-        "rather than zero. Recovery evidence belongs to a later journal schema; this baseline " +
-        "records accepted, stored and failed outcomes only.",
+      available: recoveryRetained,
+      recoveredReceipts: recoveryRetained ? recovered.length : null,
+      recoveryEntries: recoveryRetained
+        ? recovered.reduce(
+            (total, receipt) => total + (receipt.recoveries?.length ?? 0),
+            0,
+          )
+        : null,
+      reason: recoveryRetained
+        ? "The retained journal version keeps optional recovery evidence on each receipt; the " +
+          "count covers effective recovery requests only, because a duplicate request appends " +
+          "nothing."
+        : "This retained journal copy predates the recovery-evidence column, so recovered " +
+          "receipts cannot be distinguished from unrecovered ones and the recovered count stays " +
+          "unknown rather than zero.",
     },
   };
 };
