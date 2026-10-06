@@ -12,18 +12,22 @@ import type { z } from "zod";
 import type {
   QueueObservation,
   QueueReceipt,
+  QueueRecovery,
 } from "../src/ingestion-queue/index.js";
 import type { SearchOptions } from "../src/memory/index.js";
 import { noteSchema, type Note } from "../src/note-store/index.js";
 import {
   inspectionPageSchema,
   notesPageSchema,
+  receiptPageSchema,
   receiptSchema,
+  recoveryResponseSchema,
   searchResponseSchema,
   serviceErrorSchema,
   serviceStatusSchema,
   type InspectionPage,
   type NotesPage,
+  type ReceiptPage,
   type SearchResponse,
   type ServiceStatus,
 } from "./schemas.js";
@@ -59,6 +63,10 @@ export class ServiceClientError extends Error {
 export interface MemoryServiceClient {
   submit(observation: QueueObservation): Promise<ServiceSubmission>;
   receipt(id: string): Promise<QueueReceipt | undefined>;
+  /** Enumerate one page; the opaque cursor is the token of a previous response, unchanged. */
+  receipts(limit?: number, cursor?: string): Promise<ReceiptPage>;
+  /** Requeue one retained failed receipt after its cause was corrected. */
+  recover(id: string, expectedAttemptCount: number): Promise<QueueRecovery>;
   search(query: string, options?: SearchOptions): Promise<SearchResponse>;
   note(id: string): Promise<Note | undefined>;
   /** Inspect one page; the opaque cursor is the token of a previous response, returned unchanged. */
@@ -274,6 +282,42 @@ export const createMemoryServiceClient = (
       return response === undefined
         ? undefined
         : receiptSchema.parse(response.body);
+    },
+
+    async receipts(limit, cursor) {
+      const response = await request({
+        method: "GET",
+        path: `/v1/receipts${query(limit, cursor)}`,
+        schema: receiptPageSchema,
+      });
+      if (response === undefined) {
+        throw new ServiceClientError({
+          status: 404,
+          code: "invalid-response",
+          message:
+            "The memory service did not answer the receipt page request.",
+          retryable: false,
+        });
+      }
+      return receiptPageSchema.parse(response.body);
+    },
+
+    async recover(id, expectedAttemptCount) {
+      const response = await request({
+        method: "POST",
+        path: `/v1/receipts/${encodeURIComponent(id)}/recover`,
+        body: { expectedAttemptCount },
+        schema: recoveryResponseSchema,
+      });
+      if (response === undefined) {
+        throw new ServiceClientError({
+          status: 404,
+          code: "invalid-response",
+          message: "The memory service did not answer the recovery request.",
+          retryable: false,
+        });
+      }
+      return recoveryResponseSchema.parse(response.body);
     },
 
     async search(text, searchOptions = {}) {

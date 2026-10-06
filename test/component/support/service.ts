@@ -114,6 +114,8 @@ export class PagedStore implements NoteStore {
   readonly partialWriteFailures: Error[] = [];
   nearestError: Error | undefined;
   pageEmbeddedError: Error | undefined;
+  /** Fail every read of the inspected note until this is cleared. */
+  getError: Error | undefined;
   /** Hold the next put until the gate resolves, to observe an in-flight operation. */
   #putGate: Deferred<void> | undefined;
   /** Hold the next page read until the gate resolves, to observe an in-flight HTTP read. */
@@ -171,6 +173,9 @@ export class PagedStore implements NoteStore {
   }
 
   async get(ids: string[]): Promise<Note[]> {
+    if (this.getError !== undefined) {
+      throw this.getError;
+    }
     return ids.flatMap((id) => {
       const entry = this.records.get(id.toLowerCase());
       return entry === undefined ? [] : [structuredClone(entry.note)];
@@ -231,9 +236,25 @@ export class ControlledEmbedder implements Embedder {
   readonly texts: string[] = [];
   failNext: Error | undefined;
   source: (text: string) => number[] = vectorFor;
+  /** Hold the next embed until the returned gate resolves, to observe a held preparation. */
+  #embedGate: Deferred<void> | undefined;
+  /** How many embed calls started, including one that is still held. */
+  embedsStarted = 0;
+
+  holdEmbeds(): Deferred<void> {
+    const gate = deferred<void>();
+    this.#embedGate = gate;
+    return gate;
+  }
 
   async embed(text: string): Promise<number[]> {
     this.texts.push(text);
+    this.embedsStarted += 1;
+    const gate = this.#embedGate;
+    if (gate !== undefined) {
+      this.#embedGate = undefined;
+      await gate.promise;
+    }
     const failure = this.failNext;
     if (failure !== undefined) {
       this.failNext = undefined;
@@ -249,6 +270,12 @@ export class FixedModel implements LanguageModel {
   failNext: Error | undefined;
   /** Fail every request until this is cleared. */
   failAll: Error | undefined;
+  /** The construct-stage answer; the default satisfies the construction response contract. */
+  construction: unknown = {
+    context: "Generated context.",
+    keywords: ["keyword"],
+    tags: ["tag"],
+  };
   /** The evolve-stage answer; the default selects no links and changes nothing. */
   evolution: unknown = { links: [], newTags: ["tag"], updates: [] };
   #generateGate: Deferred<void> | undefined;
@@ -276,9 +303,7 @@ export class FixedModel implements LanguageModel {
       this.failNext = undefined;
       throw failure;
     }
-    return request.stage === "construct"
-      ? { context: "Generated context.", keywords: ["keyword"], tags: ["tag"] }
-      : this.evolution;
+    return request.stage === "construct" ? this.construction : this.evolution;
   }
 }
 

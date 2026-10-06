@@ -89,6 +89,100 @@
         }
       }
     },
+    "/v1/receipts": {
+      "get": {
+        "operationId": "listReceipts",
+        "summary": "Enumerate one acceptance-sequence page of current receipts",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1 }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque continuation token returned by a previous page.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of current receipts and an optional continuation cursor.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReceiptPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/v1/receipts/{receiptId}/recover": {
+      "post": {
+        "operationId": "recoverReceipt",
+        "summary": "Requeue one retained failed observation after the cause was corrected",
+        "parameters": [
+          {
+            "name": "receiptId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptRecoveryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The failed receipt was durably requeued.",
+            "headers": {
+              "Location": {
+                "schema": { "type": "string" },
+                "description": "The receipt route of the requeued observation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReceiptRecovery" }
+              }
+            }
+          },
+          "200": {
+            "description": "The request repeated an already resolved or requeued recovery.",
+            "headers": {
+              "Location": {
+                "schema": { "type": "string" },
+                "description": "The receipt route of the requeued observation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReceiptRecovery" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/RecoveryConflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "500": { "$ref": "#/components/responses/Internal" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/v1/search": {
       "post": {
         "operationId": "searchMemories",
@@ -257,6 +351,14 @@
           }
         }
       },
+      "RecoveryConflict": {
+        "description": "The receipt is not eligible for recovery, or unresolved writer work must settle first.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
       "PayloadTooLarge": {
         "description": "The JSON request body exceeds the configured limit.",
         "content": {
@@ -342,6 +444,62 @@
             "type": "string",
             "format": "uuid",
             "description": "Present once the note is stored."
+          },
+          "recoveries": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Retained evidence of each effective failed-observation recovery.",
+            "items": { "$ref": "#/components/schemas/ReceiptRecoveryEvidence" }
+          }
+        }
+      },
+      "ReceiptRecoveryEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requestedAt", "attemptCount", "lastError"],
+        "properties": {
+          "requestedAt": { "type": "string", "format": "date-time" },
+          "attemptCount": { "type": "integer", "minimum": 0 },
+          "lastError": { "type": "string", "minLength": 1 }
+        }
+      },
+      "ReceiptRecoveryRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expectedAttemptCount"],
+        "properties": {
+          "expectedAttemptCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The failed attempt count the operator inspected on the receipt."
+          }
+        }
+      },
+      "ReceiptRecovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["receipt", "recovered"],
+        "properties": {
+          "receipt": { "$ref": "#/components/schemas/Receipt" },
+          "recovered": {
+            "type": "boolean",
+            "description": "Whether this request made the failed receipt pending again."
+          }
+        }
+      },
+      "ReceiptPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["receipts"],
+        "properties": {
+          "receipts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Receipt" }
+          },
+          "cursor": {
+            "description": "Opaque continuation token; omitted when the traversal is complete.",
+            "type": "string",
+            "minLength": 1
           }
         }
       },
@@ -511,6 +669,19 @@
           },
           "oldestPendingAt": { "type": "string", "format": "date-time" },
           "oldestPendingAgeMs": { "type": "integer", "minimum": 0 },
+          "lastError": { "type": "string", "minLength": 1 },
+          "contextCorrection": {
+            "$ref": "#/components/schemas/ContextCorrection"
+          }
+        }
+      },
+      "ContextCorrection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["noteId"],
+        "description": "The pending offline context correction that holds later ingestion.",
+        "properties": {
+          "noteId": { "type": "string", "format": "uuid" },
           "lastError": { "type": "string", "minLength": 1 }
         }
       },

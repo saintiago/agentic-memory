@@ -282,7 +282,10 @@ or missing plan data blocks with a safe
 diagnostic. Never clear that block by generating a new correction; correct configuration or restore
 the consistent journal/collection backup. Slot existence itself is committed-plan evidence, so a
 slot with missing plan data cannot look like unstarted preparation. Clearing occurs only after
-acknowledgment; a crash before clearing replays the same values, vector and update time.
+acknowledgment; a crash before clearing replays the same values, vector and update time. A journal
+failure that prevents recording an attempt's outcome leaves the slot pending without durable
+failure evidence; report that unconfirmed correction as a state conflict, never as a settled
+failure or a completed correction.
 
 `status()` includes optional `contextCorrection: { noteId, lastError? }` while the slot exists.
 Observation counts/backlog retain their current meaning; the pending correction is separately visible

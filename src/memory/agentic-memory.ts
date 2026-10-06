@@ -38,6 +38,7 @@ import {
 } from "../note-store/index.js";
 import {
   MemoryError,
+  type ContextCorrectionReadOutcome,
   type MemoryOperation,
   type MemoryStage,
 } from "./memory-error.js";
@@ -231,6 +232,26 @@ const insertionFailure = (
     persistence: "unchanged",
     reason,
     ...(noteId === undefined ? {} : { noteId }),
+    ...(cause === undefined ? {} : { cause }),
+  });
+
+/**
+ * One failed context-correction read, carrying the evidence a maintenance owner needs: a
+ * confirmed stale proposal is distinct from a read that could not observe storage.
+ */
+const correctionReadFailure = (
+  noteId: string,
+  readOutcome: ContextCorrectionReadOutcome,
+  reason: string,
+  cause?: unknown,
+): MemoryError =>
+  new MemoryError({
+    operation: "prepareContextCorrection",
+    stage: "read",
+    persistence: "unchanged",
+    reason,
+    noteId,
+    readOutcome,
     ...(cause === undefined ? {} : { cause }),
   });
 
@@ -479,11 +500,10 @@ export class AgenticMemory implements ContextCorrectionPreparer {
     return await this.#enqueue(async () => {
       const current = await this.#readInspected(expected);
       if (!sameJsonValue(expected, current)) {
-        throw insertionFailure(
-          "prepareContextCorrection",
-          "read",
-          "The inspected note does not match the current stored note.",
+        throw correctionReadFailure(
           expected.id,
+          "stale",
+          "The inspected note does not match the current stored note.",
         );
       }
       if (sameJsonValue(attributes, noteAttributes(current))) {
@@ -663,22 +683,20 @@ export class AgenticMemory implements ContextCorrectionPreparer {
     try {
       found = (await this.#store.get([expected.id])).map(detachNote);
     } catch (cause) {
-      throw insertionFailure(
-        "prepareContextCorrection",
-        "read",
-        "The note store failed to read the inspected note.",
+      throw correctionReadFailure(
         expected.id,
+        "unknown",
+        "The note store failed to read the inspected note.",
         cause,
       );
     }
     const identity = expected.id.toLowerCase();
     const current = found.find((note) => note.id.toLowerCase() === identity);
     if (current === undefined) {
-      throw insertionFailure(
-        "prepareContextCorrection",
-        "read",
-        "The inspected note no longer exists in the collection.",
+      throw correctionReadFailure(
         expected.id,
+        "stale",
+        "The inspected note no longer exists in the collection.",
       );
     }
     return current;

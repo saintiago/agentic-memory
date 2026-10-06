@@ -29,7 +29,10 @@ import {
   inspectionPageSchema,
   notesPageSchema,
   observationRequestSchema,
+  receiptPageSchema,
   receiptSchema,
+  recoveryRequestSchema,
+  recoveryResponseSchema,
   searchRequestSchema,
   searchResponseSchema,
   serviceErrorSchema,
@@ -47,6 +50,8 @@ export interface ServiceRoute {
 export const serviceRoutes: readonly ServiceRoute[] = [
   { method: "POST", path: "/v1/observations" },
   { method: "GET", path: "/v1/receipts/{receiptId}" },
+  { method: "GET", path: "/v1/receipts" },
+  { method: "POST", path: "/v1/receipts/{receiptId}/recover" },
   { method: "POST", path: "/v1/search" },
   { method: "GET", path: "/v1/notes/{noteId}" },
   { method: "GET", path: "/v1/notes" },
@@ -232,16 +237,18 @@ const cursorParameter = (url: URL): Cursor | undefined => {
   }
 };
 
-/** Read one path identity, refusing a malformed component before any lookup. */
-const pathIdentity = (pathname: string, prefix: string): string => {
-  let decoded: string;
+/** Decode one percent-encoded path component, refusing malformed input before any lookup. */
+const decodePathComponent = (value: string): string => {
   try {
-    decoded = decodeURIComponent(pathname.slice(prefix.length));
+    return decodeURIComponent(value);
   } catch {
     throw invalidRequest("The request path is not valid.");
   }
-  return decoded;
 };
+
+/** Read one path identity, refusing a malformed component before any lookup. */
+const pathIdentity = (pathname: string, prefix: string): string =>
+  decodePathComponent(pathname.slice(prefix.length));
 
 const handleObservations = async (
   request: IncomingMessage,
@@ -284,6 +291,29 @@ const handleSearch = async (
       : { linkedLimit: parsed.data.linkedLimit }),
   });
   sendJson(response, 200, searchResponseSchema, outcome);
+};
+
+const handleRecovery = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: MemoryServiceServerOptions,
+  receiptId: string,
+): Promise<void> => {
+  assertJsonContentType(request);
+  const body = await readJsonBody(request, options.bodyLimitBytes);
+  const parsed = recoveryRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    throw invalidRequest("The recovery request is not valid.", parsed.error);
+  }
+  const recovery = await options.service.recover(receiptId, parsed.data);
+  // A durable requeue is `202`; an ineffective repeat reports the current receipt with `200`.
+  sendJson(
+    response,
+    recovery.recovered ? 202 : 200,
+    recoveryResponseSchema,
+    recovery,
+    { location: `/v1/receipts/${recovery.receipt.id}` },
+  );
 };
 
 const handleRequest = async (
@@ -374,6 +404,30 @@ const handleRequest = async (
     }
     sendJson(response, 200, noteSchema, note);
     return;
+  }
+  if (pathname === "/v1/receipts") {
+    if (method !== "GET") {
+      methodNotAllowed(response, "GET");
+    }
+    const page = await options.service.receipts(
+      limitParameter(url),
+      cursorParameter(url),
+    );
+    sendJson(response, 200, receiptPageSchema, page);
+    return;
+  }
+  const recoveryRoute = /^\/v1\/receipts\/([^/]+)\/recover$/.exec(pathname);
+  if (recoveryRoute !== null) {
+    if (method !== "POST") {
+      methodNotAllowed(response, "POST");
+    }
+    const parsedId = uuidSchema.safeParse(
+      decodePathComponent(recoveryRoute[1] ?? ""),
+    );
+    if (!parsedId.success) {
+      throw invalidRequest("The receipt ID is not valid.", parsedId.error);
+    }
+    return await handleRecovery(request, response, options, parsedId.data);
   }
   if (pathname.startsWith("/v1/receipts/")) {
     if (method !== "GET") {

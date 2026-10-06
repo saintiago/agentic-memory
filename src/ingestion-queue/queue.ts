@@ -266,6 +266,10 @@ const classifyFailure = (cause: unknown): FailureDecision => {
   if (cause instanceof QueuePlanError) {
     return { kind: "blocked", retryAfterBackoff: false, reason: cause.reason };
   }
+  if (cause instanceof QueueStateConflictError) {
+    // The queue owns this safe diagnostic; it names durable state that must settle first.
+    return { kind: "blocked", retryAfterBackoff: false, reason: cause.reason };
+  }
   const transport = transportFailure(cause);
   if (transport !== undefined) {
     return MODEL_FAILURE_DECISIONS[transport.category];
@@ -953,7 +957,9 @@ class DurableQueue implements IngestionQueue {
   /**
    * Apply the committed correction plan and clear its slot, recording the failure when it cannot.
    * Returns the acknowledged note, or `undefined` when the attempt failed and its evidence was
-   * persisted for an exact replay. The same values, vector and update time are written again.
+   * persisted for an exact replay. The same values, vector and update time are written again. A
+   * journal failure that prevents recording the outcome leaves the slot pending without durable
+   * evidence and reports that unconfirmed correction instead of a bare storage failure.
    */
   async #applyCorrection(noteId: string): Promise<Note | undefined> {
     const pending = await this.#journal.correction();
@@ -968,43 +974,92 @@ class DurableQueue implements IngestionQueue {
     } catch (cause) {
       // Damaged committed-plan evidence blocks with a diagnostic; preparation is never repeated.
       const decision = classifyFailure(cause);
-      await this.#journal.markCorrectionFailure(
+      await this.#recordCorrectionFailure(
         { nextRetryAt: undefined, lastError: decision.reason },
-        new Date().toISOString(),
+        noteId,
       );
       return undefined;
     }
     // Record the attempt before application, so a crash during the write keeps its accounting.
-    const attempt = await this.#journal.beginCorrectionAttempt(
-      new Date().toISOString(),
-    );
+    let attempt: PendingCorrection;
     try {
-      const note = await this.#memory.apply(plan);
+      attempt = await this.#journal.beginCorrectionAttempt(
+        new Date().toISOString(),
+      );
+    } catch (cause) {
+      throw new QueueStateConflictError(
+        `The context correction for note ${noteId} could not record its application ` +
+          "attempt; the committed plan remains pending for exact replay.",
+        cause,
+      );
+    }
+    let note: Note;
+    try {
+      note = await this.#memory.apply(plan);
       if (note.id.toLowerCase() !== noteId.toLowerCase()) {
         throw new QueuePlanError(
           "Applying the context correction produced another note identity than the selected one.",
         );
       }
-      await this.#journal.clearCorrection();
-      return note;
     } catch (cause) {
       const decision = classifyFailure(cause);
-      const failure: JournalCorrectionFailure = {
-        // Only a transient application failure uses the bounded backoff. A blocking error has no
-        // scheduled retry: the host corrects its configuration and restarts the worker instead.
-        nextRetryAt:
-          decision.kind === "retry"
-            ? new Date(
-                Date.now() + retryDelayMs(attempt.attemptCount),
-              ).toISOString()
-            : undefined,
-        lastError: decision.reason,
-      };
+      await this.#recordCorrectionFailure(
+        {
+          // Only a transient application failure uses the bounded backoff. A blocking error has
+          // no scheduled retry: the host corrects its configuration and restarts the worker.
+          nextRetryAt:
+            decision.kind === "retry"
+              ? new Date(
+                  Date.now() + retryDelayMs(attempt.attemptCount),
+                ).toISOString()
+              : undefined,
+          lastError: decision.reason,
+        },
+        noteId,
+      );
+      return undefined;
+    }
+    try {
+      await this.#journal.clearCorrection();
+      return note;
+    } catch {
+      // The reviewed replacement is written but its durable completion is unconfirmed. The slot
+      // stays, and the exact replay writes the same values, vector and update time.
+      await this.#recordCorrectionFailure(
+        {
+          nextRetryAt: new Date(
+            Date.now() + retryDelayMs(attempt.attemptCount),
+          ).toISOString(),
+          lastError:
+            `The reviewed correction for note ${noteId} was applied but its durable ` +
+            "completion could not be confirmed, so the committed plan must be replayed exactly.",
+        },
+        noteId,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Persist one failed attempt of the pending correction. The committed plan is the only replay
+   * evidence, so a journal failure that prevents recording the outcome is reported as an
+   * unconfirmed correction that must be replayed, never as a settled failure.
+   */
+  async #recordCorrectionFailure(
+    failure: JournalCorrectionFailure,
+    noteId: string,
+  ): Promise<void> {
+    try {
       await this.#journal.markCorrectionFailure(
         failure,
         new Date().toISOString(),
       );
-      return undefined;
+    } catch (cause) {
+      throw new QueueStateConflictError(
+        `The context correction for note ${noteId} could not durably record its outcome; ` +
+          "the committed plan remains pending and must be replayed exactly.",
+        cause,
+      );
     }
   }
 

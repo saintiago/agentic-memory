@@ -103,7 +103,8 @@ const isClosableEmbedder = (
 ): embedder is Embedder & { close(): Promise<void> } =>
   typeof (embedder as { close?: unknown }).close === "function";
 
-const defaultFactories: ProviderFactories = {
+/** The pinned provider implementations every service-owned stack composes; maintenance reuses them. */
+export const defaultProviderFactories: ProviderFactories = {
   openEmbedder: (options) => openWorkerEmbedder(options),
   openStore: (options) => openQdrantNoteStore(options),
   createModel: (options) => createHostModelTransport(options),
@@ -114,7 +115,11 @@ const defaultFactories: ProviderFactories = {
   },
 };
 
-const sameSpace = (left: EmbeddingSpace, right: EmbeddingSpace): boolean =>
+/** Whether two declarations describe the same embedding space. */
+export const sameEmbeddingSpace = (
+  left: EmbeddingSpace,
+  right: EmbeddingSpace,
+): boolean =>
   left.id === right.id &&
   left.dimensions === right.dimensions &&
   left.distance === right.distance;
@@ -176,7 +181,7 @@ export class ProviderRuntime {
     this.#space = options.space;
     this.#settings = options.settings;
     this.#scheduler = options.scheduler;
-    this.#factories = { ...defaultFactories, ...options.factories };
+    this.#factories = { ...defaultProviderFactories, ...options.factories };
     this.#retryBaseMs = options.retryBaseMs ?? 1_000;
     this.#retryMaxMs = options.retryMaxMs ?? 60_000;
     this.#preparer = {
@@ -367,7 +372,7 @@ export class ProviderRuntime {
       }
       this.#embedder = embedder;
     }
-    if (!sameSpace(embedder.space, this.#space)) {
+    if (!sameEmbeddingSpace(embedder.space, this.#space)) {
       throw new SpaceMismatchError();
     }
     return embedder;

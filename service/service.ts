@@ -10,13 +10,17 @@ import {
   MemoryError,
   QueueClosedError,
   QueueConflictError,
+  QueueReceiptNotFoundError,
   QueueRequestError,
+  QueueStateConflictError,
   type Cursor,
   type EmbeddingSpace,
   type IngestionQueue,
   type Note,
   type QueueObservation,
   type QueueReceipt,
+  type QueueRecovery,
+  type QueueRecoveryRequest,
   type QueueStatus,
   type QueueSubmission,
   type SearchOptions,
@@ -26,6 +30,7 @@ import {
   conflict,
   internal,
   invalidRequest,
+  notFound,
   overloaded,
   ServiceFailure,
   unavailable,
@@ -39,9 +44,12 @@ import { InferenceOverloadedError } from "./scheduler.js";
 import {
   inspectionPageSchema,
   notesPageSchema,
+  receiptPageSchema,
+  recoveryResponseSchema,
   serviceStatusSchema,
   type InspectionPage,
   type NotesPage,
+  type ReceiptPage,
   type SearchResponse,
   type ServiceStatus,
 } from "./schemas.js";
@@ -104,6 +112,49 @@ export class MemoryService {
       return await this.#queue.receipt(id);
     } catch (cause) {
       throw this.#queueFailure(cause);
+    }
+  }
+
+  /**
+   * Enumerate one acceptance-sequence page of current receipts. The journal serves this without
+   * providers, so an operator can inspect outcomes during a provider outage.
+   */
+  async receipts(limit?: number, cursor?: Cursor): Promise<ReceiptPage> {
+    this.#assertAdmitting();
+    if (cursor !== undefined && typeof cursor !== "string") {
+      throw invalidRequest("The receipt page cursor is not valid.");
+    }
+    try {
+      const page = await this.#queue.pageReceipts(
+        limit ?? defaultPageLimit,
+        cursor,
+      );
+      return receiptPageSchema.parse({
+        receipts: page.receipts,
+        ...(page.cursor === undefined
+          ? {}
+          : { cursor: encodeCursor(page.cursor) }),
+      });
+    } catch (cause) {
+      throw this.#receiptPageFailure(cause);
+    }
+  }
+
+  /**
+   * Requeue one retained failed receipt after the cause was corrected. The journal performs the
+   * transition, so no provider is needed and the response reports durable requeueing, not storage.
+   */
+  async recover(
+    id: string,
+    request: QueueRecoveryRequest,
+  ): Promise<QueueRecovery> {
+    this.#assertAdmitting();
+    try {
+      return recoveryResponseSchema.parse(
+        await this.#queue.recoverFailed(id, request),
+      );
+    } catch (cause) {
+      throw this.#recoveryFailure(cause);
     }
   }
 
@@ -197,6 +248,9 @@ export class MemoryService {
       journalError = "The durable queue journal is unavailable.";
     }
     const error = this.#providers.error() ?? journalError;
+    // A pending context correction holds every later collection write until its committed plan
+    // is replayed or an operator resolves it, so ingestion is not available while the slot exists.
+    const correctionPending = queue?.contextCorrection !== undefined;
     return serviceStatusSchema.parse({
       collection: this.#collection,
       embeddingSpace: {
@@ -210,7 +264,8 @@ export class MemoryService {
         ingestion:
           capabilities.ingestion &&
           !this.#stopping &&
-          queue?.worker === "running",
+          queue?.worker === "running" &&
+          !correctionPending,
       },
       ...(queue === undefined ? {} : { queue }),
       ...(error === undefined ? {} : { error }),
@@ -252,6 +307,49 @@ export class MemoryService {
     }
     return unavailable(
       "The observation could not be accepted durably; retry the identical submission.",
+      cause,
+    );
+  }
+
+  /** Map one receipt-enumeration failure onto validation or capability unavailability. */
+  #receiptPageFailure(cause: unknown): ServiceFailure {
+    if (cause instanceof ServiceFailure) {
+      return cause;
+    }
+    if (cause instanceof QueueRequestError) {
+      return invalidRequest("The receipt page request is not valid.", cause);
+    }
+    if (cause instanceof QueueClosedError) {
+      return unavailable(
+        "The durable queue is not accepting work right now.",
+        cause,
+      );
+    }
+    return unavailable("The receipt page could not be read.", cause);
+  }
+
+  /** Map one recovery failure onto the documented validation, absence and conflict outcomes. */
+  #recoveryFailure(cause: unknown): ServiceFailure {
+    if (cause instanceof ServiceFailure) {
+      return cause;
+    }
+    if (cause instanceof QueueRequestError) {
+      return invalidRequest("The recovery request is not valid.", cause);
+    }
+    if (cause instanceof QueueReceiptNotFoundError) {
+      return notFound("No receipt exists with that ID.");
+    }
+    if (cause instanceof QueueStateConflictError) {
+      return conflict(cause.reason);
+    }
+    if (cause instanceof QueueClosedError) {
+      return unavailable(
+        "The durable queue is not accepting work right now.",
+        cause,
+      );
+    }
+    return unavailable(
+      "The failed observation could not be requeued durably; retry the identical request.",
       cause,
     );
   }
