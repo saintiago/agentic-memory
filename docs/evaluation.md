@@ -215,8 +215,11 @@ noise. If old edges prevent the accepted comparison from showing improvement, re
 limitation for an explicit scope decision rather than silently widening maintenance permissions.
 
 Include later related and unrelated insertions on isolated copies to assess whether corrected subjects
-expand again. Report deterministic protocol verification separately from real model-quality evidence;
-keep remaining failure, fidelity and relevance limitations explicit.
+expand again. Insert the later sources through the public Memory contract against the restored
+collection under the captured revision's prompts and record the raw exchanges with their usage; the
+restored journal copy stays read-only evidence and the live pair is never written. Report
+deterministic protocol verification separately from real model-quality evidence; keep remaining
+failure, fidelity and relevance limitations explicit.
 
 ### Baseline tooling
 
