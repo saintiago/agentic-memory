@@ -181,6 +181,31 @@ search results reflect acknowledged corrections. Use isolated copies for destruc
 never reset the live corpus to obtain a cleaner comparison. Private evidence remains outside the
 public repository. This is bounded change acceptance, not a global accuracy or availability promise.
 
+### Missed warranted evolution
+
+For a reproduced missed update, retain the exact original evolution request, target identity and
+response as the before evidence. Compare the focused prompt/input correction against that same
+source evidence and supplied neighborhood, with identical provider settings; record any input
+representation change explicitly. Include the retained related different-mechanism and unrelated
+control requests under both variants. Use read-only request replay or isolated copies, leaving the
+live corpus and journal unchanged. Keep private inputs and exchanges outside the repository.
+
+Review every resulting update against the target's original source and the incoming evidence.
+Acceptance requires a valid update of the warranted target, clear attribution of the later repair,
+and retention of the original cause, explicit reproduction evidence, scope and uncertainty. The
+historical defect must not read as an unresolved current defect after the attributed repair;
+the repair must not become independent verification or a guarantee beyond its source. Inspect other
+updated neighbors for unsupported revisions and the controls for unwarranted changes. A link to
+another repair note, an update of another neighbor, shorter prose or absence of contamination alone
+does not demonstrate that the missed update was repaired.
+
+Repeat the comparison within the declared call/token budget. Report target updates, semantically
+faithful revisions, control changes and invalid or failed calls with their denominators, retaining
+misses and semantic defects even when another trial succeeds. Separate request-level evidence from
+isolated ingestion/persistence evidence and production delivery. Small stochastic samples establish
+bounded observations, not a reliability rate or guaranteed future update; no global success threshold
+is selected by this procedure.
+
 ## Quality maintenance procedure
 
 Evaluation is an operator client of the public service and library contracts, not a direct journal
