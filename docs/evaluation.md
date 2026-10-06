@@ -281,7 +281,8 @@ Use the existing recoverable baseline and writer-ownership protections before li
 exercise removal and interrupted-application recovery on an isolated copy before live use.
 Confirm after restart that the reviewed edges are absent, endpoint sources and semantic attributes
 survive, and every relationship outside the removal set is preserved. The maintenance capability
-is conditional on warranted removals and follows [Memory's behavior](memory.md#existing-link-correction).
+is conditional on warranted removals and follows [Memory's behavior](memory.md#existing-link-correction)
+through the [offline service command](service.md#operator-link-correction).
 
 Repeat the preserved queries on the current before/after corpus, keeping query text, direct limits,
 nonzero linked budgets and retrieval defaults unchanged. Separate the removal's effects from queued

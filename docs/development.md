@@ -51,7 +51,7 @@ provide these npm scripts:
 | `inspector:build`      | Bundle the browser dashboard of the inspection UI                                                               |
 | `inspector:responsive` | Real-browser scale, responsiveness and camera-preservation checks of the dashboard                              |
 | `service`              | Local memory service: `/v1` HTTP API, bundled dashboard, durable queue, shared encoder and supervised lifecycle |
-| `memory:maintain`      | Offline reviewed context correction under the queue's exclusive writer ownership                                |
+| `memory:maintain`      | Offline reviewed context or warranted link correction under the queue's exclusive writer ownership             |
 | `mcp`                  | Memory MCP server: stdio memory tools delegating to the running service API                                     |
 | `build`                | Produce JavaScript ESM and type declarations                                                                    |
 | `validate`             | Formatting, lint, types, boundaries, deterministic tests and build                                              |

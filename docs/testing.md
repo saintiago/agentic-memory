@@ -76,6 +76,12 @@ validation, a complete expected-note comparison, detached inputs, preserved sour
 preparation, re-embedding/update time and application of its actual prepared plan. Use real isolated
 storage to verify corrected semantics are searchable after reopening.
 
+For link correction, use actual vector-bearing NoteStore reads in Memory preparation and apply
+Memory's actual prepared plan through the queue. Check exact directed removals, retained order,
+unchanged endpoint sources/semantics and stored vectors, update time, detached proposals/results,
+invalid removal sets, full-note staleness and failed-read uncertainty. Verify no encoding or model
+call and no collection scan; the real-storage contract owns stored-vector fidelity after reopening.
+
 Queue checks cover complete receipt traversal, identity-preserving recovery and retained recovery
 evidence, stale attempt-count requests, transactional races with claim/recovery, and refusal while
 a later write plan is unresolved. Maintenance checks cover the shared lock, no writes before plan
@@ -83,11 +89,20 @@ commit, pending-slot status, exact correction replay before subsequent ingestion
 damaged slot data. Reopen the previous journal schema and verify upgrade preserves existing receipt
 and plan values, including unknown historical evidence. Reuse the existing partial-write/replay
 failure controls rather than building another recovery framework.
+Exercise both actions against the same slot, including mutual refusal while pending. Reopen a
+pre-existing pending context plan with the generalized maintenance build and verify its exact
+replay. Cover lost acknowledgment and journal failure after the link write, preserving pending
+uncertainty and replay before later ingestion without regenerating vectors or timestamps.
 
 Service contract checks exercise actual queue receipts for enumeration/recovery, error mapping,
 durable acceptance versus storage feedback and client/OpenAPI compatibility. A focused workflow
 combines the offline correction command with actual preparation/application and service restart;
 it verifies single-writer exclusion and fresh inspection without introducing browser controls.
+Exercise `correct-links` with actual Memory preparation and isolated real storage, service/client
+`correction` status compatibility, restart persistence and a fresh matched search. Include another
+valid route to the removed target and a newly exposed linked-budget slot; the removed edge itself
+establishes success, not disappearance of the target. Keep live semantic verdicts and graph
+identities in private evaluation, separate from these deterministic correctness fixtures.
 Use the accepted [experience walkthrough questions](memory-quality-experience.md#refinement-questions)
 with failed, pending, stored and blocked examples. Source/link fidelity and smaller unrelated returned
 text remain model-quality evidence under [evaluation](evaluation.md#quality-change-acceptance), not

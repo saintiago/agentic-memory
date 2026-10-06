@@ -61,8 +61,8 @@ not provider availability. A missing receipt returns `404`; invalid UUID/count r
 ineligible state, future count or unresolved writer work returns `409` with the queue's safe reason.
 It is an operator API, not a new agent MCP tool. Its response means queued work, not confirmed storage;
 follow the existing receipt for outcome. The service adds no generation, source rewriting or automatic
-retry of failed model output. Status forwards pending context-correction evidence from the queue;
-a pending correction keeps ingestion reported unavailable until its committed plan is replayed or an
+retry of failed model output. Status forwards pending `correction` evidence from the queue for
+either context or link maintenance; a pending correction keeps ingestion reported unavailable until its committed plan is replayed or an
 operator resolves it; observation counts are not repurposed as correction counts.
 Receipt enumeration likewise remains available without providers and uses queue-owned pagination,
 not note pagination or direct journal queries. The service client validates these additive responses;
@@ -95,6 +95,34 @@ a pending correction, restart the matched service for exact replay and inspect s
 do not compose a new proposal from an old search result. Subsequent proposals require a fresh
 inspected note. Restart after maintenance rebuilds inspection from persisted records; successful
 startup replay uses the same completed-write dashboard invalidation as insertion replay.
+
+## Operator link correction
+
+When original-source review warrants removal, provide
+`npm run memory:maintain -- correct-links --input <proposal.json>`. Its JSON input is Memory's
+exported `LinkCorrectionInput`: the full
+inspected source `expected` and distinct outgoing `removeTargetIds`. Keep endpoint evidence,
+verdicts and review reasons outside Git in the private evaluation artifacts.
+
+Use the same stopped-service host settings, compatible collection, queue ownership, delayed
+provider initialization and resource cleanup as [context maintenance](#operator-context-correction).
+Compose public `prepareLinkCorrection`, queue `correctLinks` and the existing plan application
+capability. Reuse the pinned host composition; no embedding or model invocation occurs for the
+link change. Do not add HTTP/MCP editing routes, a listener, dashboard controls or another writer.
+Validate the proposal with Memory's exported link schema before provider work.
+
+Print structured success with the source identity, selected `removeTargetIds`, `changed: true`
+and complete acknowledged note only after durable completion. Use the existing error codes and
+nonzero failure exit, extending stale detection to link preparation's `readOutcome`. A provider
+read failure is preparation-failed, not stale. If application or its journal acknowledgment is
+unconfirmed, preserve uncertainty and direct inspection/restart replay rather than reporting
+unchanged storage. Retain output privately beside the proposal. A repeat of a completed proposal
+is stale; inspect fresh state rather than constructing an automatic retry. Pending plans replay
+exactly through service startup before ingestion and trigger the existing dashboard invalidation.
+
+Service status, its client and OpenAPI forward queue `correction`, replacing `contextCorrection`
+as [specified by its owner](ingestion-queue.md#context-maintenance). Deploy these consumers together
+with the queue; preserve observation counts and ingestion unavailability while any plan is pending.
 
 ## Async work and resource sharing
 

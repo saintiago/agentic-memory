@@ -49,6 +49,10 @@ interface IngestionQueue {
     input: ContextCorrectionInput,
     preparer: ContextCorrectionPreparer,
   ): Promise<{ note: Note; changed: boolean }>;
+  correctLinks(
+    input: LinkCorrectionInput,
+    preparer: LinkCorrectionPreparer,
+  ): Promise<{ note: Note; changed: true }>;
   start(): Promise<void>;
   stop(): Promise<void>;
   close(): Promise<void>;
@@ -98,11 +102,16 @@ The plan contains the complete new and changed note/vector records. Apply writes
 through NoteStore's public `put` contract, without model generation or fresh timestamps. These
 operations share the ordinary add algorithm; the host must not reimplement evolution or import
 private library internals. Raw add remains available for independently owned collections.
-`ContextCorrectionInput`, `ContextCorrectionPreparer` and its prepared result come from
-[Memory's public interface](memory.md#interface); `Note` comes from NoteStore. The focused correction
-preparer is supplied only to `correctContext`. Startup replay still uses the existing apply capability.
-The queue checks returned plans against its binding and the selected note identity. A correction
-plan must contain exactly that one record and preserve the inspected source fields and links.
+`ContextCorrectionInput`, `ContextCorrectionPreparer`, `LinkCorrectionInput`,
+`LinkCorrectionPreparer` and their prepared results come from [Memory's public interface](memory.md#interface);
+`Note` comes from NoteStore. Each focused preparer is supplied only to its corresponding maintenance
+operation. Startup replay uses the existing apply capability. The queue checks returned plans
+against its binding and the selected note identity. Each correction plan contains exactly that
+one record. Context correction preserves inspected source fields and links; link correction
+preserves inspected source fields and semantic attributes and applies exactly the selected removals
+in remaining stored order. Link preparation returns the plan directly, without a separate note wrapper.
+Memory owns stored-vector preparation; the queue validates the plan's space and vector shape
+without reading the collection or duplicating Memory's freshness comparison.
 
 The [local memory service](service.md) owns HTTP access and provider lifecycle; the host supervises
 that service. Producers submit through its API rather than opening queue files. The API can accept
@@ -232,7 +241,7 @@ recovered storage separately visible; an empty backlog never proves all accepted
 `recoverFailed` validates a receipt UUID and a nonnegative safe integer `expectedAttemptCount`,
 taken from the operator's inspected receipt. In one journal transaction, require a `failed` receipt
 with that count, no plan, no committed-plan evidence and no unresolved legacy uncertainty. Refuse
-recovery while any receipt is processing, an unresolved committed insertion plan exists, a context
+recovery while any receipt is processing, an unresolved committed insertion plan exists, a
 correction is pending, or global legacy reconciliation is required. This keeps an earlier recovered
 sequence from overtaking a later interrupted write. Settle/replay or reconcile that work first.
 Claiming rechecks the earliest eligible sequence transactionally, so selection before a recovery
@@ -256,14 +265,15 @@ returning the current receipt performs no write and does not claim that a blocke
 
 ## Context maintenance
 
-`correctContext` is a stopped-worker maintenance operation, not an observation submission. Acquire
+`correctContext` and `correctLinks` are stopped-worker maintenance operations, not observation
+submissions. They share the same ownership, pending slot and recovery path. Acquire
 the same canonical journal lock as draining/import, refusing while another owner holds it, and hold
 it through preparation, plan commit, application and durable completion. Submissions can still be
 accepted, but they cannot drain during maintenance. Refuse new correction while there is a pending
 correction, unresolved legacy uncertainty, or any unresolved committed insertion plan; resolve those
 before reading a correction's expected state. Pending known-unwritten observations can wait.
 
-Prepare exactly one reviewed correction through the supplied read-only capability. A no-op returns
+Prepare exactly one reviewed correction through the supplied read-only capability. A context no-op returns
 `{ note, changed: false }` without a journal plan. Otherwise validate the complete one-record plan
 and commit it into one journal-owned pending-correction slot before applying any note write. The slot
 contains selected note ID, complete serialized plan, cumulative application attempts, persisted retry
@@ -271,6 +281,12 @@ timing and a safe last error when applicable. Do not
 create an observation receipt/source key, modify ingestion attempt counts, or retain runtime note history.
 Return `{ note, changed: true }` only after application acknowledgment and durable clearing of the slot.
 An unsuccessful preparation leaves notes unchanged and creates no slot.
+
+`correctLinks` uses the separately owned link input/preparer and returns `{ note, changed: true }`
+only after the same acknowledgment and durable completion. Empty removals are invalid under the
+input contract, so it has no no-op branch. New link preparation cannot pass the context-preservation
+check: validate the link-removal contract for this action instead. Share commit/application/recovery
+where the responsibility is identical; do not add another journal, slot, receipt kind or plan format.
 
 A pending slot holds every later mutation, including failed-receipt recovery and another correction.
 Legacy imports also refuse a pending slot, so they cannot introduce uncertainty ahead of its replay.
@@ -287,11 +303,16 @@ failure that prevents recording an attempt's outcome leaves the slot pending wit
 failure evidence; report that unconfirmed correction as a state conflict, never as a settled
 failure or a completed correction.
 
-`status()` includes optional `contextCorrection: { noteId, lastError? }` while the slot exists.
+`status()` includes optional `correction: { noteId, lastError? }` while the slot exists, for either
+maintenance action. This replaces the context-specific `contextCorrection` field; service response
+schemas, client validation, OpenAPI and availability handling must use the same contract together.
+No kind discriminator is needed for replay: both actions apply the complete stored plan. The private
+proposal identifies the reviewed operation and removal targets.
 Observation counts/backlog retain their current meaning; the pending correction is separately visible
 and keeps ingestion unavailable until resolved. A lost maintenance response is not success: inspect
 the pending slot and complete current note, resume exact replay if pending, and compare the full
-reviewed attributes/source fields if already completed. Do not infer completion merely from note ID.
+reviewed result, including links, attributes and source fields if already completed. Do not infer
+completion merely from note ID.
 
 ## Journal upgrade
 
@@ -302,6 +323,11 @@ receipts with no recovery evidence, not an invented history, and no pending corr
 bindings, acceptance sequences, identities, inputs, attempts, plan data and committed-plan/legacy
 flags. Refuse unknown schema versions and downgrade; use the matched service/client/library build.
 No collection schema or representation change, corpus reset or vector backfill accompanies this upgrade.
+
+Link correction reuses the existing slot data unchanged and requires no further journal-schema
+upgrade. Existing pending context plans replay with their original values, attempts and error
+evidence. Stop old binaries and deploy the matched queue/service/client build for the generalized
+status field; old status consumers are not promised compatibility with the replaced field.
 
 ## Visibility and verification
 

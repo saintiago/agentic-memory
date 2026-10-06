@@ -46,6 +46,15 @@ interface ContextCorrectionPreparer {
     input: ContextCorrectionInput,
   ): Promise<ContextCorrectionPreparation>;
 }
+interface LinkCorrectionInput {
+  expected: Note;
+  removeTargetIds: string[];
+}
+interface LinkCorrectionPreparer {
+  prepareLinkCorrection(
+    input: LinkCorrectionInput,
+  ): Promise<InsertionPlan>;
+}
 interface MemoryPrompts {
   construction: string;
   evolution: string;
@@ -73,6 +82,9 @@ class AgenticMemory {
   prepareContextCorrection(
     input: ContextCorrectionInput,
   ): Promise<ContextCorrectionPreparation>;
+  prepareLinkCorrection(
+    input: LinkCorrectionInput,
+  ): Promise<InsertionPlan>;
   apply(plan: InsertionPlan): Promise<Note>;
   get(id: string): Promise<Note | undefined>;
   page(limit?: number, cursor?: Cursor): Promise<Page>;
@@ -85,6 +97,8 @@ behavior and do not prescribe private classes. Export `defaultPrompts` as read-o
 `embeddingText` as the canonical representation function for reproducible evaluations.
 Export `contextCorrectionInputSchema` and derive `ContextCorrectionInput` from it so maintenance
 hosts validate proposals with the owning contract rather than copying its schema.
+Likewise export `linkCorrectionInputSchema` and derive `LinkCorrectionInput` from it. Both focused
+preparer contracts are read-only; the host owns exclusivity through preparation and application.
 
 Construction/evolution requests and response schemas are owned here; their complete text and
 data envelope are in [prompts](prompts.md). Transport returns parsed, untrusted JSON. No dependency
@@ -194,13 +208,14 @@ insertion's writes; no multi-note snapshot is promised.
 
 ## Failures
 
-Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `prepareContextCorrection`, `apply`,
-`get`, `page`, `search`),
-`stage`, a safe `reason` and message, and `persistence` (`unchanged` or `uncertain`). An insertion
+Expose a typed `MemoryError` with `operation` (`add`, `prepare`, `prepareContextCorrection`,
+`prepareLinkCorrection`, `apply`, `get`, `page`, `search`), `stage`, a safe `reason` and message,
+and `persistence` (`unchanged` or `uncertain`). An insertion
 error after ID allocation also includes `noteId`; a write-attempt error includes `affectedNoteIds`
-for the prepared batch. A failed context-correction read also includes `readOutcome`: `stale` for a
-read that confirmed a missing or mismatched inspected note, `unknown` for a read that failed before
-observing storage, so a maintenance owner never reports an unreadable store as staleness. Preserve
+for the prepared batch. A failed context- or link-correction read also includes `readOutcome`:
+`stale` for a read that confirmed a missing or mismatched inspected note, `unknown` for a read that
+failed before observing valid storage, so a maintenance owner never reports an unreadable store as
+staleness. Preserve
 the underlying cause for diagnosis without embedding credentials or complete prompts in public
 messages. The cause keeps the provider's own failure contract, including a model transport's
 machine-readable category, so a caller can classify the failure without reading provider text.
@@ -227,7 +242,7 @@ another schema version, representation or embedding space before any write, requ
 without regeneration. Reapplying the same plan preserves identities, vectors and timestamps; the
 declared embedding space is the instance's own, while the queue binds the collection. The queue owns
 exclusivity and plan durability; raw add's uncertain-failure behavior above remains unchanged.
-The existing version-1 plan format and `apply` also serve a prepared context correction: `noteId`
+The existing version-1 plan format and `apply` also serve prepared context and link corrections: `noteId`
 identifies the existing note returned after application. Its export name remains `InsertionPlan`
 for compatibility. Applying a trusted prepared batch does not infer whether its anchor is new.
 
@@ -284,9 +299,35 @@ Use the existing collection writer ownership and uncertain-write protections. A 
 must not overwrite intervening changes; invalid or stale input leaves storage unchanged. Report
 success only after the removal is acknowledged. Interrupted application remains unresolved until
 maintenance recovery establishes the persisted outcome, including after restart, without
-regenerating semantic attributes or changing unrelated relationships. Architecture defines the
-smallest public maintenance contract and durable recovery mechanism needed for this behavior;
-this section does not extend the existing context-correction input or permit raw competing writes.
+regenerating semantic attributes or changing unrelated relationships. This is separate from the
+context-correction input and does not permit raw competing writes. Implement this capability only
+when the source review warrants removals; a supported no-removal outcome needs no capability.
+
+`prepareLinkCorrection` accepts the complete inspected source note as `expected` and a nonempty
+list of distinct outgoing `removeTargetIds`. Validate and detach at the call boundary using the
+owned input schema: target IDs must be UUIDs already present in `expected.links`; duplicates and
+empty removal sets are invalid rather than silently becoming no-ops. Identity comparisons follow
+the existing UUID rules. The proposal cannot supply replacement attributes, vectors or update time.
+Review of both endpoint sources and the removal rationale stays in private evaluation evidence;
+the API establishes structural validity and freshness, not semantic truth.
+
+Serialize preparation with add/prepare/context correction/apply. Under host-held writer ownership,
+read the source's complete current stored record by identity through the vector-bearing read in
+the provider interface. Compare its entire note with `expected`, using the context-correction
+value-comparison rules. A missing or mismatched source rejects with
+`operation: prepareLinkCorrection`, `stage: read`, `readOutcome: stale` and
+`persistence: unchanged`. A failed
+read, including an unusable stored vector, instead has `readOutcome: unknown`; it does not prove
+the inspected note stale. Invalid input fails at `input`, before provider work.
+
+Filter only the selected outgoing IDs, preserving remaining link order and all other note fields
+except `updatedAt`. Sample update time after successful read/validation and return a detached
+one-record version-1 plan containing the changed note and actual stored vector unchanged. Unlike
+context correction, every valid removal changes the note, so no separate no-op preparation result
+or duplicated note/result wrapper is needed.
+There is no collection scan, embedding, nearest search, model invocation, target write or neighbor
+evolution. Preparation never writes. The existing `apply` contract applies or replays that exact
+plan; the maintenance owner holds writer ownership until its durable outcome is recorded.
 
 ## Verification
 
@@ -299,3 +340,6 @@ on real evolution, and failures/reads do not invent successful updates. Schema-v
 do not turn semantic preferences into hidden rejection rules.
 For correction, verify stale/missing-note rejection, detached proposals, invalid attributes or
 vectors before writes, source/link preservation, the no-op path and identity-preserving plan replay.
+For link correction, verify exact directed removal, remaining order, complete source freshness,
+detached inputs/results, invalid/empty/duplicate/missing-target refusal, stale versus failed-read
+outcomes, stored-vector preservation without encoding, update time and replay of the actual plan.
