@@ -2518,7 +2518,9 @@ describe("context correction", () => {
     emptyPlan.records = [];
     const changedSource = structuredClone(plan);
     changedSource.records[0]!.note.content = "Changed source content.";
-    for (const invalid of [anotherNote, emptyPlan, changedSource]) {
+    const zeroVector = structuredClone(plan);
+    zeroVector.records[0]!.vector = [];
+    for (const invalid of [anotherNote, emptyPlan, changedSource, zeroVector]) {
       const preparer: ContextCorrectionPreparer = {
         prepareContextCorrection: async () => ({
           note: prepared.note,
@@ -2546,6 +2548,74 @@ describe("context correction", () => {
 
     expect(harness.store.calls).not.toContain("put");
     expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+  });
+
+  it("schedules no retry for a blocking correction failure and resumes on restart", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+    // A rejected credential or storage configuration blocks instead of being retried as an
+    // outage, even though ingestion keeps its own documented schedule for this condition.
+    harness.store.putError = Object.assign(new Error("unauthorized"), {
+      status: 401,
+    });
+    const diagnostic =
+      "The storage or provider rejected the queue's credential or storage configuration, " +
+      "which must be corrected before this observation can be processed.";
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "The revised context."),
+        correction,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toBe(diagnostic);
+
+    // The recorded attempt keeps its evidence but schedules no automatic retry.
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT attempt_count, next_retry_at, last_error FROM correction_slot WHERE id = 1",
+        )
+        .get(),
+    ).toEqual({
+      attempt_count: 1,
+      next_retry_at: null,
+      last_error: diagnostic,
+    });
+    journal.close();
+
+    // A worker start replays the slot once, and no later backoff deadline resumes it.
+    await harness.queue.start();
+    const attempts = (): number =>
+      harness.store.calls.filter((call) => call === "put").length;
+    await settle(
+      () => attempts() === 2,
+      "the blocked replay to be attempted",
+      120_000,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(attempts()).toBe(2);
+
+    // Correcting the configuration and restarting is what resumes the exact replay.
+    harness.store.putError = undefined;
+    await harness.queue.stop();
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.status()).contextCorrection === undefined,
+      "the corrected configuration to resume the replay",
+      120_000,
+    );
+    const plan = correction.preparations[0]!.plan!;
+    // The blocked failure and the worker-start replay applied the same committed plan, then the
+    // corrected configuration applied it once more.
+    expect(harness.preparer.applies).toEqual([plan, plan, plan]);
+    expect(harness.store.stored(note.id)?.context).toBe("The revised context.");
   });
 
   it("holds later mutation, retains retry timing and replays before ingestion after a restart", async () => {

@@ -394,22 +394,31 @@ const sameJson = (left: unknown, right: unknown): boolean => {
 };
 
 /**
- * Validate one prepared correction plan: it belongs to this queue's binding and the inspected
- * note, contains exactly that one record, and preserves the inspected source fields and links.
- * Only the reviewed semantic attributes may differ.
+ * Validate one prepared correction plan before its slot is committed: it satisfies the public
+ * insertion-plan contract, belongs to this queue's binding and the inspected note, contains
+ * exactly that one record, and preserves the inspected source fields and links. Only the reviewed
+ * semantic attributes may differ. A plan the queue could not read back is refused here, so
+ * invalid preparation never becomes durable evidence that blocks later work.
  */
 const assertCorrectionPlan = (
   plan: InsertionPlan,
   binding: QueueBinding,
   expected: Note,
 ): void => {
-  assertPlanBinding(plan, binding, expected.id);
-  if (plan.records.length !== 1) {
+  const parsed = insertionPlanSchema.safeParse(plan);
+  if (!parsed.success) {
+    throw new QueueStateConflictError(
+      "The prepared context correction plan does not satisfy the documented contract.",
+    );
+  }
+  const correction = parsed.data;
+  assertPlanBinding(correction, binding, expected.id);
+  if (correction.records.length !== 1) {
     throw new QueueStateConflictError(
       "The prepared context correction plan must contain exactly one note record.",
     );
   }
-  const record = plan.records[0];
+  const record = correction.records[0];
   const note = record?.note;
   if (
     note === undefined ||
@@ -975,11 +984,14 @@ class DurableQueue implements IngestionQueue {
     } catch (cause) {
       const decision = classifyFailure(cause);
       const failure: JournalCorrectionFailure = {
-        nextRetryAt: decision.retryAfterBackoff
-          ? new Date(
-              Date.now() + retryDelayMs(attempt.attemptCount),
-            ).toISOString()
-          : undefined,
+        // Only a transient application failure uses the bounded backoff. A blocking error has no
+        // scheduled retry: the host corrects its configuration and restarts the worker instead.
+        nextRetryAt:
+          decision.kind === "retry"
+            ? new Date(
+                Date.now() + retryDelayMs(attempt.attemptCount),
+              ).toISOString()
+            : undefined,
         lastError: decision.reason,
       };
       await this.#journal.markCorrectionFailure(
