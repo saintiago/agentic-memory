@@ -2520,7 +2520,18 @@ describe("context correction", () => {
     changedSource.records[0]!.note.content = "Changed source content.";
     const zeroVector = structuredClone(plan);
     zeroVector.records[0]!.vector = [];
-    for (const invalid of [anotherNote, emptyPlan, changedSource, zeroVector]) {
+    const shortVector = structuredClone(plan);
+    shortVector.records[0]!.vector = [1];
+    const longVector = structuredClone(plan);
+    longVector.records[0]!.vector = [1, 0, 0, 0, 0];
+    for (const invalid of [
+      anotherNote,
+      emptyPlan,
+      changedSource,
+      zeroVector,
+      shortVector,
+      longVector,
+    ]) {
       const preparer: ContextCorrectionPreparer = {
         prepareContextCorrection: async () => ({
           note: prepared.note,
@@ -2533,6 +2544,8 @@ describe("context correction", () => {
           preparer,
         ),
       ).rejects.toBeInstanceOf(QueueStateConflictError);
+      expect(harness.store.calls).not.toContain("put");
+      expect((await harness.queue.status()).contextCorrection).toBeUndefined();
     }
     const failing: ContextCorrectionPreparer = {
       prepareContextCorrection: async () => {

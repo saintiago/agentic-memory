@@ -396,8 +396,9 @@ const sameJson = (left: unknown, right: unknown): boolean => {
 /**
  * Validate one prepared correction plan before its slot is committed: it satisfies the public
  * insertion-plan contract, belongs to this queue's binding and the inspected note, contains
- * exactly that one record, and preserves the inspected source fields and links. Only the reviewed
- * semantic attributes may differ. A plan the queue could not read back is refused here, so
+ * exactly that one record with a vector matching its declared dimensions, and preserves the
+ * inspected source fields and links. Only the reviewed semantic attributes may differ. A plan
+ * the queue could not read back is refused here, so
  * invalid preparation never becomes durable evidence that blocks later work.
  */
 const assertCorrectionPlan = (
@@ -419,6 +420,11 @@ const assertCorrectionPlan = (
     );
   }
   const record = correction.records[0];
+  if (record?.vector.length !== correction.embeddingSpace.dimensions) {
+    throw new QueueStateConflictError(
+      "The prepared context correction vector does not match its declared embedding space.",
+    );
+  }
   const note = record?.note;
   if (
     note === undefined ||
