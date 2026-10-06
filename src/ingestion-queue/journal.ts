@@ -22,22 +22,34 @@ import type {
 import {
   QueueBindingError,
   QueueConflictError,
+  QueueReceiptNotFoundError,
   QueueRequestError,
+  QueueStateConflictError,
+  QueueWorkerLockedError,
 } from "./errors.js";
+import { WorkerLock } from "./worker-lock.js";
 import type {
   ExpectedJournalMetadata,
+  JournalCorrectionFailure,
   JournalFailure,
   JournalFailureReport,
   JournalOperation,
   JournalRecord,
   JournalResponse,
   JournalStatus,
+  PendingCorrection,
 } from "./journal-protocol.js";
 
-export type { JournalFailure, JournalRecord, JournalStatus };
+export type {
+  JournalCorrectionFailure,
+  JournalFailure,
+  JournalRecord,
+  JournalStatus,
+  PendingCorrection,
+};
 
 /** The journal schema this build can reopen. */
-const JOURNAL_VERSION = 2;
+const JOURNAL_VERSION = 3;
 
 /**
  * The journal thread module: the TypeScript source while the library runs from source, and the
@@ -58,6 +70,10 @@ const reviveFailure = (
   switch (failure.kind) {
     case "conflict":
       return new QueueConflictError(failure.sourceKey);
+    case "state":
+      return new QueueStateConflictError(failure.reason);
+    case "notFound":
+      return new QueueReceiptNotFoundError(failure.receiptId);
     case "binding":
       return new QueueBindingError(journalPath, failure.reason);
     case "request":
@@ -110,15 +126,19 @@ class JournalChannel {
   static async open(
     path: string,
     expected: ExpectedJournalMetadata,
-  ): Promise<JournalChannel> {
+  ): Promise<{ channel: JournalChannel; upgradeRequired: boolean }> {
     const channel = new JournalChannel(path, new Worker(journalThreadUrl()));
     try {
-      await channel.request({ operation: "open", path, expected });
+      const state = await channel.request<{ upgradeRequired: boolean }>({
+        operation: "open",
+        path,
+        expected,
+      });
+      return { channel, upgradeRequired: state.upgradeRequired };
     } catch (cause) {
       await channel.#worker.terminate();
       throw cause;
     }
-    return channel;
   }
 
   /** Run one journal operation and await its durable result. */
@@ -190,11 +210,23 @@ export class Journal {
 
   /** Open or create the journal on its own thread and reject a journal bound to another queue. */
   static async open(path: string, binding: QueueBinding): Promise<Journal> {
-    const channel = await JournalChannel.open(path, {
+    const expected: ExpectedJournalMetadata = {
       journalVersion: String(JOURNAL_VERSION),
       representation: representationVersion,
       binding: binding as unknown as ExpectedJournalMetadata["binding"],
-    });
+    };
+    const { channel, upgradeRequired } = await JournalChannel.open(
+      path,
+      expected,
+    );
+    try {
+      if (upgradeRequired) {
+        await upgradeJournal(channel, path);
+      }
+    } catch (cause) {
+      await channel.close();
+      throw cause;
+    }
     return new Journal(path, channel);
   }
 
@@ -219,6 +251,17 @@ export class Journal {
 
   byId(receiptId: string): Promise<JournalRecord | undefined> {
     return this.#channel.request({ operation: "byId", receiptId });
+  }
+
+  /** One acceptance-sequence page of receipts; the cursor is the previous page's last sequence. */
+  pageReceipts(
+    limit: number,
+    cursor: string | undefined,
+  ): Promise<{
+    records: JournalRecord[];
+    cursor: string | undefined;
+  }> {
+    return this.#channel.request({ operation: "pageReceipts", limit, cursor });
   }
 
   /** The oldest pending receipt; later observations never overtake an unresolved write. */
@@ -287,6 +330,66 @@ export class Journal {
     });
   }
 
+  /**
+   * Return one failed receipt known not to have written to processing, preserving its identity,
+   * source values, attempts and sequence. A stale inspected count is an ineffective repeat that
+   * never resumes a later failure; a future count or unsettled later write is refused.
+   */
+  recoverFailed(
+    receiptId: string,
+    expectedAttemptCount: number,
+    now: string,
+  ): Promise<{ record: JournalRecord; recovered: boolean }> {
+    return this.#channel.request({
+      operation: "recoverFailed",
+      receiptId,
+      expectedAttemptCount,
+      now,
+    });
+  }
+
+  /** The pending context correction, while the journal holds its committed-plan slot. */
+  correction(): Promise<PendingCorrection | undefined> {
+    return this.#channel.request({ operation: "correction" });
+  }
+
+  /** The durable reason a new correction is refused before its expected state is read. */
+  correctionRefusal(): Promise<string | undefined> {
+    return this.#channel.request({ operation: "correctionRefusal" });
+  }
+
+  /** Commit one reviewed correction plan into the singleton slot before any note write. */
+  saveCorrection(noteId: string, plan: string, now: string): Promise<void> {
+    return this.#channel.request({
+      operation: "saveCorrection",
+      noteId,
+      plan,
+      now,
+    });
+  }
+
+  /** Record one correction application attempt before the write it may perform. */
+  beginCorrectionAttempt(now: string): Promise<PendingCorrection> {
+    return this.#channel.request({ operation: "beginCorrectionAttempt", now });
+  }
+
+  /** Persist a failed correction attempt with its retry timing or blocking diagnostic. */
+  markCorrectionFailure(
+    failure: JournalCorrectionFailure,
+    now: string,
+  ): Promise<void> {
+    return this.#channel.request({
+      operation: "markCorrectionFailure",
+      failure,
+      now,
+    });
+  }
+
+  /** Clear the correction slot after an application acknowledgment. */
+  clearCorrection(): Promise<void> {
+    return this.#channel.request({ operation: "clearCorrection" });
+  }
+
   status(): Promise<JournalStatus> {
     return this.#channel.request({ operation: "status" });
   }
@@ -299,3 +402,45 @@ export class Journal {
     return this.#channel.close();
   }
 }
+
+/** How many ownership retries a concurrent schema upgrade may take before it is refused. */
+const UPGRADE_OWNERSHIP_ATTEMPTS = 100;
+
+/**
+ * Upgrade a previous journal schema under exclusive writer ownership. An old worker, import or
+ * correction owner refuses the upgrade; a concurrent upgrade of the same journal is waited out
+ * and then found already current.
+ */
+const upgradeJournal = async (
+  channel: JournalChannel,
+  path: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < UPGRADE_OWNERSHIP_ATTEMPTS; attempt += 1) {
+    let lock: WorkerLock;
+    try {
+      lock = await WorkerLock.acquire(path, "upgrade");
+    } catch (cause) {
+      if (!(cause instanceof QueueWorkerLockedError)) {
+        throw cause;
+      }
+      if (!(await channel.request<boolean>({ operation: "recheckUpgrade" }))) {
+        // Another handle upgraded the journal while this one waited for ownership.
+        return;
+      }
+      const purpose = await WorkerLock.ownerPurpose(path);
+      if (purpose === "upgrade" || purpose === undefined) {
+        // A concurrent upgrade holds the journal only for its transaction, and an owner that
+        // released between the failed attempt and this probe must not refuse the retry.
+        continue;
+      }
+      throw cause;
+    }
+    try {
+      await channel.request({ operation: "upgrade" });
+    } finally {
+      await lock.release();
+    }
+    return;
+  }
+  throw new QueueWorkerLockedError(path);
+};

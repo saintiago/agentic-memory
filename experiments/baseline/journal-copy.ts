@@ -6,7 +6,8 @@
  * The live service owns the journal. This module opens a private copy that the capture step took
  * with SQLite's online backup, so it never locks or writes the live pair. It is evidence tooling
  * over that copy, not a runtime journal client: it refuses an unsupported schema instead of
- * guessing at columns a later journal version may change.
+ * guessing at columns a later journal version may change. Both versions whose receipt rows carry
+ * the retained columns are read, so a frozen baseline stays usable after a journal upgrade.
  *
  * See docs/evaluation.md#quality-maintenance-procedure and docs/ingestion-queue.md#interface.
  */
@@ -30,8 +31,12 @@ const require = createRequire(import.meta.url);
 const loadSqlite = (): typeof import("node:sqlite") =>
   require("node:sqlite") as typeof import("node:sqlite");
 
-/** The journal schema this reader understands; a different version is refused, not guessed at. */
-export const supportedJournalVersion = "2";
+/**
+ * The journal schema versions whose receipt rows this reader understands. Version 3 only added
+ * recovery evidence and the correction slot, so the retained receipt columns are shared. Any
+ * other version is refused, not guessed at.
+ */
+export const supportedJournalVersions = ["2", "3"] as const;
 
 /** One receipt row of the retained journal copy, with the fields baseline evidence needs. */
 export const journalCopyReceiptSchema = z.strictObject({
@@ -166,10 +171,13 @@ export const readJournalCopy = (path: string): JournalCopy => {
       );
     }
     const version = metadata.get("journalVersion");
-    if (version !== supportedJournalVersion) {
+    const knownVersion = supportedJournalVersions.find(
+      (supported) => supported === version,
+    );
+    if (knownVersion === undefined) {
       throw new JournalCopyError(
         `The journal copy declares schema version ${String(version)}; this reader supports ` +
-          `version ${supportedJournalVersion}.`,
+          `versions ${supportedJournalVersions.join(", ")}.`,
       );
     }
     const representation = metadata.get("representation");
@@ -227,7 +235,7 @@ export const readJournalCopy = (path: string): JournalCopy => {
     );
     return {
       path,
-      version,
+      version: knownVersion,
       representation,
       binding: binding.data,
       latestSequence: receipts.reduce(

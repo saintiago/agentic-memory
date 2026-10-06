@@ -131,7 +131,10 @@ const receipt = (
 const tempDirectory = async (): Promise<string> =>
   await mkdtemp(path.join(tmpdir(), "amem-baseline-test-"));
 
-/** Create one journal file with the retention columns the reader understands. */
+/**
+ * Create one journal file with the retention columns the reader understands, in the declared
+ * schema version: a retained version-2 journal has no recovery-evidence column.
+ */
 const writeJournal = async (
   file: string,
   options: {
@@ -140,6 +143,8 @@ const writeJournal = async (
     receipts?: readonly JournalCopyReceipt[];
   } = {},
 ): Promise<void> => {
+  const recoveryEvidence =
+    options.version === "2" ? "" : ",\n        recoveries TEXT";
   const db = new DatabaseSync(file);
   try {
     db.exec(`
@@ -165,13 +170,13 @@ const writeJournal = async (
         plan TEXT,
         plan_committed INTEGER NOT NULL DEFAULT 0,
         requires_reconciliation INTEGER NOT NULL DEFAULT 0,
-        reconciled INTEGER NOT NULL DEFAULT 0
+        reconciled INTEGER NOT NULL DEFAULT 0${recoveryEvidence}
       ) STRICT;
     `);
     const insertMetadata = db.prepare(
       "INSERT INTO queue_metadata (key, value) VALUES (?, ?)",
     );
-    insertMetadata.run("journalVersion", options.version ?? "2");
+    insertMetadata.run("journalVersion", options.version ?? "3");
     insertMetadata.run("representation", "amem-note-v1");
     insertMetadata.run("binding", JSON.stringify(options.binding ?? BINDING));
     const insert = db.prepare(
@@ -263,17 +268,55 @@ describe("journal copy", () => {
     });
     await copyJournal(source, copy);
     const journal = readJournalCopy(copy);
-    expect(journal.version).toBe("2");
+    expect(journal.version).toBe("3");
     expect(journal.binding).toEqual(BINDING);
     expect(journal.latestSequence).toBe(2);
     expect(journal.receipts[1]?.attemptCount).toBe(38);
     expect(journal.receipts[1]?.lastError).toContain("evolution response");
   });
 
+  it("reads a retained previous-version journal without recovery evidence", async () => {
+    const directory = await tempDirectory();
+    const file = path.join(directory, "retained.sqlite");
+    await writeJournal(file, {
+      version: "2",
+      receipts: [
+        receipt({ sequence: 1 }),
+        receipt({
+          sequence: 2,
+          id: uuid(2),
+          sourceKey: "source-2",
+          noteId: uuid(102),
+          status: "failed",
+          attemptCount: 38,
+          lastError:
+            "The model returned output the queue cannot use, so this observation failed permanently.",
+          planCommitted: false,
+          reconciled: false,
+          storedAt: undefined,
+        }),
+      ],
+    });
+    const journal = readJournalCopy(file);
+    expect(journal.version).toBe("2");
+    expect(journal.binding).toEqual(BINDING);
+    expect(journal.latestSequence).toBe(2);
+    expect(
+      journal.receipts.map((entry) => [
+        entry.sequence,
+        entry.status,
+        entry.attemptCount,
+      ]),
+    ).toEqual([
+      [1, "stored", 1],
+      [2, "failed", 38],
+    ]);
+  });
+
   it("refuses an unsupported journal schema instead of guessing at columns", async () => {
     const directory = await tempDirectory();
     const file = path.join(directory, "future.sqlite");
-    await writeJournal(file, { version: "3" });
+    await writeJournal(file, { version: "4" });
     expect(() => readJournalCopy(file)).toThrow(JournalCopyError);
   });
 

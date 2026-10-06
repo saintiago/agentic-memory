@@ -1,4 +1,6 @@
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,15 +13,22 @@ import {
   QueueBindingError,
   QueueClosedError,
   QueueConflictError,
+  QueueReceiptNotFoundError,
   QueueRequestError,
+  QueueStateConflictError,
   QueueWorkerLockedError,
   openIngestionQueue,
+  representationVersion,
+  type ContextCorrectionInput,
+  type ContextCorrectionPreparation,
+  type ContextCorrectionPreparer,
   type IngestionQueue,
   type InsertionPlan,
   type LegacyReceipt,
   type MemoryPreparer,
   type Note,
   type PrepareInput,
+  type QueueBinding,
   type QueueObservation,
   type QueueReceipt,
 } from "../../src/index.js";
@@ -95,6 +104,24 @@ class RecordingMemory implements MemoryPreparer {
   }
 }
 
+/** A correction capability that records its preparations, to prove none is repeated. */
+class RecordingCorrectionPreparer implements ContextCorrectionPreparer {
+  readonly preparations: ContextCorrectionPreparation[] = [];
+  readonly #preparer: ContextCorrectionPreparer;
+
+  constructor(preparer: ContextCorrectionPreparer) {
+    this.#preparer = preparer;
+  }
+
+  async prepareContextCorrection(
+    input: ContextCorrectionInput,
+  ): Promise<ContextCorrectionPreparation> {
+    const preparation = await this.#preparer.prepareContextCorrection(input);
+    this.preparations.push(preparation);
+    return preparation;
+  }
+}
+
 interface Harness {
   readonly queue: IngestionQueue;
   readonly store: RecordingStore;
@@ -123,6 +150,49 @@ const temporaryDirectory = async (): Promise<string> => {
   temporaryDirectories.push(directory);
   return directory;
 };
+
+/**
+ * Own the queue's canonical writer lock as the previous build's worker did, so an in-place schema
+ * upgrade must refuse while an old writer could still mutate the journal.
+ */
+const holdQueueLock = async (
+  journalPath: string,
+): Promise<() => Promise<void>> => {
+  const name = `\0amem-ingestion-queue:${createHash("sha256")
+    .update(journalPath)
+    .digest("hex")}`;
+  const server = createServer((socket) => {
+    socket.on("error", () => socket.destroy());
+    socket.end("worker");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(name, () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
+  });
+  return async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((cause) => {
+        if (cause === undefined) {
+          resolve();
+          return;
+        }
+        reject(cause);
+      });
+    });
+  };
+};
+
+/** The reviewed replacement of one seeded note's context, keeping its other attributes. */
+const correctionInput = (
+  note: Note,
+  context: string,
+): ContextCorrectionInput => ({
+  expected: note,
+  attributes: { context, keywords: note.keywords, tags: note.tags },
+});
 
 const createHarness = async (
   options: {
@@ -1913,5 +1983,1282 @@ describe("receipts and status", () => {
     const durable = await reopened.queue.status();
     expect(durable.worker).toBe("stopped");
     expect(durable.lastError).toContain("reconciliation");
+  });
+});
+
+describe("receipt traversal", () => {
+  it("pages every outcome in acceptance order without duplicates or payloads", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", CONSTRUCTED);
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    await harness.queue.start();
+    const stored = await harness.queue.submit({
+      sourceKey: "stored",
+      content: "The stored observation.",
+    });
+    const failed = await harness.queue.submit({
+      sourceKey: "failed",
+      content: "The invalid observation.",
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the failure to be retained",
+    );
+    await harness.queue.stop();
+    const queued = await harness.queue.submit({
+      sourceKey: "queued",
+      content: "The queued observation.",
+    });
+
+    // A page that exactly reaches the end omits the cursor, so completion needs no extra call.
+    const complete = await harness.queue.pageReceipts(3);
+    expect(complete.receipts).toHaveLength(3);
+    expect(complete.cursor).toBeUndefined();
+
+    const first = await harness.queue.pageReceipts(2);
+    expect(first.receipts.map((receipt) => receipt.id)).toEqual([
+      stored.id,
+      failed.id,
+    ]);
+    expect(first.receipts.map((receipt) => receipt.status)).toEqual([
+      "stored",
+      "failed",
+    ]);
+    expect(first.cursor).toBeDefined();
+
+    const second = await harness.queue.pageReceipts(2, first.cursor);
+    expect(second.receipts.map((receipt) => receipt.id)).toEqual([queued.id]);
+    expect(second.receipts[0]?.status).toBe("queued");
+    expect(second.cursor).toBeUndefined();
+
+    // A page exposes receipt outcomes only, never retained source material or plans.
+    const keys = Object.keys(second.receipts[0] ?? {});
+    expect(keys).not.toContain("content");
+    expect(keys).not.toContain("provenance");
+    expect(keys).not.toContain("plan");
+  });
+
+  it("refuses invalid limits and cursors", async () => {
+    const harness = await createHarness();
+    await harness.queue.submit({
+      sourceKey: "one",
+      content: "An observation.",
+    });
+    await expect(harness.queue.pageReceipts(0)).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+    await expect(harness.queue.pageReceipts(-1)).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+    await expect(harness.queue.pageReceipts(1.5)).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+    await expect(harness.queue.pageReceipts(1, "")).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+    await expect(harness.queue.pageReceipts(1, "1.5")).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+    await expect(
+      harness.queue.pageReceipts(1, "not-a-cursor"),
+    ).rejects.toBeInstanceOf(QueueRequestError);
+    await expect(harness.queue.pageReceipts(1, "-1")).rejects.toBeInstanceOf(
+      QueueRequestError,
+    );
+  });
+
+  it("continues traversal when receipts change status and new work is accepted", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", CONSTRUCTED);
+    harness.model.queue("construct", CONSTRUCTED);
+    const first = await harness.queue.submit({
+      sourceKey: "first",
+      content: "The first observation.",
+    });
+    const second = await harness.queue.submit({
+      sourceKey: "second",
+      content: "The second observation.",
+    });
+    const page = await harness.queue.pageReceipts(1);
+    expect(page.receipts[0]?.id).toBe(first.id);
+    expect(page.receipts[0]?.status).toBe("queued");
+
+    await harness.queue.start();
+    await settle(
+      async () => (await harness.queue.receipt(first.id))?.status === "stored",
+      "the first write",
+    );
+    const third = await harness.queue.submit({
+      sourceKey: "third",
+      content: "The third observation.",
+    });
+    const rest = await harness.queue.pageReceipts(10, page.cursor);
+    expect(rest.receipts.map((receipt) => receipt.id)).toEqual([
+      second.id,
+      third.id,
+    ]);
+    expect(rest.receipts.map((receipt) => receipt.status)).toEqual([
+      "queued",
+      "queued",
+    ]);
+    expect(rest.receipts[0]?.id).not.toBe(first.id);
+    expect(rest.cursor).toBeUndefined();
+  });
+});
+
+describe("failed receipt recovery", () => {
+  it("recovers a known-unwritten failure on its original sequence and identity", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "retained",
+      content: "The retained observation.",
+      timestamp: NOTE_TIMESTAMP,
+      provenance: { origin: "host" },
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the failure to be retained",
+    );
+    const before = await receiptOf(harness.queue, failed.id);
+    expect(before.attemptCount).toBe(1);
+
+    // An identical producer resubmission returns the retained receipt without restarting it.
+    await expect(
+      harness.queue.submit({
+        sourceKey: "retained",
+        content: "The retained observation.",
+        timestamp: NOTE_TIMESTAMP,
+        provenance: { origin: "host" },
+      }),
+    ).resolves.toMatchObject({
+      id: failed.id,
+      status: "failed",
+      created: false,
+    });
+
+    harness.model.queue("construct", CONSTRUCTED);
+    const recovery = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: before.attemptCount,
+    });
+    expect(recovery.recovered).toBe(true);
+    expect(recovery.receipt).toMatchObject({
+      id: failed.id,
+      sourceKey: "retained",
+      status: "queued",
+      acceptedAt: before.acceptedAt,
+      attemptCount: 1,
+    });
+    expect(recovery.receipt.noteId).toBeUndefined();
+    expect(recovery.receipt.lastError).toBeUndefined();
+    expect(recovery.receipt.nextRetryAt).toBeUndefined();
+    expect(recovery.receipt.recoveries).toEqual([
+      {
+        requestedAt: expect.any(String),
+        attemptCount: 1,
+        lastError: before.lastError,
+      },
+    ]);
+
+    // The recovered observation keeps its accepted identity and source values, and the drained
+    // receipt keeps the recovery evidence after storage.
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "stored",
+      "the recovered observation to store",
+    );
+    const stored = await receiptOf(harness.queue, failed.id);
+    expect(harness.preparer.prepares).toHaveLength(2);
+    expect(harness.preparer.prepares[1]).toEqual(harness.preparer.prepares[0]);
+    expect(stored.noteId).toBe(harness.preparer.prepares[0]?.noteId);
+    expect(harness.store.stored(stored.noteId!)?.content).toBe(
+      "The retained observation.",
+    );
+    expect(harness.store.stored(stored.noteId!)?.timestamp).toBe(
+      NOTE_TIMESTAMP,
+    );
+    expect(harness.store.stored(stored.noteId!)?.metadata).toEqual({
+      origin: "host",
+    });
+    expect(stored.recoveries).toHaveLength(1);
+    expect(stored.attemptCount).toBe(2);
+  });
+
+  it("reports a stale count as an ineffective repeat and never resumes a later failure", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    harness.model.queue("construct", () => ({
+      context: "Still only a context.",
+    }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "repeat",
+      content: "The repeating observation.",
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the first failure",
+    );
+
+    const first = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: 1,
+    });
+    expect(first.recovered).toBe(true);
+
+    // A repeat with the same inspected count appends no evidence and performs no write.
+    const repeat = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: 1,
+    });
+    expect(repeat.recovered).toBe(false);
+    expect(repeat.receipt.status).toBe("queued");
+    expect(repeat.receipt.recoveries).toHaveLength(1);
+
+    // The worker claims it and fails again, increasing the cumulative attempt count.
+    await settle(async () => {
+      const receipt = await harness.queue.receipt(failed.id);
+      return receipt?.status === "failed" && receipt.attemptCount === 2;
+    }, "the later failure");
+    const later = await receiptOf(harness.queue, failed.id);
+    expect(later.recoveries).toHaveLength(1);
+
+    // The earlier inspected count no longer matches: the request reports the current receipt.
+    const stale = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: 1,
+    });
+    expect(stale.recovered).toBe(false);
+    expect(stale.receipt.status).toBe("failed");
+    expect(stale.receipt.attemptCount).toBe(2);
+
+    // A future count is refused; the inspected new count recovers the later failure.
+    await expect(
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 3 }),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    harness.model.queue("construct", CONSTRUCTED);
+    const second = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: 2,
+    });
+    expect(second.recovered).toBe(true);
+    expect(second.receipt.recoveries).toEqual([
+      expect.objectContaining({ attemptCount: 1 }),
+      expect.objectContaining({ attemptCount: 2 }),
+    ]);
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "stored",
+      "the second recovery to store",
+    );
+  });
+
+  it("refuses recovery while a later write is processing or its plan is unresolved", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "failed",
+      content: "The failed observation.",
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the failure to be retained",
+    );
+
+    // The later receipt prepares and commits its plan; its application has not settled.
+    harness.model.queue("construct", CONSTRUCTED);
+    const gate = harness.store.holdWrites();
+    const later = await harness.queue.submit({
+      sourceKey: "later",
+      content: "The later observation.",
+    });
+    // Await one journal round trip in the condition, so the worker thread's plan commit and the
+    // gated application can progress between timer advances.
+    await settle(async () => {
+      await harness.queue.receipt(later.id);
+      return harness.store.calls.includes("put");
+    }, "the later application to start");
+    const refused = await rejection(
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+    );
+    expect(refused).toBeInstanceOf(QueueStateConflictError);
+    expect((refused as QueueStateConflictError).reason).toContain("processing");
+    await expect(harness.queue.receipt(failed.id)).resolves.toMatchObject({
+      status: "failed",
+    });
+
+    gate.resolve();
+    await settle(
+      async () => (await harness.queue.receipt(later.id))?.status === "stored",
+      "the later write",
+    );
+
+    // Once the later write settled, the earlier failure can be recovered without undoing it.
+    harness.model.queue("construct", CONSTRUCTED);
+    harness.model.queue("evolve", unchanged);
+    const recovered = await harness.queue.recoverFailed(failed.id, {
+      expectedAttemptCount: 1,
+    });
+    expect(recovered.recovered).toBe(true);
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "stored",
+      "the recovered head",
+    );
+    expect(
+      harness.store.writes.map((batch) => batch.at(-1)!.note.content),
+    ).toEqual(["The later observation.", "The failed observation."]);
+  });
+
+  it("refuses an unknown receipt, a blocked receipt and an unresolved legacy uncertainty", async () => {
+    const harness = await createHarness();
+    await expect(
+      harness.queue.recoverFailed("1e0c0b1e-5b3c-4a2f-9f1b-0c2d3e4f5a6b", {
+        expectedAttemptCount: 1,
+      }),
+    ).rejects.toBeInstanceOf(QueueReceiptNotFoundError);
+    await expect(
+      harness.queue.recoverFailed("not-a-uuid", { expectedAttemptCount: 1 }),
+    ).rejects.toBeInstanceOf(QueueRequestError);
+    await expect(
+      harness.queue.recoverFailed(LEGACY_RECEIPT_ID, {
+        expectedAttemptCount: -1,
+      }),
+    ).rejects.toBeInstanceOf(QueueRequestError);
+    await expect(
+      harness.queue.recoverFailed(LEGACY_RECEIPT_ID, {
+        expectedAttemptCount: 1.5,
+      }),
+    ).rejects.toBeInstanceOf(QueueRequestError);
+
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    harness.model.queue("construct", () => ({
+      context: "Still only a context.",
+    }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "failed",
+      content: "The failed observation.",
+    });
+    const second = await harness.queue.submit({
+      sourceKey: "second",
+      content: "The second observation.",
+    });
+    await settle(
+      async () =>
+        (await harness.queue.receipt(failed.id))?.status === "failed" &&
+        (await harness.queue.receipt(second.id))?.status === "failed",
+      "both failures to be retained",
+    );
+    await harness.queue.stop();
+
+    // A legacy uncertainty that names this receipt turns it into a reconciliation block.
+    await harness.queue.importLegacyReceipts([
+      {
+        status: "uncertain",
+        sourceKey: "failed",
+        content: "The failed observation.",
+      },
+    ]);
+    const blocked = await rejection(
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+    );
+    expect(blocked).toBeInstanceOf(QueueStateConflictError);
+    expect((blocked as QueueStateConflictError).reason).toContain("blocked");
+
+    // A separate unresolved uncertainty also refuses recovery of a failed receipt.
+    await harness.queue.importLegacyReceipts([
+      {
+        status: "uncertain",
+        sourceKey: "elsewhere",
+        content: "An unrelated unknown outcome.",
+      },
+    ]);
+    const held = await rejection(
+      harness.queue.recoverFailed(second.id, { expectedAttemptCount: 1 }),
+    );
+    expect(held).toBeInstanceOf(QueueStateConflictError);
+    expect((held as QueueStateConflictError).reason).toContain("legacy");
+  });
+
+  it("refuses recovery while a later committed plan is unresolved", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    harness.model.queue("construct", CONSTRUCTED);
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "failed",
+      content: "The failed observation.",
+    });
+    const later = await harness.queue.submit({
+      sourceKey: "later",
+      content: "The later observation.",
+    });
+    harness.store.putError = new Error("the connection was reset");
+    await settle(
+      async () =>
+        (await harness.queue.receipt(later.id))?.status === "retrying",
+      "the later plan to be committed",
+    );
+    expect(await receiptOf(harness.queue, failed.id)).toMatchObject({
+      status: "failed",
+    });
+    await harness.queue.stop();
+
+    const refused = await rejection(
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+    );
+    expect(refused).toBeInstanceOf(QueueStateConflictError);
+    expect((refused as QueueStateConflictError).reason).toContain("plan");
+    await expect(harness.queue.receipt(failed.id)).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("serializes concurrent recovery requests into one effective transition", async () => {
+    const harness = await createHarness();
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "raced",
+      content: "The raced observation.",
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the failure to be retained",
+    );
+    await harness.queue.stop();
+    const other = await createHarness({
+      directory: harness.directory,
+      store: harness.store,
+      embedder: harness.embedder,
+      model: harness.model,
+    });
+
+    const outcomes = await Promise.all([
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+      other.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.recovered)).toHaveLength(1);
+    const ineffective = outcomes.find((outcome) => !outcome.recovered);
+    expect(ineffective?.receipt.status).toBe("queued");
+    expect(ineffective?.receipt.recoveries).toHaveLength(1);
+    expect((await harness.queue.receipt(failed.id))?.recoveries).toHaveLength(
+      1,
+    );
+  });
+});
+
+describe("context correction", () => {
+  it("applies one reviewed correction, clears its slot and creates no receipt", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+    const result = await harness.queue.correctContext(
+      correctionInput(note, "The corrected earlier context."),
+      correction,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.note).toMatchObject({
+      id: note.id,
+      content: note.content,
+      timestamp: note.timestamp,
+      context: "The corrected earlier context.",
+      keywords: note.keywords,
+      tags: note.tags,
+      links: note.links,
+      metadata: note.metadata,
+    });
+    // The reviewed one-record plan was committed before the write and applied exactly once.
+    const plan = correction.preparations[0]?.plan;
+    expect(plan?.records).toHaveLength(1);
+    expect(harness.preparer.applies).toEqual([plan]);
+    expect(harness.store.writes).toHaveLength(1);
+    expect(harness.store.writes[0]?.map((record) => record.note.id)).toEqual([
+      note.id,
+    ]);
+    expect(harness.store.stored(note.id)).toEqual(result.note);
+    expect(harness.store.storedVector(note.id)).toEqual(
+      plan?.records[0]?.vector,
+    );
+
+    // Maintenance creates no observation receipt, and acknowledgment cleared the slot.
+    const status = await harness.queue.status();
+    expect(status.accepted).toBe(0);
+    expect(status.contextCorrection).toBeUndefined();
+    expect((await harness.queue.pageReceipts()).receipts).toEqual([]);
+
+    // Repeating the reviewed attributes is a no-op preparation: no plan and no write.
+    const repeat = new RecordingCorrectionPreparer(harness.memory);
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(
+          harness.store.stored(note.id)!,
+          "The corrected earlier context.",
+        ),
+        repeat,
+      ),
+    ).resolves.toEqual({ note: result.note, changed: false });
+    expect(repeat.preparations[0]?.plan).toBeUndefined();
+    expect(harness.store.writes).toHaveLength(1);
+  });
+
+  it("refuses a malformed or failed preparation without writing or creating a slot", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const prepared = await harness.memory.prepareContextCorrection(
+      correctionInput(note, "A reviewed revision."),
+    );
+    const plan = prepared.plan!;
+    const anotherNote = structuredClone(plan);
+    anotherNote.noteId = OTHER_ID;
+    const emptyPlan = structuredClone(plan);
+    emptyPlan.records = [];
+    const changedSource = structuredClone(plan);
+    changedSource.records[0]!.note.content = "Changed source content.";
+    const zeroVector = structuredClone(plan);
+    zeroVector.records[0]!.vector = [];
+    const shortVector = structuredClone(plan);
+    shortVector.records[0]!.vector = [1];
+    const longVector = structuredClone(plan);
+    longVector.records[0]!.vector = [1, 0, 0, 0, 0];
+    for (const invalid of [
+      anotherNote,
+      emptyPlan,
+      changedSource,
+      zeroVector,
+      shortVector,
+      longVector,
+    ]) {
+      const preparer: ContextCorrectionPreparer = {
+        prepareContextCorrection: async () => ({
+          note: prepared.note,
+          plan: invalid,
+        }),
+      };
+      await expect(
+        harness.queue.correctContext(
+          correctionInput(note, "A reviewed revision."),
+          preparer,
+        ),
+      ).rejects.toBeInstanceOf(QueueStateConflictError);
+      expect(harness.store.calls).not.toContain("put");
+      expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+    }
+    const failing: ContextCorrectionPreparer = {
+      prepareContextCorrection: async () => {
+        throw new Error("The correction preparation failed.");
+      },
+    };
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(note, "A reviewed revision."),
+        failing,
+      ),
+    ).rejects.toThrow("The correction preparation failed.");
+
+    expect(harness.store.calls).not.toContain("put");
+    expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+  });
+
+  it("schedules no retry for a blocking correction failure and resumes on restart", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+    // A rejected credential or storage configuration blocks instead of being retried as an
+    // outage, even though ingestion keeps its own documented schedule for this condition.
+    harness.store.putError = Object.assign(new Error("unauthorized"), {
+      status: 401,
+    });
+    const diagnostic =
+      "The storage or provider rejected the queue's credential or storage configuration, " +
+      "which must be corrected before this observation can be processed.";
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "The revised context."),
+        correction,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toBe(diagnostic);
+
+    // The recorded attempt keeps its evidence but schedules no automatic retry.
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT attempt_count, next_retry_at, last_error FROM correction_slot WHERE id = 1",
+        )
+        .get(),
+    ).toEqual({
+      attempt_count: 1,
+      next_retry_at: null,
+      last_error: diagnostic,
+    });
+    journal.close();
+
+    // A worker start replays the slot once, and no later backoff deadline resumes it.
+    await harness.queue.start();
+    const attempts = (): number =>
+      harness.store.calls.filter((call) => call === "put").length;
+    await settle(
+      () => attempts() === 2,
+      "the blocked replay to be attempted",
+      120_000,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(attempts()).toBe(2);
+
+    // Correcting the configuration and restarting is what resumes the exact replay.
+    harness.store.putError = undefined;
+    await harness.queue.stop();
+    await harness.queue.start();
+    await settle(
+      async () =>
+        (await harness.queue.status()).contextCorrection === undefined,
+      "the corrected configuration to resume the replay",
+      120_000,
+    );
+    const plan = correction.preparations[0]!.plan!;
+    // The blocked failure and the worker-start replay applied the same committed plan, then the
+    // corrected configuration applied it once more.
+    expect(harness.preparer.applies).toEqual([plan, plan, plan]);
+    expect(harness.store.stored(note.id)?.context).toBe("The revised context.");
+  });
+
+  it("holds later mutation, retains retry timing and replays before ingestion after a restart", async () => {
+    const directory = await temporaryDirectory();
+    const harness = await createHarness({ directory });
+    harness.model.queue("construct", () => ({ context: "Only a context." }));
+    await harness.queue.start();
+    const failed = await harness.queue.submit({
+      sourceKey: "failed",
+      content: "The failed observation.",
+    });
+    await settle(
+      async () => (await harness.queue.receipt(failed.id))?.status === "failed",
+      "the failure to be retained",
+    );
+    await harness.queue.stop();
+
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    const correction = new RecordingCorrectionPreparer(harness.memory);
+    harness.store.putError = new Error("the connection was reset");
+    const diagnostic =
+      "The note store rejected the prepared batch, so its outcome is uncertain.";
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "The revised context."),
+        correction,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toBe(diagnostic);
+
+    // The pending slot is visible with its safe diagnostic and holds every later mutation.
+    const status = await harness.queue.status();
+    expect(status.contextCorrection).toEqual({
+      noteId: note.id,
+      lastError: diagnostic,
+    });
+    expect(status.lastError).toBe(diagnostic);
+    const held = new RecordingCorrectionPreparer(harness.memory);
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(note, "Another revision."),
+        held,
+      ),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    await expect(
+      harness.queue.importLegacyReceipts([
+        {
+          status: "pending",
+          sourceKey: "later",
+          content: "The later observation.",
+        },
+      ]),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    await expect(
+      harness.queue.recoverFailed(failed.id, { expectedAttemptCount: 1 }),
+    ).rejects.toBeInstanceOf(QueueStateConflictError);
+    expect(held.preparations).toHaveLength(0);
+
+    // An interrupted application leaves the committed plan, the recorded attempt and its retry
+    // timing in the slot, so a crash before clearing cannot lose them.
+    const plan = correction.preparations[0]!.plan!;
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT plan, attempt_count, next_retry_at FROM correction_slot WHERE id = 1",
+        )
+        .get(),
+    ).toMatchObject({
+      plan: JSON.stringify(plan),
+      attempt_count: 1,
+      next_retry_at: expect.any(String),
+    });
+    journal.close();
+    await harness.queue.close();
+
+    // Reopening replays the exact committed plan before draining later work.
+    const restarted = await createHarness({
+      directory,
+      store: harness.store,
+      embedder: harness.embedder,
+      model: harness.model,
+    });
+    const waiting = await restarted.queue.submit({
+      sourceKey: "waiting",
+      content: "The waiting observation.",
+    });
+    restarted.model.queue("construct", CONSTRUCTED);
+    restarted.model.queue("evolve", unchanged);
+    restarted.store.putError = undefined;
+    expect((await restarted.queue.status()).contextCorrection?.noteId).toBe(
+      note.id,
+    );
+    await restarted.queue.start();
+
+    // The retained backoff is honoured: half the delay is not enough.
+    await vi.advanceTimersByTimeAsync(500);
+    expect((await restarted.queue.status()).contextCorrection?.noteId).toBe(
+      note.id,
+    );
+    expect(restarted.preparer.applies).toHaveLength(0);
+
+    await settle(
+      async () =>
+        (await restarted.queue.status()).contextCorrection === undefined,
+      "the committed correction to be replayed",
+    );
+    expect(restarted.preparer.applies).toEqual([plan]);
+    await settle(
+      async () =>
+        (await restarted.queue.receipt(waiting.id))?.status === "stored",
+      "later ingestion to drain",
+    );
+    // No correction was prepared again; only the later observation was.
+    expect(restarted.preparer.prepares).toHaveLength(1);
+    expect(restarted.store.writes[0]?.map((record) => record.note.id)).toEqual([
+      note.id,
+    ]);
+    expect(restarted.store.stored(note.id)?.context).toBe(
+      "The revised context.",
+    );
+  });
+
+  it("blocks a committed correction whose plan was lost instead of preparing again", async () => {
+    const directory = await temporaryDirectory();
+    const store = new RecordingStore();
+    const embedder = new ControlledEmbedder();
+    const model = new ScriptedModel();
+    const harness = await createHarness({ directory, store, embedder, model });
+    const note = store.seed({ note: candidate(), vector: [1, 0, 0, 0] });
+    const waiting = await harness.queue.submit({
+      sourceKey: "waiting",
+      content: "The waiting observation.",
+    });
+    await harness.queue.close();
+
+    // A committed slot with missing plan data is crash evidence, never unstarted preparation.
+    const journal = new DatabaseSync(
+      path.join(directory, "ingestion-queue.sqlite"),
+    );
+    journal
+      .prepare(
+        "INSERT INTO correction_slot (id, note_id, plan, attempt_count, next_retry_at, " +
+          "last_error, updated_at) VALUES (1, ?, NULL, 0, NULL, NULL, ?)",
+      )
+      .run(note.id, new Date().toISOString());
+    journal.close();
+
+    const restarted = await createHarness({
+      directory,
+      store,
+      embedder,
+      model,
+    });
+    await restarted.queue.start();
+    await settle(
+      async () =>
+        (await restarted.queue.status()).contextCorrection?.lastError !==
+        undefined,
+      "the corrupt slot diagnostic",
+    );
+    const status = await restarted.queue.status();
+    expect(status.contextCorrection?.noteId).toBe(note.id);
+    expect(status.contextCorrection?.lastError).toContain("no stored plan");
+    expect(status.lastError).toBe(status.contextCorrection?.lastError);
+
+    // Ingestion stays held until the operator restores a consistent journal/collection pair.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(restarted.preparer.prepares).toHaveLength(0);
+    expect(restarted.preparer.applies).toHaveLength(0);
+    expect(store.writes).toEqual([]);
+    expect(await restarted.queue.receipt(waiting.id)).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  it("refuses preparation before reading state while a legacy uncertainty is unresolved", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    await harness.queue.importLegacyReceipts([
+      {
+        status: "uncertain",
+        sourceKey: "elsewhere",
+        content: "An unrelated unknown outcome.",
+      },
+    ]);
+    const preparer = new RecordingCorrectionPreparer(harness.memory);
+    const failure = await rejection(
+      harness.queue.correctContext(
+        correctionInput(note, "A reviewed revision."),
+        preparer,
+      ),
+    );
+    expect(failure).toBeInstanceOf(QueueStateConflictError);
+    expect((failure as QueueStateConflictError).reason).toContain("legacy");
+    expect(preparer.preparations).toHaveLength(0);
+    expect(harness.store.calls).not.toContain("put");
+  });
+
+  it("excludes the worker while a correction is prepared and refuses a correction while it drains", async () => {
+    const harness = await createHarness();
+    const note = harness.store.seed({
+      note: candidate(),
+      vector: [1, 0, 0, 0],
+    });
+    await harness.queue.start();
+    const whileRunning = new RecordingCorrectionPreparer(harness.memory);
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(note, "A reviewed revision."),
+        whileRunning,
+      ),
+    ).rejects.toBeInstanceOf(QueueWorkerLockedError);
+    expect(whileRunning.preparations).toHaveLength(0);
+    await harness.queue.stop();
+
+    // While one correction holds maintenance ownership, neither another correction nor the
+    // worker can own the queue.
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    const blocking: ContextCorrectionPreparer = {
+      prepareContextCorrection: async (input) => {
+        entered.resolve();
+        await gate.promise;
+        return await harness.memory.prepareContextCorrection(input);
+      },
+    };
+    const first = harness.queue.correctContext(
+      correctionInput(note, "The held revision."),
+      blocking,
+    );
+    await entered.promise;
+    await expect(harness.queue.start()).rejects.toBeInstanceOf(
+      QueueWorkerLockedError,
+    );
+    await expect(
+      harness.queue.correctContext(
+        correctionInput(note, "Another revision."),
+        new RecordingCorrectionPreparer(harness.memory),
+      ),
+    ).rejects.toBeInstanceOf(QueueWorkerLockedError);
+    gate.resolve();
+    await expect(first).resolves.toMatchObject({ changed: true });
+    expect(harness.store.stored(note.id)?.context).toBe("The held revision.");
+  });
+});
+
+/** One receipt as the previous journal schema stored it, without recovery evidence. */
+interface RetainedReceipt {
+  readonly sequence: number;
+  readonly id: string;
+  readonly sourceKey: string;
+  readonly noteId: string;
+  readonly status: string;
+  readonly content: string;
+  readonly timestamp: string;
+  readonly provenance?: Record<string, unknown>;
+  readonly acceptedAt: string;
+  readonly updatedAt: string;
+  readonly attemptCount: number;
+  readonly nextRetryAt?: string;
+  readonly lastError?: string;
+  readonly storedAt?: string;
+  readonly plan?: string;
+  readonly planCommitted: boolean;
+  readonly requiresReconciliation: boolean;
+  readonly reconciled: boolean;
+}
+
+/** Write one journal in the previous schema, as the previous build left it. */
+const writeRetainedJournal = (
+  file: string,
+  binding: QueueBinding,
+  receipts: readonly RetainedReceipt[],
+  version = "2",
+): void => {
+  const db = new DatabaseSync(file);
+  try {
+    // The previous queue build ran its journal in WAL mode; the retained fixture keeps that.
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec(`
+      CREATE TABLE queue_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE receipts (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        source_key TEXT NOT NULL UNIQUE,
+        note_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        provenance TEXT,
+        accepted_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL,
+        next_retry_at TEXT,
+        last_error TEXT,
+        stored_at TEXT,
+        plan TEXT,
+        plan_committed INTEGER NOT NULL DEFAULT 0,
+        requires_reconciliation INTEGER NOT NULL DEFAULT 0,
+        reconciled INTEGER NOT NULL DEFAULT 0
+      ) STRICT;
+    `);
+    const metadata = db.prepare(
+      "INSERT INTO queue_metadata (key, value) VALUES (?, ?)",
+    );
+    metadata.run("journalVersion", version);
+    metadata.run("representation", representationVersion);
+    metadata.run("binding", JSON.stringify(binding));
+    const insert = db.prepare(
+      "INSERT INTO receipts (sequence, id, source_key, note_id, status, content, timestamp, " +
+        "provenance, accepted_at, updated_at, attempt_count, next_retry_at, last_error, " +
+        "stored_at, plan, plan_committed, requires_reconciliation, reconciled) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const receipt of receipts) {
+      insert.run(
+        receipt.sequence,
+        receipt.id,
+        receipt.sourceKey,
+        receipt.noteId,
+        receipt.status,
+        receipt.content,
+        receipt.timestamp,
+        receipt.provenance === undefined
+          ? null
+          : JSON.stringify(receipt.provenance),
+        receipt.acceptedAt,
+        receipt.updatedAt,
+        receipt.attemptCount,
+        receipt.nextRetryAt ?? null,
+        receipt.lastError ?? null,
+        receipt.storedAt ?? null,
+        receipt.plan ?? null,
+        receipt.planCommitted ? 1 : 0,
+        receipt.requiresReconciliation ? 1 : 0,
+        receipt.reconciled ? 1 : 0,
+      );
+    }
+  } finally {
+    db.close();
+  }
+};
+
+const retainedBinding = (embedder: ControlledEmbedder): QueueBinding => ({
+  endpoint: "http://127.0.0.1:6333",
+  collection: "memories",
+  embeddingSpace: { ...embedder.space },
+});
+
+const retainedReceipts = (): RetainedReceipt[] => [
+  {
+    sequence: 1,
+    id: "0f0e0d0c-0b0a-4000-8000-000000000001",
+    sourceKey: "stored",
+    noteId: CANDIDATE_ID,
+    status: "stored",
+    content: "The stored observation.",
+    timestamp: NOTE_TIMESTAMP,
+    provenance: { origin: "host" },
+    acceptedAt: "2026-09-27T15:44:27.001+02:00",
+    updatedAt: "2026-09-27T15:44:28.001+02:00",
+    attemptCount: 2,
+    storedAt: "2026-09-27T15:44:28.001+02:00",
+    planCommitted: true,
+    requiresReconciliation: false,
+    reconciled: true,
+  },
+  {
+    sequence: 2,
+    id: "0f0e0d0c-0b0a-4000-8000-000000000002",
+    sourceKey: "retrying",
+    noteId: OTHER_ID,
+    status: "retrying",
+    content: "The retrying observation.",
+    timestamp: NOTE_TIMESTAMP,
+    acceptedAt: "2026-09-27T15:45:27.001+02:00",
+    updatedAt: "2026-09-27T15:45:28.001+02:00",
+    attemptCount: 3,
+    nextRetryAt: "2026-10-06T10:00:00.000Z",
+    lastError:
+      "A temporary model provider failure interrupted this observation.",
+    planCommitted: false,
+    requiresReconciliation: false,
+    reconciled: false,
+  },
+  {
+    sequence: 3,
+    id: "0f0e0d0c-0b0a-4000-8000-000000000003",
+    sourceKey: "failed",
+    noteId: "0f0e0d0c-0b0a-4000-8000-000000000103",
+    status: "failed",
+    content: "The failed observation.",
+    timestamp: NOTE_TIMESTAMP,
+    acceptedAt: "2026-09-27T15:46:27.001+02:00",
+    updatedAt: "2026-09-27T15:46:28.001+02:00",
+    attemptCount: 5,
+    lastError:
+      "The model returned output the queue cannot use, so this observation failed permanently.",
+    planCommitted: false,
+    requiresReconciliation: false,
+    reconciled: false,
+  },
+];
+
+describe("journal upgrade", () => {
+  it("upgrades a previous journal in place and preserves its receipts and plan evidence", async () => {
+    const directory = await temporaryDirectory();
+    const embedder = new ControlledEmbedder();
+    const binding = retainedBinding(embedder);
+    const file = path.join(directory, "ingestion-queue.sqlite");
+    const receipts = retainedReceipts();
+    writeRetainedJournal(file, binding, receipts);
+
+    const harness = await createHarness({ directory, embedder });
+    const page = await harness.queue.pageReceipts(10);
+    expect(
+      page.receipts.map((receipt) => [
+        receipt.id,
+        receipt.status,
+        receipt.attemptCount,
+      ]),
+    ).toEqual([
+      [receipts[0]!.id, "stored", 2],
+      [receipts[1]!.id, "retrying", 3],
+      [receipts[2]!.id, "failed", 5],
+    ]);
+    expect(page.receipts[0]).toMatchObject({
+      sourceKey: "stored",
+      acceptedAt: receipts[0]!.acceptedAt,
+      noteId: CANDIDATE_ID,
+    });
+    expect(page.receipts.map((receipt) => receipt.recoveries)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect((await harness.queue.status()).contextCorrection).toBeUndefined();
+    expect(harness.queue.binding).toEqual(binding);
+
+    // The file now declares the current schema, with no invented recovery history and no slot.
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT value FROM queue_metadata WHERE key = 'journalVersion'",
+        )
+        .get(),
+    ).toEqual({ value: "3" });
+    expect(
+      journal.prepare("SELECT COUNT(*) AS count FROM correction_slot").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      journal
+        .prepare("SELECT recoveries FROM receipts WHERE id = ?")
+        .get(receipts[1]!.id),
+    ).toEqual({ recoveries: null });
+    journal.close();
+
+    // The upgraded column is usable: the retained failure can be recovered with new evidence.
+    const recovered = await harness.queue.recoverFailed(receipts[2]!.id, {
+      expectedAttemptCount: 5,
+    });
+    expect(recovered.recovered).toBe(true);
+    expect(recovered.receipt).toMatchObject({
+      id: receipts[2]!.id,
+      sourceKey: "failed",
+      status: "queued",
+      attemptCount: 5,
+    });
+    expect(recovered.receipt.recoveries).toEqual([
+      {
+        requestedAt: expect.any(String),
+        attemptCount: 5,
+        lastError: receipts[2]!.lastError,
+      },
+    ]);
+  });
+
+  it("preserves committed plan data and flags through the upgrade", async () => {
+    const directory = await temporaryDirectory();
+    const embedder = new ControlledEmbedder();
+    const file = path.join(directory, "ingestion-queue.sqlite");
+    const plan = JSON.stringify({
+      version: 1,
+      noteId: CANDIDATE_ID,
+      representation: representationVersion,
+      records: [],
+    });
+    const id = "0f0e0d0c-0b0a-4000-8000-000000000011";
+    writeRetainedJournal(file, retainedBinding(embedder), [
+      {
+        sequence: 1,
+        id,
+        sourceKey: "interrupted",
+        noteId: CANDIDATE_ID,
+        status: "processing",
+        content: "The interrupted observation.",
+        timestamp: NOTE_TIMESTAMP,
+        acceptedAt: "2026-09-27T15:44:27.001+02:00",
+        updatedAt: "2026-09-27T15:44:28.001+02:00",
+        attemptCount: 1,
+        plan,
+        planCommitted: true,
+        requiresReconciliation: false,
+        reconciled: false,
+      },
+    ]);
+
+    const harness = await createHarness({ directory, embedder });
+    const journal = new DatabaseSync(harness.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT status, plan, plan_committed, attempt_count FROM receipts WHERE id = ?",
+        )
+        .get(id),
+    ).toEqual({
+      status: "processing",
+      plan,
+      plan_committed: 1,
+      attempt_count: 1,
+    });
+    journal.close();
+    await expect(receiptOf(harness.queue, id)).resolves.toMatchObject({
+      status: "processing",
+      attemptCount: 1,
+    });
+  });
+
+  it("refuses the upgrade while an old writer owns the journal and leaves the file unchanged", async () => {
+    const directory = await temporaryDirectory();
+    const embedder = new ControlledEmbedder();
+    const binding = retainedBinding(embedder);
+    const file = path.join(directory, "ingestion-queue.sqlite");
+    writeRetainedJournal(file, binding, retainedReceipts().slice(0, 1));
+
+    const release = await holdQueueLock(await realpath(file));
+    try {
+      await expect(
+        createHarness({ directory, embedder }),
+      ).rejects.toBeInstanceOf(QueueWorkerLockedError);
+    } finally {
+      await release();
+    }
+
+    // The refused handle changed nothing: the journal is still the previous schema.
+    const journal = new DatabaseSync(file);
+    expect(
+      journal
+        .prepare(
+          "SELECT value FROM queue_metadata WHERE key = 'journalVersion'",
+        )
+        .get(),
+    ).toEqual({ value: "2" });
+    expect(
+      journal.prepare("SELECT COUNT(*) AS count FROM receipts").get(),
+    ).toEqual({ count: 1 });
+    journal.close();
+
+    // Once the old writer stopped, the same journal opens and upgrades.
+    const harness = await createHarness({ directory, embedder });
+    expect((await harness.queue.pageReceipts()).receipts).toHaveLength(1);
+  });
+
+  it.each(["1", "4"])(
+    "refuses the unsupported journal version %s and leaves the file unchanged",
+    async (version) => {
+      const directory = await temporaryDirectory();
+      const embedder = new ControlledEmbedder();
+      const file = path.join(directory, "ingestion-queue.sqlite");
+      writeRetainedJournal(
+        file,
+        retainedBinding(embedder),
+        retainedReceipts().slice(0, 1),
+        version,
+      );
+
+      const failure = await rejection(createHarness({ directory, embedder }));
+      expect(failure).toBeInstanceOf(QueueBindingError);
+      expect((failure as Error).message).toContain(
+        `schema version is ${version}`,
+      );
+      const journal = new DatabaseSync(file);
+      expect(
+        journal
+          .prepare(
+            "SELECT value FROM queue_metadata WHERE key = 'journalVersion'",
+          )
+          .get(),
+      ).toEqual({ value: version });
+      journal.close();
+    },
+  );
+
+  it("waits out a concurrent upgrade of the same journal", async () => {
+    const directory = await temporaryDirectory();
+    const embedder = new ControlledEmbedder();
+    const file = path.join(directory, "ingestion-queue.sqlite");
+    writeRetainedJournal(
+      file,
+      retainedBinding(embedder),
+      retainedReceipts().slice(0, 1),
+    );
+
+    const [first, second] = await Promise.all([
+      createHarness({ directory, embedder }),
+      createHarness({ directory, embedder }),
+    ]);
+    for (const harness of [first, second]) {
+      expect((await harness.queue.pageReceipts()).receipts).toHaveLength(1);
+    }
+    const journal = new DatabaseSync(first.queue.journalPath);
+    expect(
+      journal
+        .prepare(
+          "SELECT value FROM queue_metadata WHERE key = 'journalVersion'",
+        )
+        .get(),
+    ).toEqual({ value: "3" });
+    journal.close();
   });
 });

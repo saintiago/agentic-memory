@@ -18,6 +18,32 @@ export class QueueConflictError extends Error {
   }
 }
 
+/**
+ * The queue's durable state refuses the requested transition: an ineligible failed receipt, a
+ * future attempt count, or writer work that must settle first. The reason is a safe operator
+ * diagnostic, independent of provider error text.
+ */
+export class QueueStateConflictError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "QueueStateConflictError";
+    this.reason = reason;
+  }
+}
+
+/** A request named a receipt the queue journal does not hold. */
+export class QueueReceiptNotFoundError extends Error {
+  readonly receiptId: string;
+
+  constructor(receiptId: string) {
+    super(`No queue receipt has the identity ${receiptId}.`);
+    this.name = "QueueReceiptNotFoundError";
+    this.receiptId = receiptId;
+  }
+}
+
 /** A rejected submission, receipt lookup or reconciliation request. */
 export class QueueRequestError extends Error {
   readonly reason: string;
