@@ -78,10 +78,14 @@ and collection, accepts durable submissions, and serves retrieval and paginated 
 supervised process outlives client tasks. Clients configure the API URL; the service owns database
 and model credentials. The [queue](ingestion-queue.md) owns sequential writes and restart recovery.
 Operators recover known-unwritten failed observations through the service's receipt-recovery route.
-For a reviewed existing-context correction, stop the service and use its offline maintenance command:
-the queue takes the same writer ownership, Memory prepares the replacement, and the queue commits
-and applies that exact plan. A pending maintenance plan replays before ingestion on restart. Neither
-agent clients nor the read-only dashboard gain context-editing controls or direct database access.
+For reviewed existing-context correction or warranted historical-link removal, stop the service
+and use its offline maintenance commands. Memory owns distinct context/link proposal contracts and
+freshness checks; NoteStore supplies current records and stored vectors for link-only preparation.
+The queue takes the same writer ownership, commits the complete replacement plan and applies it.
+Both actions use one pending maintenance slot and exact replay before ingestion on restart; they
+do not require a separate recovery mechanism. Source review comes first: without a proven incorrect
+edge, the historical-link journey ends with a no-removal report and no new capability. Neither agent
+clients nor the read-only dashboard gain editing controls or direct database access.
 The bundled inspection module shares the service listener and read capabilities; its background
 worker owns projection, not another encoder or database client.
 

@@ -248,12 +248,13 @@ or a permanent version store. Exercise restart replay on an isolated copy before
 service for the live correction session and restart it for resumed ingestion and fresh retrieval.
 
 Compare the same preserved queries, direct limits and nonzero linked budgets after recovery/correction.
-Separate changes from fresh generation/recovery from targeted context correction. Correction preserves
+Separate changes from fresh generation/recovery from targeted context correction. Context correction preserves
 existing links, so it does not by itself repair old noisy edges. Evaluate meaningful link selection on
 isolated before/after replays of the same retained sources, and report unchanged historical link noise
-in live probes. Do not claim old-link repair, remove those links, or change retrieval policy to conceal
-noise. If old edges prevent the accepted comparison from showing improvement, report that remaining
-limitation for an explicit scope decision rather than silently widening maintenance permissions.
+in live probes. Reviewed removal of proven incorrect historical edges follows the separately scoped
+[historical-link correction](#historical-link-correction); context correction does not gain that
+permission. Do not claim old-link repair from a context-only change or change retrieval policy to
+conceal noise.
 
 Include later related and unrelated insertions on isolated copies to assess whether corrected subjects
 expand again. Insert the later sources through the public Memory contract against the restored
@@ -261,6 +262,38 @@ collection under the captured revision's prompts and record the raw exchanges wi
 restored journal copy stays read-only evidence and the live pair is never written. Report
 deterministic protocol verification separately from real model-quality evidence; keep remaining
 failure, fidelity and relevance limitations explicit.
+
+### Historical-link correction
+
+Assess historical linked-retrieval noise after the queued context and evolution work. Retained
+comparisons identify candidates, not proven incorrect edges. Trace each assessed addition to its
+actual directed edge from a direct match, then review both original sources and provenance against
+the [existing direct-evidence relationship guidance](prompts.md#evolution-instructions). An edge is
+proven incorrect when the original evidence establishes separate subjects or mechanisms without
+the required defect/repair, same-claim qualification/supersession or scope/applicability relationship.
+Query irrelevance, shared vocabulary, generated-context contamination or absence from expected
+retrieval targets alone does not establish that judgment. Preserve valid relationships and leave
+ambiguous or unavailable-source cases unresolved rather than guessing.
+
+Keep the assessed source/target identities, inspected links, source references, verdict and reason
+in private artifacts, together with reviewed removals and acknowledged or unresolved outcomes.
+Use the existing recoverable baseline and writer-ownership protections before live maintenance;
+exercise removal and interrupted-application recovery on an isolated copy before live use.
+Confirm after restart that the reviewed edges are absent, endpoint sources and semantic attributes
+survive, and every relationship outside the removal set is preserved. The maintenance capability
+is conditional on warranted removals and follows [Memory's behavior](memory.md#existing-link-correction)
+through the [offline service command](service.md#operator-link-correction).
+
+Repeat the preserved queries on the current before/after corpus, keeping query text, direct limits,
+nonzero linked budgets and retrieval defaults unchanged. Separate the removal's effects from queued
+work or other corpus changes. Report direct evidence recovery, useful and unrelated linked additions,
+and returned text with denominators; review any additions that now fit the budget. A removed target
+can still appear as a direct match or through another valid edge, so verify the removed edge itself
+and explain the remaining route. Report assessed, proven incorrect, removed, valid and unresolved
+edges with counts and reasons, including any failed removal or remaining noise. If no edge is proven
+incorrect, report that supported no-change outcome. The result is a bounded source-grounded repair,
+not a claim that all historical links or future retrievals are correct. Private graph evidence stays
+outside Git; do not reset the corpus or suppress noise through retrieval-policy changes.
 
 ### Baseline tooling
 

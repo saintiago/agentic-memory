@@ -74,6 +74,7 @@ export class RecordingStore implements NoteStore {
   readonly partialWriteFailures: Error[] = [];
   nearestError: Error | undefined;
   getError: Error | undefined;
+  getEmbeddedError: Error | undefined;
   /** Retain the references handed to `put`, as a replacement store is allowed to do. */
   retainWrites = false;
   #putGate: Deferred<void> | undefined;
@@ -139,6 +140,19 @@ export class RecordingStore implements NoteStore {
     return ids.flatMap((id) => {
       const record = this.records.get(id.toLowerCase());
       return record === undefined ? [] : [structuredClone(record.note)];
+    });
+  }
+
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    this.calls.push("getEmbedded");
+    if (this.getEmbeddedError !== undefined) {
+      throw this.getEmbeddedError;
+    }
+    return ids.flatMap((id) => {
+      const record = this.records.get(id.toLowerCase());
+      return record === undefined
+        ? []
+        : [{ note: structuredClone(record.note), vector: [...record.vector] }];
     });
   }
 

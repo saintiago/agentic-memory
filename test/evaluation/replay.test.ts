@@ -212,6 +212,7 @@ const failingWriteEnvironment = (
         await opened.store.put(records);
       },
       get: (ids) => opened.store.get(ids),
+      getEmbedded: (ids) => opened.store.getEmbedded(ids),
       nearest: (vector, limit) => opened.store.nearest(vector, limit),
       page: (limit, cursor) => opened.store.page(limit, cursor),
       pageEmbedded: (limit, cursor) => opened.store.pageEmbedded(limit, cursor),
@@ -868,6 +869,7 @@ describe("replay runner", () => {
             }
           },
           get: (ids) => opened.store.get(ids),
+          getEmbedded: (ids) => opened.store.getEmbedded(ids),
           nearest: (vector, limit) => opened.store.nearest(vector, limit),
           page: (limit, cursor) => opened.store.page(limit, cursor),
           pageEmbedded: (limit, cursor) =>

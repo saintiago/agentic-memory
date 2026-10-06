@@ -181,6 +181,25 @@ export class InMemoryNoteStore implements NoteStore {
     return [...found.values()];
   }
 
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    const found = new Map<string, EmbeddedNote>();
+    for (const id of ids) {
+      const parsed = noteIdSchema.safeParse(id);
+      if (!parsed.success) {
+        throw new Error(`Note identifiers must be UUIDs, received ${id}.`);
+      }
+      const identity = parsed.data.toLowerCase();
+      const record = this.#records.get(identity);
+      if (record !== undefined && !found.has(identity)) {
+        found.set(identity, {
+          note: structuredClone(record.note),
+          vector: [...record.vector],
+        });
+      }
+    }
+    return [...found.values()];
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     const search = vectorSchema.parse(vector);
     if (search.length !== this.#space.dimensions) {

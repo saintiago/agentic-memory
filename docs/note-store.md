@@ -47,6 +47,7 @@ interface EmbeddedPage {
 interface NoteStore {
   put(records: EmbeddedNote[]): Promise<void>;
   get(ids: string[]): Promise<Note[]>;
+  getEmbedded(ids: string[]): Promise<EmbeddedNote[]>;
   nearest(vector: number[], limit: number): Promise<Match[]>;
   page(limit: number, cursor?: Cursor): Promise<Page>;
   pageEmbedded(limit: number, cursor?: Cursor): Promise<EmbeddedPage>;
@@ -60,6 +61,13 @@ Pagination returns a provider cursor only when another page may exist; an omitte
 completion. Cursors belong to the current collection/provider, not a portable page numbering scheme.
 An unchanged collection must be fully traversable without duplicates or an internal total-count cap.
 Concurrent writes can change the traversal; snapshot pagination is not promised.
+
+`getEmbedded` follows `get`'s identity, missing-ID, uniqueness, ordering and empty-input rules,
+returning detached complete records with their actual stored vectors. Validate vectors against the
+collection's embedding space, as for `pageEmbedded`; a found record with a missing or invalid vector
+fails the read. Fetch the requested identities directly without pagination or a collection scan.
+It performs no writes or re-embedding. This focused read supports link-only maintenance while
+ordinary `get`, `nearest` and `page` remain vector-free.
 
 `pageEmbedded` is the explicit vector-inspection operation. It returns complete current notes and
 actual stored vectors, validated against the collection's embedding space, as detached records.
@@ -172,3 +180,8 @@ also to `pageEmbedded`: verify stored vectors and notes survive export/reopen, r
 detached, invalid vectors fail, and ordinary reads do not request vectors. Verify legacy records
 without `updatedAt` remain readable without backfill, valid values survive round trips and malformed
 values fail validation.
+
+Verify `getEmbedded` against isolated real storage: found and missing identities, repeated IDs,
+empty input, detached values, preserved stored vectors after reopening and no pagination. Use
+controlled malformed responses for missing/invalid vectors rather than silently treating them as
+absent notes.

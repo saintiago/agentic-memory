@@ -11,6 +11,9 @@
  * plan without writing, and `apply` writes the exact supplied plan without regeneration.
  * `prepareContextCorrection` prepares a reviewed replacement of one existing note through the same
  * immutable plan format; it reads and embeds without constructing, searching or writing.
+ * `prepareLinkCorrection` prepares a reviewed removal of outgoing links from one existing note
+ * through that format; it reads the current record with its stored vector without embedding,
+ * constructing, searching or writing.
  *
  * See docs/memory.md, docs/architecture.md#insertion-and-evolution and
  * docs/architecture.md#retrieval.
@@ -22,6 +25,7 @@ import type { Embedder } from "../embeddings/index.js";
 import type { LanguageModel } from "../language-model/index.js";
 import {
   cursorSchema,
+  embeddedNoteSchema,
   jsonValueSchema,
   noteIdSchema,
   noteSchema,
@@ -38,7 +42,7 @@ import {
 } from "../note-store/index.js";
 import {
   MemoryError,
-  type ContextCorrectionReadOutcome,
+  type CorrectionReadOutcome,
   type MemoryOperation,
   type MemoryStage,
 } from "./memory-error.js";
@@ -48,6 +52,11 @@ import {
   type ContextCorrectionPreparation,
   type ContextCorrectionPreparer,
 } from "./context-correction.js";
+import {
+  linkCorrectionInputSchema,
+  type LinkCorrectionInput,
+  type LinkCorrectionPreparer,
+} from "./link-correction.js";
 import {
   insertionPlanSchema,
   insertionPlanVersion,
@@ -186,7 +195,11 @@ type RetrievalOperation = Extract<MemoryOperation, "get" | "page" | "search">;
  */
 type MutationOperation = Extract<
   MemoryOperation,
-  "add" | "prepare" | "prepareContextCorrection" | "apply"
+  | "add"
+  | "prepare"
+  | "prepareContextCorrection"
+  | "prepareLinkCorrection"
+  | "apply"
 >;
 
 /** The operations that embed the note representation they prepare. */
@@ -236,17 +249,21 @@ const insertionFailure = (
   });
 
 /**
- * One failed context-correction read, carrying the evidence a maintenance owner needs: a
- * confirmed stale proposal is distinct from a read that could not observe storage.
+ * One failed correction read, carrying the evidence a maintenance owner needs: a confirmed stale
+ * proposal is distinct from a read that could not observe storage.
  */
 const correctionReadFailure = (
+  operation: Extract<
+    MemoryOperation,
+    "prepareContextCorrection" | "prepareLinkCorrection"
+  >,
   noteId: string,
-  readOutcome: ContextCorrectionReadOutcome,
+  readOutcome: CorrectionReadOutcome,
   reason: string,
   cause?: unknown,
 ): MemoryError =>
   new MemoryError({
-    operation: "prepareContextCorrection",
+    operation,
     stage: "read",
     persistence: "unchanged",
     reason,
@@ -415,7 +432,9 @@ interface InsertionRequest {
  * outcomes. This queue is not a durable job system or a distributed writer lock. Correction
  * preparation joins that order; retrieval and inspection keep their ordinary concurrency.
  */
-export class AgenticMemory implements ContextCorrectionPreparer {
+export class AgenticMemory
+  implements ContextCorrectionPreparer, LinkCorrectionPreparer
+{
   readonly #store: NoteStore;
   readonly #embedder: Embedder;
   readonly #model: LanguageModel;
@@ -501,6 +520,7 @@ export class AgenticMemory implements ContextCorrectionPreparer {
       const current = await this.#readInspected(expected);
       if (!sameJsonValue(expected, current)) {
         throw correctionReadFailure(
+          "prepareContextCorrection",
           expected.id,
           "stale",
           "The inspected note does not match the current stored note.",
@@ -526,6 +546,56 @@ export class AgenticMemory implements ContextCorrectionPreparer {
       // this point, so it conserves the record and its update time exactly.
       const note: Note = { ...revised, updatedAt: batchPreparationTime() };
       return { note, plan: this.#plan(current.id, [{ note, vector }]) };
+    });
+  }
+
+  /**
+   * Prepare one reviewed removal of outgoing links from an existing note. The proposal is
+   * validated and detached at the call boundary; the current record is read with its stored vector
+   * and compared inside the invocation order, so a stale proposal is rejected without writes and
+   * without poisoning later operations. Every valid removal changes the note, so preparation
+   * always returns a frozen one-record plan the existing `apply` writes unchanged, reusing the
+   * actual stored vector. There is no construction, search, model call, embedding or target write.
+   *
+   * See docs/memory.md#existing-link-correction.
+   */
+  async prepareLinkCorrection(
+    input: LinkCorrectionInput,
+  ): Promise<InsertionPlan> {
+    const parsed = linkCorrectionInputSchema.safeParse(input);
+    if (!parsed.success) {
+      throw insertionFailure(
+        "prepareLinkCorrection",
+        "input",
+        "The input is not a valid link correction request.",
+        undefined,
+        parsed.error,
+      );
+    }
+    const { expected, removeTargetIds } = parsed.data;
+    return await this.#enqueue(async () => {
+      const current = await this.#readInspectedEmbedded(expected);
+      if (!sameJsonValue(expected, current.note)) {
+        throw correctionReadFailure(
+          "prepareLinkCorrection",
+          expected.id,
+          "stale",
+          "The inspected note does not match the current stored note.",
+        );
+      }
+      // Only the selected outgoing links are filtered out; the identity, source content, source
+      // timestamp, metadata, semantic attributes and stored vector stay exactly as read.
+      const removals = new Set(
+        removeTargetIds.map((target) => target.toLowerCase()),
+      );
+      const note: Note = {
+        ...current.note,
+        links: current.note.links.filter(
+          (link) => !removals.has(link.toLowerCase()),
+        ),
+        updatedAt: batchPreparationTime(),
+      };
+      return this.#plan(current.note.id, [{ note, vector: current.vector }]);
     });
   }
 
@@ -684,6 +754,7 @@ export class AgenticMemory implements ContextCorrectionPreparer {
       found = (await this.#store.get([expected.id])).map(detachNote);
     } catch (cause) {
       throw correctionReadFailure(
+        "prepareContextCorrection",
         expected.id,
         "unknown",
         "The note store failed to read the inspected note.",
@@ -694,6 +765,51 @@ export class AgenticMemory implements ContextCorrectionPreparer {
     const current = found.find((note) => note.id.toLowerCase() === identity);
     if (current === undefined) {
       throw correctionReadFailure(
+        "prepareContextCorrection",
+        expected.id,
+        "stale",
+        "The inspected note no longer exists in the collection.",
+      );
+    }
+    return current;
+  }
+
+  /**
+   * Read the record a link-correction proposal inspected with its actual stored vector, matching
+   * identities as `get` does. A missing note, a failed read and an unusable stored vector are
+   * distinct unchanged failures the caller reports before any write; only the completed read can
+   * confirm a proposal stale.
+   */
+  async #readInspectedEmbedded(expected: Note): Promise<EmbeddedNote> {
+    const dimensions = this.#embedder.space.dimensions;
+    let found: EmbeddedNote[];
+    try {
+      found = (await this.#store.getEmbedded([expected.id])).map((record) => {
+        const parsed = embeddedNoteSchema.parse(record);
+        if (parsed.vector.length !== dimensions) {
+          throw new Error(
+            `The stored vector of note ${parsed.note.id} does not match the declared ` +
+              `${dimensions}-dimensional embedding space.`,
+          );
+        }
+        return parsed;
+      });
+    } catch (cause) {
+      throw correctionReadFailure(
+        "prepareLinkCorrection",
+        expected.id,
+        "unknown",
+        "The note store failed to read the inspected record.",
+        cause,
+      );
+    }
+    const identity = expected.id.toLowerCase();
+    const current = found.find(
+      (record) => record.note.id.toLowerCase() === identity,
+    );
+    if (current === undefined) {
+      throw correctionReadFailure(
+        "prepareLinkCorrection",
         expected.id,
         "stale",
         "The inspected note no longer exists in the collection.",

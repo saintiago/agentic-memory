@@ -182,6 +182,16 @@ export class PagedStore implements NoteStore {
     });
   }
 
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    if (this.getError !== undefined) {
+      throw this.getError;
+    }
+    return ids.flatMap((id) => {
+      const entry = this.records.get(id.toLowerCase());
+      return entry === undefined ? [] : [structuredClone(entry)];
+    });
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     if (this.nearestError !== undefined) {
       throw this.nearestError;

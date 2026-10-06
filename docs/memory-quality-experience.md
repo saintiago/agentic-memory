@@ -4,7 +4,8 @@
 
 The [accepted quality requirements](memory-quality-requirements.md) affect agents submitting and
 interpreting observations and operators recovering retained failures, correcting contexts and
-reviewing reproduced missed evolution updates. UX is applicable to those interactions.
+reviewing reproduced missed evolution updates or historical relationships. UX is applicable to
+those interactions.
 Use the existing agent tools, service status/receipts,
 read-only dashboard and evaluation artifacts; this outcome needs no new browser navigation or
 memory-editing controls.
@@ -37,7 +38,7 @@ successful result.
 ## Operator path: inspect, maintain, verify
 
 Use this path for retained ingestion failures and existing-context maintenance. For a reproduced
-missed update, use the bounded comparison path below.
+missed update or historical-link review, use the corresponding bounded path below.
 
 1. **Inspect ingestion separately from the map.** Start with [service status and receipt lookup](service.md#api).
    Read outcome counts as well as backlog and availability; follow a retained receipt identity to
@@ -95,11 +96,67 @@ trials alongside successful ones. Identify whether the evidence is request repla
 ingestion/persistence or delivered production behavior. This gives the operator a short evidence
 path without mistaking a promising sample for a repaired live corpus or a reliability guarantee.
 
+## Operator path: review and correct historical links
+
+Follow the [bounded historical-link journey](memory-quality-requirements.md#bounded-historical-link-correction)
+after the queued context and evolution work. Start from retained linked comparisons and preserved
+queries, then inspect the current corpus. Historical snapshots locate candidates; they do not
+authorize changes to current notes.
+
+1. **Follow the evidence to the directed relationship.** In the existing dashboard, run the
+   preserved Memory request, select the Linked addition in Results and read its original content
+   and provenance in Details. Inspect the direct matches' outgoing links to identify the actual
+   source-to-target edge; a linked result alone does not identify its parent. Use focused links and
+   the existing outgoing-link controls to follow the endpoints. Read current notes through the
+   public inspection capabilities when the retained request or map is outdated or incomplete.
+   Keep the query, edge direction and both sources together in private review artifacts so repeated
+   labels or multiple paths do not lead to removal of the wrong relationship.
+2. **Review meaning before choosing removal.** Apply [original-source review](evaluation.md#historical-link-correction)
+   to both endpoints. Record each relationship as proven incorrect, valid or unresolved with its
+   reason and source references. Query-specific irrelevance and contaminated generated context
+   are prompts to inspect, not removal decisions. Keep valid and unresolved edges. If none is proven
+   incorrect, finish with the supported no-removal report; no maintenance capability is needed.
+3. **Review the exact change, then use maintenance.** For warranted removals, review the source ID,
+   outgoing target IDs and inspected current state against the recorded reasons before submitting
+   to the Architecture-defined [link-maintenance interface](memory.md#existing-link-correction).
+   Follow the existing baseline and writer-ownership procedure; exercise removal and interrupted
+   recovery on an isolated copy before live use. Keep this step outside the read-only dashboard
+   and separate from context correction. A removal affects the selected arrow, not either memory
+   or the reverse arrow. Retain each acknowledged result or unresolved error beside its proposal.
+4. **Verify relationships, then repeat retrieval.** After restart, inspect the persisted outgoing
+   links and preservation evidence. Run fresh searches with the same preserved query text, direct
+   limits and nonzero linked budgets. An old Results list remains evidence of its earlier request;
+   refreshing the map alone is not a comparison. A target may still be a direct match or arrive
+   through another valid edge, and a newly available budget slot may expose another addition.
+   Explain those routes and review those additions rather than judging removal by target disappearance.
+
+Keep review verdicts separate from execution outcomes in the private evaluation report. Use the
+existing maintenance feedback style: identify the affected source and targets, explain what was
+acknowledged or left unchanged, and make the next action clear. These are outcome distinctions,
+not new receipt statuses or dashboard badges:
+
+| Observed outcome                                       | Operator interpretation and next action                                                                                                                                |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Removal acknowledged                                   | Record the exact removed edges, then verify persistence and preservation after restart. This is not a claim of corpus-wide quality.                                    |
+| Invalid or stale proposal; storage unchanged           | Read the reason. Correct invalid input or inspect and review current state again; do not reuse a stale proposal.                                                       |
+| Ownership conflict or an unchanged preparation failure | Resolve the reported cause before another attempt. A failed read does not establish staleness or successful removal.                                                   |
+| Interrupted application or lost acknowledgement        | Keep the outcome unresolved and follow maintenance recovery to establish persisted state before further changes. Do not report success or infer that nothing happened. |
+| No proven incorrect edge                               | Report valid and unresolved findings with reasons, without implying an execution failure or hiding remaining noise.                                                    |
+
+Close the journey with assessed, proven incorrect, removed, valid and unresolved edge counts,
+failed removals, direct recovery and useful/unrelated linked additions with denominators, following
+[historical-link evaluation](evaluation.md#historical-link-correction). Keep graph identities and raw
+source evidence outside Git. This evidence-first sequence supports the charter's useful, attributed
+retrieval with less irrelevant context, while preserving valid relationships. The graph stays an
+inspection aid: position, freshness colors and animation do not signal semantic correctness or
+successful maintenance. Existing navigation, palette and camera behavior remain suitable; no new
+visual or motion treatment is needed.
+
 ## Refinement questions
 
 No new visual interaction needs a Storybook prototype. Existing dashboard behavior remains owned by
 [its design and acceptance checks](dashboard.md#acceptance-checks). The concrete experience questions
-for maintenance and bounded comparison can be exercised with representative receipt responses,
+for maintenance, bounded comparison and link review can be exercised with representative outcomes,
 retained source/context pairs and a walkthrough, without inventing browser controls:
 
 - With an empty backlog and a retained failed receipt, can the operator identify the missing work
@@ -110,8 +167,17 @@ retained source/context pairs and a walkthrough, without inventing browser contr
   request's evidence from refreshed details and run the same query again for the comparison?
 - When a replay updates the target but omits its explicit reproduction evidence, can the operator
   identify the semantic defect and distinguish that trial from a faithful revision and a live repair?
+- With one query-irrelevant but valid defect/repair edge, one proven cross-mechanism edge and one
+  unavailable-source case, can the operator select only the warranted directed removal and explain
+  why the other two remain?
+- With a stale proposal, a failed read and a lost acknowledgement, can the operator distinguish
+  unchanged storage from unresolved application and choose inspection or recovery appropriately?
+- After restart, when a removed target still appears through another valid edge and an old Results
+  list is open, can the operator verify the specific removal and make a fresh matched comparison?
 
 For maintenance, use failed, blocked, pending and stored examples, plus an original/context pair
 with unrelated expansion. For bounded comparison, use a missed target, a target update with lost
-evidence, a faithful revision and both controls. Exact execution and maintenance interface choices
-remain for Architecture; these questions do not add new statuses, screens or quality thresholds.
+evidence, a faithful revision and both controls. For link review, use the three relationship cases
+above, maintenance outcome examples and a multiple-route retrieval example. Exact execution and
+maintenance interface choices remain for Architecture; these questions do not add new statuses,
+screens or quality thresholds.

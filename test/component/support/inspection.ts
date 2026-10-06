@@ -209,6 +209,12 @@ export class PagedEmbeddedStore implements NoteStore {
     );
   }
 
+  async getEmbedded(): Promise<EmbeddedNote[]> {
+    throw new Error(
+      "The inspection host exports embedded records through its page source.",
+    );
+  }
+
   async nearest(): Promise<Match[]> {
     throw new Error(
       "The inspection host searches through the public memory API.",

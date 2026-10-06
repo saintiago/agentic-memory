@@ -146,6 +146,16 @@ class RecordingStore implements NoteStore {
     });
   }
 
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    this.calls.push("getEmbedded");
+    return ids.flatMap((id) => {
+      const record = this.records.get(id.toLowerCase());
+      return record === undefined
+        ? []
+        : [{ note: structuredClone(record.note), vector: [...record.vector] }];
+    });
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     this.calls.push(`nearest:${limit}:${vector.length}`);
     if (this.nearestError !== undefined) {
