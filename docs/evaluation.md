@@ -152,6 +152,10 @@ contexts where retained. Corrections must remove unrelated subjects and repeated
 reduce that excess text and preserve attribution, supported meaning, conditions and uncertainty.
 Judge against original sources, including necessary related evidence; shorter text alone is not
 acceptance. Review subsequent evolution of those subjects to check the expansion does not return.
+For recovery-rewritten neighbors, review the complete resulting context against its original source
+and the attributed incoming source. A shared subsystem does not establish that a repair addresses
+the neighbor's specific defect; correct unsupported repair attributions or explicitly defer them
+with their actual semantic reason, separately from length observations.
 
 Use the four known-topic audit queries and the recorded paraphrases where available, with expected
 evidence declared in advance. If exact query text is unavailable, label replacements rather than
