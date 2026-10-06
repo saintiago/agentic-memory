@@ -269,6 +269,25 @@ retains its existing validation, acknowledgment and uncertain-write behavior. Th
 `ContextCorrectionPreparer` is the focused read-only capability supplied to a maintenance owner;
 ordinary ingestion still needs only `prepare` and `apply`.
 
+## Existing-link correction
+
+Support targeted operator maintenance only for directed edges proven incorrect by
+[original-source review](evaluation.md#historical-link-correction). The reviewed change identifies
+the exact source note, outgoing target identities to remove and inspected current state. Remove
+only those edges, retaining the order of all remaining links. Preserve both endpoint notes,
+original content, identity, source timestamp, metadata, semantic attributes and embeddings;
+unaffected records and other incoming or outgoing relationships remain unchanged. Apply the
+existing update-time rules to actual changes. This capability does not change insertion, evolution,
+search or [context correction's link preservation](#existing-context-correction).
+
+Use the existing collection writer ownership and uncertain-write protections. A stale proposal
+must not overwrite intervening changes; invalid or stale input leaves storage unchanged. Report
+success only after the removal is acknowledged. Interrupted application remains unresolved until
+maintenance recovery establishes the persisted outcome, including after restart, without
+regenerating semantic attributes or changing unrelated relationships. Architecture defines the
+smallest public maintenance contract and durable recovery mechanism needed for this behavior;
+this section does not extend the existing context-correction input or permit raw competing writes.
+
 ## Verification
 
 Apply [testing](testing.md#main-risks-and-ownership) to this contract. Include unchanged neighbors,

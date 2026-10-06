@@ -5,6 +5,8 @@
 Agents can retain valid, useful observations and retrieve relevant original evidence with concise,
 faithful context and useful linked additions. Operators can recover retained ingestion failures and
 correct affected existing contexts while preserving the live corpus.
+Operators can also assess historical link noise against original sources and remove only proven
+incorrect relationships through reviewed maintenance, preserving sources and valid relationships.
 
 The [live audit](evaluation-memory-quality-2026-10-05.md) observed 64 failed receipts among 318
 accepted submissions, including 63 evolution-response contract failures. It also found unrelated
@@ -22,6 +24,7 @@ and evaluate that intent rather than replacing it with new summary semantics.
 | Durable outcomes and recovery            | Acceptance differs from storage. Preserve accepted work and explicitly recover known-unwritten failed observations; [queue](ingestion-queue.md#recovery-of-failed-observations). Uncertain writes follow existing replay/reconciliation rules.                                                                  |
 | Concise evolution                        | Rewrite around the note's subject, retain meaningful evidence and caveats, and avoid unrelated status/history; [prompts](prompts.md#evolution-instructions). Correct identified existing contexts through [Memory](memory.md#existing-context-correction).                                                      |
 | Direct and linked retrieval              | Keep relevant evidence inspectable, distinguish scored matches from bounded linked additions and support direct-only search; [Memory](memory.md#retrieval-and-inspection). Select meaningful links under existing prompt guidance.                                                                              |
+| Historical relationship correction       | Remove only reviewed, proven incorrect directed edges; [Memory](memory.md#existing-link-correction). Assess original sources and retained queries under [historical-link evaluation](evaluation.md#historical-link-correction).                                                                                 |
 | Quality evidence and corpus preservation | Compare source recovery, fidelity and noise before/after, account for failures and preserve the corpus; [evaluation](evaluation.md#quality-change-acceptance).                                                                                                                                                  |
 
 This document owns the affected journey and observable acceptance examples. Detailed rules stay in
@@ -54,6 +57,49 @@ This bounded journey does not require live context maintenance, bulk receipt rec
 interfaces or changes to retrieval policy. Architecture chooses the smallest supported prompt/input
 correction; experimental wording is evidence, not an accepted design.
 
+### Bounded historical-link correction
+
+The affected categories are historical relationship correction, direct/linked retrieval and quality
+evidence/corpus preservation. The operator follows this journey after the queued context and
+evolution work, so an earlier generated context or retrieval snapshot is not mistaken for current
+state:
+
+1. **Locate and review.** Use the retained noisy linked comparisons and preserved queries to locate
+   candidate directed edges in the current corpus. Inspect both endpoints' original sources and
+   provenance, applying [historical-link evaluation](evaluation.md#historical-link-correction).
+   Record proven incorrect, valid and unresolved relationships with reasons in private evidence.
+2. **Select only warranted removals.** If the review proves an existing edge incorrect, review its
+   exact source/target identities and expected current state before maintenance. Leave valid and
+   unresolved edges intact. If no removal is warranted, report that result without adding a
+   maintenance capability merely to complete this journey.
+3. **Correct safely.** Use only the minimal reviewed maintenance capability required by
+   [existing-link correction](memory.md#existing-link-correction). Preserve the corpus baseline,
+   original sources and every relationship outside the reviewed removals. Context correction
+   continues to preserve links.
+4. **Verify and report.** Inspect persisted relationships after restart and repeat the preserved
+   direct and linked queries at unchanged limits and retrieval defaults. Report removed edges,
+   retained valid relationships, retrieval changes, failures and remaining uncertainty under
+   [historical-link evaluation](evaluation.md#historical-link-correction).
+
+#### Historical-link acceptance examples
+
+| Situation                                                                                              | Observable acceptance                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A noisy linked addition is found in a retained query comparison                                        | The review identifies the actual stored edge from a direct match to that addition and reads both original sources. Being irrelevant to this query alone is not treated as proof that the edge is incorrect.                                                   |
+| Two original sources describe separate mechanisms and share only a broad toolchain theme               | The review records why they have no direct evidence relationship under the existing link guidance. Only the reviewed directed edge is removed; both notes, their semantic attributes and all other links remain intact.                                       |
+| A repair observation links to its original defect source, although one query does not need the defect  | The valid relationship remains. Query-specific irrelevance does not justify its removal.                                                                                                                                                                      |
+| Original-source evidence is unavailable or leaves the relationship ambiguous                           | The edge remains unchanged and the report identifies the evidence gap and unresolved judgment. No generated context or similarity score substitutes for proof.                                                                                                |
+| The inspected source note changes before a reviewed removal can be applied                             | The stale proposal cannot overwrite the current note or its newer relationships; fresh inspection and review are needed before removal.                                                                                                                       |
+| A write is interrupted or its acknowledgment is lost                                                   | The outcome remains unresolved until the persisted state and maintenance recovery establish what was applied. Restart recovery preserves the reviewed removal and unrelated data; a lost response is not reported as success.                                 |
+| A proven incorrect edge was the only path adding an unrelated note to a preserved query                | After acknowledged removal and restart, that note is no longer added through that edge at the same nonzero linked budget. Direct evidence recovery is preserved, and remaining additions are reviewed rather than assuming the entire result is now relevant. |
+| A removed target still appears as a direct match or through another retained valid edge                | The removed edge remains absent, while the note remains retrievable through that legitimate route. The report explains the route instead of deleting the note or suppressing its retrieval.                                                                   |
+
+This bounded outcome excludes corpus reset, note deletion, automatic pruning, bulk context rewriting
+and changes to retrieval defaults or policy. It does not require a dashboard editing interface or
+a guarantee that every linked result is relevant. Architecture selects the maintenance interface
+and recovery mechanism only if source review warrants removal; no new product decision or numerical
+noise target is needed for this scope.
+
 ## Observable acceptance examples
 
 | Situation                                                                                   | Observable acceptance                                                                                                                                                                                                                                                           |
@@ -78,7 +124,8 @@ remain distinct; a successful fixture alone does not establish general model rel
 ## Scope and unsettled choices
 
 Include ingestion reliability, concise source-focused evolution, meaningful direct/linked retrieval,
-explicit failed-observation recovery, warranted existing-context correction and before/after evidence.
+explicit failed-observation recovery, warranted existing-context and historical-link correction,
+and before/after evidence.
 Keep source extraction changes for Nexus in HARN if the consumer needs them; AMEM supplies general
 guidance and preserves original submitted material. Existing bookkeeping-only notes are not deleted
 or rewritten as if they contained lessons their sources never stated.
