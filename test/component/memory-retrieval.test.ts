@@ -97,6 +97,12 @@ class ScriptedStore implements NoteStore {
     });
   }
 
+  /** Retrieval cases never read vectors; a vector-bearing read would be a scripting error. */
+  async getEmbedded(): Promise<EmbeddedNote[]> {
+    this.calls.push("getEmbedded");
+    throw new Error("The retrieval script has no vector-bearing read.");
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     this.calls.push(`nearest:${limit}:${vector.length}`);
     if (this.nearestError !== undefined) {

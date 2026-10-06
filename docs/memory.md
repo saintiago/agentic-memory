@@ -51,9 +51,7 @@ interface LinkCorrectionInput {
   removeTargetIds: string[];
 }
 interface LinkCorrectionPreparer {
-  prepareLinkCorrection(
-    input: LinkCorrectionInput,
-  ): Promise<InsertionPlan>;
+  prepareLinkCorrection(input: LinkCorrectionInput): Promise<InsertionPlan>;
 }
 interface MemoryPrompts {
   construction: string;
@@ -82,9 +80,7 @@ class AgenticMemory {
   prepareContextCorrection(
     input: ContextCorrectionInput,
   ): Promise<ContextCorrectionPreparation>;
-  prepareLinkCorrection(
-    input: LinkCorrectionInput,
-  ): Promise<InsertionPlan>;
+  prepareLinkCorrection(input: LinkCorrectionInput): Promise<InsertionPlan>;
   apply(plan: InsertionPlan): Promise<Note>;
   get(id: string): Promise<Note | undefined>;
   page(limit?: number, cursor?: Cursor): Promise<Page>;

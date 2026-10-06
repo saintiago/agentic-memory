@@ -382,6 +382,44 @@ class QdrantNoteStore implements NoteStore {
     return [...found.values()];
   }
 
+  /**
+   * Read complete records with their actual stored vectors by identity. The requested identities
+   * are fetched directly, and a found record whose stored vector is missing or unusable fails the
+   * read instead of being skipped or re-embedded.
+   */
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const requested = new Map<string, string>();
+    for (const id of ids) {
+      const parsed = parseNoteId(id);
+      const identity = parsed.toLowerCase();
+      if (!requested.has(identity)) {
+        requested.set(identity, parsed);
+      }
+    }
+    const records = await this.#client.retrieve(this.#collection, {
+      ids: [...requested.values()],
+      with_payload: true,
+      with_vector: true,
+    });
+    const found = new Map<string, EmbeddedNote>();
+    for (const record of records) {
+      const note = this.#readNote(record.id, record.payload);
+      const vector = parseStoredVector(
+        record.id,
+        record.vector,
+        this.#dimensions,
+      );
+      const identity = note.id.toLowerCase();
+      if (!found.has(identity)) {
+        found.set(identity, { note, vector });
+      }
+    }
+    return [...found.values()];
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     const searchVector = parseVector(vector, this.#dimensions);
     const count = parseLimit(limit);

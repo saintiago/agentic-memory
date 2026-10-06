@@ -28,6 +28,8 @@ import type {
   JsonValue,
   LanguageModel,
   LegacyReceipt,
+  LinkCorrectionInput,
+  LinkCorrectionPreparer,
   MemoryError,
   MemoryOperation,
   MemoryOptions,
@@ -99,6 +101,12 @@ describe("package root exports", () => {
     >();
     expectTypeOf<NoteStore["nearest"]>().parameter(1).toEqualTypeOf<number>();
     expectTypeOf<NoteStore["page"]>().returns.toEqualTypeOf<Promise<Page>>();
+    expectTypeOf<NoteStore["getEmbedded"]>()
+      .parameter(0)
+      .toEqualTypeOf<string[]>();
+    expectTypeOf<NoteStore["getEmbedded"]>().returns.toEqualTypeOf<
+      Promise<EmbeddedNote[]>
+    >();
     expectTypeOf<NoteStore["pageEmbedded"]>().returns.toEqualTypeOf<
       Promise<EmbeddedPage>
     >();
@@ -208,6 +216,7 @@ describe("package root exports", () => {
       | "search"
       | "prepare"
       | "prepareContextCorrection"
+      | "prepareLinkCorrection"
       | "apply"
     >();
   });
@@ -236,6 +245,28 @@ describe("package root exports", () => {
     expectTypeOf<
       ContextCorrectionPreparer["prepareContextCorrection"]
     >().returns.toEqualTypeOf<Promise<ContextCorrectionPreparation>>();
+  });
+
+  it("keeps the reviewed link correction contract usable through the package root", () => {
+    expect(packageExports.linkCorrectionInputSchema).toBe(
+      memory.linkCorrectionInputSchema,
+    );
+    expectTypeOf<AgenticMemory["prepareLinkCorrection"]>()
+      .parameter(0)
+      .toEqualTypeOf<LinkCorrectionInput>();
+    expectTypeOf<
+      AgenticMemory["prepareLinkCorrection"]
+    >().returns.toEqualTypeOf<Promise<InsertionPlan>>();
+    expectTypeOf<LinkCorrectionInput>().toEqualTypeOf<{
+      expected: Note;
+      removeTargetIds: string[];
+    }>();
+    expectTypeOf<LinkCorrectionPreparer["prepareLinkCorrection"]>()
+      .parameter(0)
+      .toEqualTypeOf<LinkCorrectionInput>();
+    expectTypeOf<
+      LinkCorrectionPreparer["prepareLinkCorrection"]
+    >().returns.toEqualTypeOf<Promise<InsertionPlan>>();
   });
 
   it("keeps the durable insertion contracts usable through the package root", () => {

@@ -634,6 +634,12 @@ export const instrumentStore = (
     recorder.recordStoreOperation("get", now() - started);
     return notes;
   },
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    const started = now();
+    const records = await store.getEmbedded(ids);
+    recorder.recordStoreOperation("get", now() - started);
+    return records;
+  },
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     const started = now();
     const matches = await store.nearest(vector, limit);

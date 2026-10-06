@@ -277,6 +277,79 @@ describe("Qdrant note store contract", () => {
     });
   });
 
+  it("reads complete records with their actual stored vectors by identity", async () => {
+    const name = collection("embedded_identity");
+    const store = await openStore(name);
+    const first = embedded(
+      { content: "The first identity record." },
+      [1, -0.5, 0.25, 0.75],
+    );
+    const second = embedded(
+      { content: "The second identity record." },
+      [0.125, 2, -3, 0.5],
+    );
+    await store.put([first, second]);
+    const reopened = await openStore(name);
+
+    const found = await reopened.getEmbedded([
+      first.note.id,
+      SENTINEL_ID,
+      first.note.id.toUpperCase(),
+    ]);
+
+    expect(found).toHaveLength(1);
+    const record = found[0];
+    expect(record?.note).toEqual(first.note);
+    const expected = storedVector(first.vector);
+    expect(record?.vector).toHaveLength(expected.length);
+    record?.vector.forEach((component, index) => {
+      expect(component).toBeCloseTo(expected[index] ?? Number.NaN, 6);
+    });
+
+    // The read is detached: mutating the returned record cannot change stored state.
+    if (record === undefined) {
+      throw new Error("the stored record must be returned by identity");
+    }
+    record.note.content = "rewritten through the identity read";
+    record.note.tags.push("appended");
+    record.vector[0] = 42;
+    const again = await reopened.getEmbedded([first.note.id]);
+    expect(again[0]?.note).toEqual(first.note);
+    again[0]?.vector.forEach((component, index) => {
+      expect(component).toBeCloseTo(expected[index] ?? Number.NaN, 6);
+    });
+
+    await expect(reopened.getEmbedded([])).resolves.toEqual([]);
+    await expect(reopened.getEmbedded(["note-1"])).rejects.toThrow(/UUID/);
+  });
+
+  it("fails the vector-bearing identity read for an unusable stored vector", async () => {
+    const name = collection("embedded_identity_vector");
+    const store = await openStore(name);
+    const missing = embedded({ content: "A record without a stored vector." });
+    const zero = embedded({
+      content: "A record without a usable vector direction.",
+    });
+    await adminClient().upsert(name, {
+      wait: true,
+      points: [
+        { id: missing.note.id, vector: {}, payload: missing.note },
+        { id: zero.note.id, vector: [0, 0, 0, 0], payload: zero.note },
+      ],
+    });
+
+    // Vector-free reads still return the notes; the vector-bearing read must fail instead of
+    // silently treating an unusable record as an absent identity.
+    expect(await store.get([missing.note.id])).toEqual([missing.note]);
+    expect(await store.get([zero.note.id])).toEqual([zero.note]);
+    await expect(store.getEmbedded([missing.note.id])).rejects.toThrow(
+      /vector/,
+    );
+    await expect(store.getEmbedded([zero.note.id])).rejects.toThrow(/vector/);
+    // A genuinely absent identity stays an empty result, not an invalid-vector failure.
+    await expect(store.getEmbedded([SENTINEL_ID])).resolves.toEqual([]);
+  });
+
   it("round-trips update times and leaves legacy records unbackfilled", async () => {
     const name = collection("update_time");
     const store = await openStore(name);

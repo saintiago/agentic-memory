@@ -265,6 +265,41 @@ class EvaluationBaselineStore implements NoteStore {
     return [...found.values()];
   }
 
+  async getEmbedded(ids: string[]): Promise<EmbeddedNote[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const requested = new Map<string, string>();
+    for (const id of ids) {
+      const parsed = noteIdSchema.safeParse(id);
+      if (!parsed.success) {
+        throw new Error(`Note identifiers must be UUIDs, received ${id}.`);
+      }
+      requested.set(parsed.data.toLowerCase(), parsed.data);
+    }
+    const records = await this.#client.retrieve(this.#collection, {
+      ids: [...requested.values()],
+      with_payload: true,
+      with_vector: true,
+    });
+    const found = new Map<string, EmbeddedNote>();
+    for (const record of records) {
+      const note = this.#readNote(record.id, record.payload);
+      const parsed = vectorSchema.safeParse(record.vector);
+      if (!parsed.success || parsed.data.length !== this.#dimensions) {
+        throw new Error(
+          `Stored vector for point ${String(record.id)} is missing or does not match the ` +
+            `declared ${this.#dimensions}-dimensional embedding space.`,
+        );
+      }
+      const identity = note.id.toLowerCase();
+      if (!found.has(identity)) {
+        found.set(identity, { note, vector: parsed.data });
+      }
+    }
+    return [...found.values()];
+  }
+
   async nearest(vector: number[], limit: number): Promise<Match[]> {
     const response = await this.#client.query(this.#collection, {
       query: parseVector(vector, this.#dimensions),

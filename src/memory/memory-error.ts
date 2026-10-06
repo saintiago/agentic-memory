@@ -9,7 +9,8 @@
 /**
  * The memory operations a host can invoke. `prepare` and `apply` are the durable insertion path
  * the ingestion queue consumes; `add` is the same insertion performed in one call, and
- * `prepareContextCorrection` prepares a reviewed replacement of one existing note.
+ * `prepareContextCorrection` prepares a reviewed replacement of one existing note while
+ * `prepareLinkCorrection` prepares a reviewed removal of outgoing links.
  */
 export type MemoryOperation =
   | "add"
@@ -18,6 +19,7 @@ export type MemoryOperation =
   | "search"
   | "prepare"
   | "prepareContextCorrection"
+  | "prepareLinkCorrection"
   | "apply";
 
 /**
@@ -37,11 +39,11 @@ export type MemoryStage =
 export type MemoryPersistence = "unchanged" | "uncertain";
 
 /**
- * What a failed context-correction read established about the inspected proposal. `stale` means
- * the read succeeded and confirmed the proposal no longer matches the stored note; `unknown`
- * means the read itself failed, so current storage was not observed.
+ * What a failed context- or link-correction read established about the inspected proposal.
+ * `stale` means the read succeeded and confirmed the proposal no longer matches the stored note;
+ * `unknown` means the read itself failed, so current storage was not observed.
  */
-export type ContextCorrectionReadOutcome = "stale" | "unknown";
+export type CorrectionReadOutcome = "stale" | "unknown";
 
 /** The details of one memory failure. */
 export interface MemoryErrorDetails {
@@ -56,10 +58,10 @@ export interface MemoryErrorDetails {
   /** The identity an add allocated before it failed. */
   readonly noteId?: string;
   /**
-   * The read outcome of a failed context-correction preparation, so a maintenance owner can
-   * distinguish a confirmed stale proposal from a read that could not observe storage.
+   * The read outcome of a failed context- or link-correction preparation, so a maintenance owner
+   * can distinguish a confirmed stale proposal from a read that could not observe storage.
    */
-  readonly readOutcome?: ContextCorrectionReadOutcome;
+  readonly readOutcome?: CorrectionReadOutcome;
   /** The prepared batch of a rejected write attempt, so the host can reconcile its state. */
   readonly affectedNoteIds?: readonly string[];
   /** The underlying provider or validation failure, preserved for diagnosis. */
@@ -74,8 +76,8 @@ export class MemoryError extends Error {
   /** The safe failure description, without credentials, prompts or source text. */
   declare readonly reason: string;
   declare readonly noteId?: string;
-  /** The confirmed staleness or unobserved read of one failed context-correction preparation. */
-  declare readonly readOutcome?: ContextCorrectionReadOutcome;
+  /** The confirmed staleness or unobserved read of one failed correction preparation. */
+  declare readonly readOutcome?: CorrectionReadOutcome;
   declare readonly affectedNoteIds?: readonly string[];
 
   constructor(details: MemoryErrorDetails) {
