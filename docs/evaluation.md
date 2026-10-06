@@ -255,7 +255,9 @@ this invocation verified is ever cleaned up. The retained prompt text is the one
 capture; a later generation change may make it differ from the current defaults without invalidating
 the baseline. `receipts` keeps the raw failed-output limit explicit, reports cumulative claims
 grouped by each receipt's current outcome with the total-attempt denominator, states that
-per-attempt failure history is not retained, and writes the representative fixture; `reproduce`
+per-attempt failure history is not retained, reports the recovery evidence the journal schema
+retains per receipt with the missing-column limit explicit for earlier journals, and writes the
+representative fixture; `reproduce`
 replays it in an isolated recorded run with the live host's provider adjustments, labels the run
 with the executing revision the operator states explicitly, records the retained baseline revision
 and the prompt source as run conditions, and uses the retained baseline prompt text by default

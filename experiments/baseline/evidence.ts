@@ -13,6 +13,7 @@ import { readDeclaredQueries, type BaselineQuery } from "./declared-queries.js";
 import {
   journalCopyReceiptSchema,
   readJournalCopy,
+  receiptStateFingerprint,
   type JournalCopy,
   type JournalCopyReceipt,
 } from "./journal-copy.js";
@@ -109,7 +110,7 @@ export const readRetainedBaseline = async (
   }
   const journal = readJournalCopy(journalFile);
   const receiptValues = await readJsonl<unknown>(receiptsFile);
-  const receipts = receiptValues.map((value, index) => {
+  const inventory = receiptValues.map((value, index) => {
     const parsed = journalCopyReceiptSchema.safeParse(value);
     if (!parsed.success) {
       throw new EvidenceDirectoryError(
@@ -118,12 +119,22 @@ export const readRetainedBaseline = async (
     }
     return parsed.data;
   });
+  // The journal copy is the authoritative receipt view: the capture-time inventory cannot carry a
+  // later journal version's columns, and it must still agree with the copy it was written from.
+  if (
+    receiptStateFingerprint(inventory) !==
+    receiptStateFingerprint(journal.receipts)
+  ) {
+    throw new EvidenceDirectoryError(
+      "The retained receipt inventory does not match the journal copy.",
+    );
+  }
   const queries = readDeclaredQueries(queriesText);
   return {
     root,
     manifest: manifest.data,
     journal,
-    receipts,
+    receipts: journal.receipts,
     queries,
     queriesText,
   };

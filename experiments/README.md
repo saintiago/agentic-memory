@@ -104,15 +104,16 @@ npm run baseline -- metrics --root <private-root>
 `capture` copies the live journal with SQLite's online backup before taking the collection
 snapshot and attests quiescence with a second receipt-state copy. `receipts` records cumulative
 claims grouped by each receipt's current outcome, states that per-attempt failure history is not
-retained, and writes the representative failed-source fixture. `restore` refuses the captured
-live collection and any existing destination before uploading, so it can only create and clean up
-its own disposable collection. `reproduce` replays the fixture in an isolated, recorded
-collection, labels new-generation evidence with the executing revision the operator states
-explicitly, records the retained baseline revision and prompt source as run conditions, and uses
-the prompt text retained with the baseline by default (`--prompts current` selects this
-revision's defaults); a second `--reverse-order` run gives the sources that ran first in the
-fixture candidate context for their evolution calls. `linked-additions-review.json` retains the
-operator's bounded semantic review of the captured linked additions — useful, unrelated or
+retained, reports the per-receipt recovery evidence the journal schema keeps (earlier journals
+state the missing column as the limit), and writes the representative failed-source fixture.
+`restore` refuses the captured live collection and any existing destination before uploading, so
+it can only create and clean up its own disposable collection. `reproduce` replays the fixture in
+an isolated, recorded collection, labels new-generation evidence with the executing revision the
+operator states explicitly, records the retained baseline revision and prompt source as run
+conditions, and uses the prompt text retained with the baseline by default (`--prompts current`
+selects this revision's defaults); a second `--reverse-order` run gives the sources that ran first
+in the fixture candidate context for their evolution calls. `linked-additions-review.json` retains
+the operator's bounded semantic review of the captured linked additions — useful, unrelated or
 unresolved with a reason each — and `metrics` reports those verdicts with the assessed-sample
 denominator, leaving the review explicit when it is absent. The evidence root and its artifacts
 stay private; only this tooling and its deterministic tests are committed.
